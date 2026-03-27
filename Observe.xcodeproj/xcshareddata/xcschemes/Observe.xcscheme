@@ -20,6 +20,20 @@
                ReferencedContainer = "container:Observe.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "A100000D0000000000000002"
+               BuildableName = "ObserveTests.xctest"
+               BlueprintName = "ObserveTests"
+               ReferencedContainer = "container:Observe.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -28,7 +42,26 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "A100000D0000000000000002"
+               BuildableName = "ObserveTests.xctest"
+               BlueprintName = "ObserveTests"
+               ReferencedContainer = "container:Observe.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "A100000D0000000000000001"
+            BuildableName = "Observe.app"
+            BlueprintName = "Observe"
+            ReferencedContainer = "container:Observe.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

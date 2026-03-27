@@ -21,12 +21,16 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var constraintEvaluationTask: Task<Void, Never>?
     private var lastLiveProbeAt: Date?
     private var liveProbeState: LiveProbeState?
-    private var snapshotStates: [String: SnapshotScheduleState] = [:]
+    private var feedScheduleStates: [String: FeedScheduleState] = [:]
+    private var currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
+    private let recoveryPlanner = CameraRecoveryPlanner()
 
     private let maxConcurrentSnapshotRequests = 3
-    private let snapshotSuccessInterval: TimeInterval = 2
-    private let snapshotRequestTimeout: TimeInterval = 2.75
-    private let staleSnapshotRetryThreshold: TimeInterval = 10
+    private let snapshotSuccessInterval = CameraSchedulingDefaults.snapshotSuccessInterval
+    private let snapshotRequestTimeout = CameraSchedulingDefaults.snapshotRequestTimeout
+    private let staleSnapshotRetryThreshold = CameraSchedulingDefaults.staleSnapshotThreshold
+    private let liveRecoveryLeaseDuration = CameraSchedulingDefaults.liveRecoveryLeaseDuration
+    private let liveRecoveryRetryCooldown = CameraSchedulingDefaults.liveRecoveryRetryCooldown
 
     init(preferences: ObservePreferences) {
         self.preferences = preferences
@@ -112,7 +116,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         guard let home else {
             feeds = []
-            snapshotStates = [:]
+            feedScheduleStates = [:]
+            currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             liveCapacity = 0
             return
         }
@@ -144,16 +149,18 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let feedLookup = Dictionary(uniqueKeysWithValues: discoveredFeeds.map { ($0.id, $0) })
         feeds = priorityIDs.compactMap { feedLookup[$0] }
 
-        snapshotStates = Dictionary(
+        feedScheduleStates = Dictionary(
             uniqueKeysWithValues: feeds.map { feed in
                 (
                     feed.id,
-                    SnapshotScheduleState(
+                    FeedScheduleState(
                         lastSnapshotSuccessAt: feed.lastSnapshotDate,
                         snapshotInFlight: false,
                         snapshotRequestStartedAt: nil,
                         nextEligibleSnapshotAt: .distantPast,
-                        consecutiveSnapshotFailures: 0
+                        consecutiveSnapshotFailures: 0,
+                        liveRecoveryLeaseStartedAt: nil,
+                        liveRetryEligibleAt: .distantPast
                     )
                 )
             }
@@ -181,6 +188,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 try? await Task.sleep(for: .milliseconds(250))
                 await MainActor.run {
                     self.handleSnapshotTimeouts()
+                    self.refreshPresentation(forceSnapshotRefresh: false, focusedFeedID: self.focusedFeedID)
                     self.serviceSnapshotQueue()
                     self.evaluateLiveProbeIfNeeded()
                     self.startLiveProbeIfNeeded()
@@ -199,8 +207,24 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func refreshPresentation(forceSnapshotRefresh: Bool, focusedFeedID: String?) {
         guard isAppActive else { return }
 
-        let liveIDs = Set(desiredLiveIDs(focusedFeedID: focusedFeedID))
         let now = Date()
+        reconcileFeedScheduleStates(at: now, focusedFeedID: focusedFeedID)
+
+        let planningSnapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
+        let liveBudget: Int
+        switch sessionMode {
+        case .optimistic:
+            liveBudget = planningSnapshots.count
+        case .constrained:
+            liveBudget = max(minimumLiveCapacity, min(liveCapacity, planningSnapshots.count))
+        }
+
+        currentRecoveryPlan = recoveryPlanner.makePlan(
+            feeds: planningSnapshots,
+            sessionMode: sessionMode,
+            liveCapacity: liveBudget,
+            now: now
+        )
 
         for feed in feeds {
             guard feed.isVisibleOnWall else {
@@ -208,56 +232,98 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 continue
             }
 
-            if liveIDs.contains(feed.id) {
-                feed.preferLive()
+            guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
+            feed.updatePlanningStatus(recencyTier: decision.recencyTier, recoveryPhase: decision.recoveryPhase)
+            updateLiveRecoveryLease(for: feed.id, decision: decision, at: now, focusedFeedID: focusedFeedID)
+
+            if decision.presentationMode == .live {
+                feed.preferLive(at: now)
             } else {
                 feed.stopLiveIfNeeded()
                 feed.presentSnapshotIfAvailable()
+            }
 
-                if forceSnapshotRefresh || snapshotStates[feed.id]?.lastSnapshotSuccessAt == nil {
-                    queueImmediateSnapshot(for: feed.id, at: now)
-                }
+            if forceSnapshotRefresh, decision.snapshotPriority != .none {
+                queueImmediateSnapshot(for: feed.id, at: now)
             }
         }
     }
 
-    private func desiredLiveIDs(focusedFeedID: String?) -> [String] {
-        let orderedIDs = wallFeeds.map(\.id)
+    private func planningSnapshots(at now: Date, focusedFeedID: String?) -> [FeedPlanningSnapshot] {
+        wallFeeds.enumerated().map { index, feed in
+            let state = feedScheduleStates[feed.id]
+            return FeedPlanningSnapshot(
+                id: feed.id,
+                priorityIndex: index,
+                isFocused: feed.id == focusedFeedID,
+                isStreaming: feed.isStreaming,
+                lastSnapshotDate: feed.lastSnapshotDate ?? state?.lastSnapshotSuccessAt,
+                liveRecoveryLeaseStartedAt: state?.liveRecoveryLeaseStartedAt,
+                liveRetryEligibleAt: state?.liveRetryEligibleAt
+            )
+        }
+    }
 
-        switch sessionMode {
-        case .optimistic:
-            return orderedIDs
-        case .constrained:
-            let budget = max(minimumLiveCapacity, min(liveCapacity, orderedIDs.count))
-            var desired: [String] = []
+    private func reconcileFeedScheduleStates(at now: Date, focusedFeedID: String?) {
+        for feed in feeds {
+            guard var state = feedScheduleStates[feed.id] else { continue }
 
-            if let focusedFeedID, orderedIDs.contains(focusedFeedID) {
-                desired.append(focusedFeedID)
+            guard feed.isVisibleOnWall else {
+                state.liveRecoveryLeaseStartedAt = nil
+                state.liveRetryEligibleAt = .distantPast
+                feedScheduleStates[feed.id] = state
+                continue
             }
 
-            for id in orderedIDs where !desired.contains(id) {
-                desired.append(id)
-                if desired.count == budget {
-                    break
-                }
+            let recencyTier = recencyTier(for: feed, state: state, now: now)
+            if feed.id == focusedFeedID || recencyTier == .live || recencyTier == .recentSnapshot {
+                state.liveRecoveryLeaseStartedAt = nil
+                state.liveRetryEligibleAt = .distantPast
+            } else if let liveRecoveryLeaseStartedAt = state.liveRecoveryLeaseStartedAt,
+                      now.timeIntervalSince(liveRecoveryLeaseStartedAt) >= liveRecoveryLeaseDuration {
+                state.liveRecoveryLeaseStartedAt = nil
+                state.liveRetryEligibleAt = now.addingTimeInterval(liveRecoveryRetryCooldown)
             }
 
-            return desired
+            feedScheduleStates[feed.id] = state
+        }
+    }
+
+    private func updateLiveRecoveryLease(
+        for feedID: String,
+        decision: PresentationDecision,
+        at now: Date,
+        focusedFeedID: String?
+    ) {
+        guard var state = feedScheduleStates[feedID] else { return }
+
+        if feedID == focusedFeedID || decision.recoveryPhase != .liveRecovery || decision.recencyTier == .live {
+            state.liveRecoveryLeaseStartedAt = nil
+            if feedID == focusedFeedID || decision.recencyTier == .live || decision.recencyTier == .recentSnapshot {
+                state.liveRetryEligibleAt = .distantPast
+            }
+            feedScheduleStates[feedID] = state
+            return
+        }
+
+        if state.liveRecoveryLeaseStartedAt == nil {
+            state.liveRecoveryLeaseStartedAt = now
+            state.liveRetryEligibleAt = .distantPast
+            feedScheduleStates[feedID] = state
         }
     }
 
     private func queueImmediateSnapshot(for feedID: String, at date: Date = Date()) {
-        guard var state = snapshotStates[feedID] else { return }
+        guard var state = feedScheduleStates[feedID] else { return }
         state.nextEligibleSnapshotAt = date
-        snapshotStates[feedID] = state
+        feedScheduleStates[feedID] = state
     }
 
     private func serviceSnapshotQueue() {
         guard isAppActive else { return }
-
-        let liveIDs = Set(desiredLiveIDs(focusedFeedID: focusedFeedID))
-        let snapshotFeeds = wallFeeds.filter { !liveIDs.contains($0.id) }
-        let inFlightCount = snapshotFeeds.filter { snapshotStates[$0.id]?.snapshotInFlight == true }.count
+        let feedLookup = Dictionary(uniqueKeysWithValues: wallFeeds.map { ($0.id, $0) })
+        let snapshotFeeds = currentRecoveryPlan.orderedSnapshotIDs.compactMap { feedLookup[$0] }
+        let inFlightCount = snapshotFeeds.filter { feedScheduleStates[$0.id]?.snapshotInFlight == true }.count
         let availableSlots = maxConcurrentSnapshotRequests - inFlightCount
 
         guard availableSlots > 0 else { return }
@@ -265,25 +331,22 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let now = Date()
         let dueFeeds = snapshotFeeds
             .filter { feed in
-                guard let state = snapshotStates[feed.id] else { return false }
+                guard let state = feedScheduleStates[feed.id] else { return false }
                 guard !state.snapshotInFlight else { return false }
-
-                if state.nextEligibleSnapshotAt <= now {
-                    return true
-                }
-
-                return snapshotAge(for: feed, now: now) >= staleSnapshotRetryThreshold
+                return state.nextEligibleSnapshotAt <= now
             }
             .sorted { lhs, rhs in
-                let lhsState = snapshotStates[lhs.id]
-                let rhsState = snapshotStates[rhs.id]
+                let lhsDecision = currentRecoveryPlan.decisionsByID[lhs.id]
+                let rhsDecision = currentRecoveryPlan.decisionsByID[rhs.id]
+                let lhsState = feedScheduleStates[lhs.id]
+                let rhsState = feedScheduleStates[rhs.id]
                 let lhsAge = snapshotAge(for: lhs, now: now)
                 let rhsAge = snapshotAge(for: rhs, now: now)
-                let lhsIsStale = lhsAge >= staleSnapshotRetryThreshold
-                let rhsIsStale = rhsAge >= staleSnapshotRetryThreshold
+                let lhsPriority = lhsDecision?.snapshotPriority.rawValue ?? SnapshotPriority.none.rawValue
+                let rhsPriority = rhsDecision?.snapshotPriority.rawValue ?? SnapshotPriority.none.rawValue
 
-                if lhsIsStale != rhsIsStale {
-                    return lhsIsStale && !rhsIsStale
+                if lhsPriority != rhsPriority {
+                    return lhsPriority > rhsPriority
                 }
 
                 if lhsAge != rhsAge {
@@ -307,14 +370,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func issueSnapshotRequest(for feed: CameraFeedCoordinator, at date: Date) {
-        guard var state = snapshotStates[feed.id] else { return }
+        guard var state = feedScheduleStates[feed.id] else { return }
         guard !state.snapshotInFlight else { return }
 
         if feed.requestSnapshot() {
             state.snapshotInFlight = true
             state.snapshotRequestStartedAt = date
             state.nextEligibleSnapshotAt = .distantFuture
-            snapshotStates[feed.id] = state
+            feedScheduleStates[feed.id] = state
         } else {
             handleSnapshotFailure(for: feed.id, at: date)
         }
@@ -323,31 +386,35 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func handleSnapshotResult(for feedID: String, result: SnapshotRequestResult) {
         switch result {
         case .success(let captureDate):
-            guard var state = snapshotStates[feedID] else { return }
+            guard var state = feedScheduleStates[feedID] else { return }
             state.lastSnapshotSuccessAt = captureDate
             state.snapshotInFlight = false
             state.snapshotRequestStartedAt = nil
             state.consecutiveSnapshotFailures = 0
-            state.nextEligibleSnapshotAt = Date().addingTimeInterval(snapshotSuccessInterval)
-            snapshotStates[feedID] = state
+            let now = Date()
+            let snapshotAge = max(0, now.timeIntervalSince(captureDate))
+            state.nextEligibleSnapshotAt = snapshotAge <= staleSnapshotRetryThreshold
+                ? now.addingTimeInterval(snapshotSuccessInterval)
+                : now
+            feedScheduleStates[feedID] = state
         case .failure:
             handleSnapshotFailure(for: feedID, at: Date())
         }
     }
 
     private func handleSnapshotFailure(for feedID: String, at date: Date) {
-        guard var state = snapshotStates[feedID] else { return }
+        guard var state = feedScheduleStates[feedID] else { return }
         state.snapshotInFlight = false
         state.snapshotRequestStartedAt = nil
         state.consecutiveSnapshotFailures += 1
         state.nextEligibleSnapshotAt = date.addingTimeInterval(snapshotBackoff(for: state.consecutiveSnapshotFailures))
-        snapshotStates[feedID] = state
+        feedScheduleStates[feedID] = state
     }
 
     private func handleSnapshotTimeouts() {
         let now = Date()
 
-        for (feedID, state) in snapshotStates where state.snapshotInFlight {
+        for (feedID, state) in feedScheduleStates where state.snapshotInFlight {
             guard let snapshotRequestStartedAt = state.snapshotRequestStartedAt else { continue }
             if now.timeIntervalSince(snapshotRequestStartedAt) > snapshotRequestTimeout {
                 handleSnapshotFailure(for: feedID, at: now)
@@ -369,9 +436,19 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func snapshotAge(for feed: CameraFeedCoordinator, now: Date) -> TimeInterval {
-        let lastSnapshotDate = feed.lastSnapshotDate ?? snapshotStates[feed.id]?.lastSnapshotSuccessAt
+        let lastSnapshotDate = feed.lastSnapshotDate ?? feedScheduleStates[feed.id]?.lastSnapshotSuccessAt
         guard let lastSnapshotDate else { return .greatestFiniteMagnitude }
         return now.timeIntervalSince(lastSnapshotDate)
+    }
+
+    private func recencyTier(for feed: CameraFeedCoordinator, state: FeedScheduleState, now: Date) -> FeedRecencyTier {
+        if feed.isStreaming {
+            return .live
+        }
+
+        let lastSnapshotDate = feed.lastSnapshotDate ?? state.lastSnapshotSuccessAt
+        guard let lastSnapshotDate else { return .empty }
+        return now.timeIntervalSince(lastSnapshotDate) <= staleSnapshotRetryThreshold ? .recentSnapshot : .staleSnapshot
     }
 
     private func evaluateInitialLiveCapacityIfNeeded() {
@@ -391,6 +468,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func handleConstrainedSignal(from feedID: String) {
+        if var state = feedScheduleStates[feedID] {
+            state.liveRecoveryLeaseStartedAt = nil
+            state.liveRetryEligibleAt = .distantPast
+            feedScheduleStates[feedID] = state
+        }
+        queueImmediateSnapshot(for: feedID)
+
         let currentLiveCount = max(minimumLiveCapacity, wallFeeds.filter(\.isStreaming).count)
 
         if sessionMode == .optimistic {
@@ -502,8 +586,13 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
     nonisolated func accessoryDidUpdateReachability(_ accessory: HMAccessory) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach {
-                $0.markOfflineIfNeeded()
+            self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach { feed in
+                feed.markOfflineIfNeeded()
+                guard var state = self.feedScheduleStates[feed.id] else { return }
+                state.liveRecoveryLeaseStartedAt = nil
+                state.liveRetryEligibleAt = .distantPast
+                state.nextEligibleSnapshotAt = .distantPast
+                self.feedScheduleStates[feed.id] = state
             }
 
             let visibleCount = self.wallFeeds.count
@@ -533,12 +622,14 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
     }
 }
 
-private struct SnapshotScheduleState {
+private struct FeedScheduleState {
     var lastSnapshotSuccessAt: Date?
     var snapshotInFlight: Bool
     var snapshotRequestStartedAt: Date?
     var nextEligibleSnapshotAt: Date
     var consecutiveSnapshotFailures: Int
+    var liveRecoveryLeaseStartedAt: Date?
+    var liveRetryEligibleAt: Date
 }
 
 private struct LiveProbeState {

@@ -21,12 +21,14 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     @Published private(set) var lastSnapshotDate: Date?
     @Published private(set) var lastErrorMessage: String?
     @Published private(set) var aspectRatio: CGFloat = 16 / 9
+    @Published private(set) var recencyTier: FeedRecencyTier = .empty
+    @Published private(set) var recoveryPhase: FeedRecoveryPhase = .idle
 
     var onConstrainedSignal: ((String) -> Void)?
     var onSnapshotResult: ((String, SnapshotRequestResult) -> Void)?
 
     private let accessory: HMAccessory
-    private var lastSnapshotPulseAt: Date?
+    private(set) var liveStartRequestedAt: Date?
 
     init(accessory: HMAccessory, profile: HMCameraProfile, profileIndex: Int) {
         self.accessory = accessory
@@ -46,6 +48,10 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         state == .live || profile.streamControl?.streamState == .streaming
     }
 
+    var isStartingLive: Bool {
+        state == .starting || profile.streamControl?.streamState == .starting
+    }
+
     var displayAspectRatio: CGFloat {
         let safeAspectRatio = aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : 16 / 9
         return max(0.75, min(safeAspectRatio, 2.2))
@@ -56,31 +62,62 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     func status(at date: Date) -> CameraStatusSnapshot {
-        switch state {
+        if !isReachable || state == .offline {
+            return CameraStatusSnapshot(
+                label: "Offline",
+                recencyTier: .empty,
+                recoveryPhase: .idle,
+                indicator: .neutral
+            )
+        }
+
+        switch recencyTier {
         case .live:
-            return CameraStatusSnapshot(label: "Live", isLive: true, isFreshSnapshot: false)
-        case .starting:
-            return CameraStatusSnapshot(label: "Connecting", isLive: false, isFreshSnapshot: false)
-        case .snapshot:
-            if let lastSnapshotDate {
-                let age = max(0, Int(date.timeIntervalSince(lastSnapshotDate)))
-                let isRecentSnapshot = age <= 10
-                let label = if isRecentSnapshot {
-                    "Recent (\(age)s)"
-                } else if age >= 60 {
-                    "\(age / 60)m ago"
-                } else {
-                    "\(age)s Ago"
+            return CameraStatusSnapshot(
+                label: "Live",
+                recencyTier: .live,
+                recoveryPhase: .idle,
+                indicator: .green
+            )
+        case .recentSnapshot:
+            return CameraStatusSnapshot(
+                label: recentSnapshotLabel(at: date),
+                recencyTier: .recentSnapshot,
+                recoveryPhase: .idle,
+                indicator: .yellow
+            )
+        case .staleSnapshot:
+            let label = recoveryPhase == .liveRecovery ? "Reconnecting" : "Refreshing"
+            return CameraStatusSnapshot(
+                label: label,
+                recencyTier: .staleSnapshot,
+                recoveryPhase: recoveryPhase,
+                indicator: .red
+            )
+        case .empty:
+            let label: String
+            switch recoveryPhase {
+            case .liveRecovery:
+                label = "Reconnecting"
+            case .snapshotRecovery:
+                label = "Refreshing"
+            case .idle:
+                switch state {
+                case .starting:
+                    label = "Connecting"
+                case .failed(let message):
+                    label = message
+                default:
+                    label = "Loading"
                 }
-                return CameraStatusSnapshot(label: label, isLive: false, isFreshSnapshot: isRecentSnapshot)
             }
-            return CameraStatusSnapshot(label: "Updating", isLive: false, isFreshSnapshot: false)
-        case .offline:
-            return CameraStatusSnapshot(label: "Offline", isLive: false, isFreshSnapshot: false)
-        case .failed(let message):
-            return CameraStatusSnapshot(label: message, isLive: false, isFreshSnapshot: false)
-        case .idle:
-            return CameraStatusSnapshot(label: "Loading", isLive: false, isFreshSnapshot: false)
+
+            return CameraStatusSnapshot(
+                label: label,
+                recencyTier: .empty,
+                recoveryPhase: recoveryPhase,
+                indicator: recoveryPhase == .idle ? .neutral : .red
+            )
         }
     }
 
@@ -90,26 +127,56 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         isReachable = accessory.isReachable
     }
 
-    func preferLive() {
+    func updatePlanningStatus(recencyTier: FeedRecencyTier, recoveryPhase: FeedRecoveryPhase) {
+        self.recencyTier = recencyTier
+        self.recoveryPhase = recoveryPhase
+    }
+
+    func currentRecencyTier(at date: Date) -> FeedRecencyTier {
+        if isStreaming {
+            return .live
+        }
+
+        guard let lastSnapshotDate else {
+            return .empty
+        }
+
+        let age = max(0, date.timeIntervalSince(lastSnapshotDate))
+        return age <= CameraSchedulingDefaults.staleSnapshotThreshold ? .recentSnapshot : .staleSnapshot
+    }
+
+    func preferLive(at date: Date) {
         guard isReachable else {
             state = .offline
+            liveStartRequestedAt = nil
             return
         }
 
         if let stream = profile.streamControl?.cameraStream {
             updateCameraSource(stream)
             state = .live
+            liveStartRequestedAt = nil
             return
         }
 
         switch profile.streamControl?.streamState {
         case .starting:
             state = .starting
+            if liveStartRequestedAt == nil {
+                liveStartRequestedAt = date
+            }
         case .streaming:
             updateCameraSource(profile.streamControl?.cameraStream)
             state = .live
+            liveStartRequestedAt = nil
         default:
+            if let liveStartRequestedAt,
+               date.timeIntervalSince(liveStartRequestedAt) < CameraSchedulingDefaults.liveRecoveryRetryCooldown {
+                state = .starting
+                return
+            }
             state = .starting
+            liveStartRequestedAt = date
             profile.streamControl?.startStream()
         }
     }
@@ -118,12 +185,18 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         if let snapshot = profile.snapshotControl?.mostRecentSnapshot {
             updateCameraSource(snapshot)
             lastSnapshotDate = snapshot.captureDate
+            recencyTier = currentRecencyTier(at: Date())
+            if recencyTier == .recentSnapshot {
+                recoveryPhase = .idle
+            }
             if state != .offline {
                 state = .snapshot
             }
         } else if !isReachable {
             state = .offline
             cameraSource = nil
+            recencyTier = .empty
+            recoveryPhase = .idle
         } else if state == .idle {
             state = .starting
         }
@@ -134,6 +207,8 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         guard isReachable else {
             state = .offline
             cameraSource = nil
+            recencyTier = .empty
+            recoveryPhase = .idle
             return false
         }
 
@@ -151,6 +226,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         default:
             break
         }
+        liveStartRequestedAt = nil
     }
 
     func markOfflineIfNeeded() {
@@ -158,6 +234,9 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         if !isReachable {
             state = .offline
             cameraSource = nil
+            liveStartRequestedAt = nil
+            recencyTier = .empty
+            recoveryPhase = .idle
         }
     }
 
@@ -170,6 +249,15 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             aspectRatio = sourceAspectRatio
         }
     }
+
+    private func recentSnapshotLabel(at date: Date) -> String {
+        guard let lastSnapshotDate else { return "Loading" }
+        let age = max(0, Int(date.timeIntervalSince(lastSnapshotDate)))
+        if age >= 60 {
+            return "Recent (\(age / 60)m)"
+        }
+        return "Recent (\(age)s)"
+    }
 }
 
 extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
@@ -179,12 +267,16 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             self.updateCameraSource(cameraStreamControl.cameraStream)
             self.state = .live
             self.lastErrorMessage = nil
+            self.liveStartRequestedAt = nil
+            self.recencyTier = .live
+            self.recoveryPhase = .idle
         }
     }
 
     nonisolated func cameraStreamControl(_ cameraStreamControl: HMCameraStreamControl, didStopStreamWithError error: (any Error)?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            self.liveStartRequestedAt = nil
 
             if let error = error as NSError? {
                 self.lastErrorMessage = error.localizedDescription
@@ -223,7 +315,10 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
             if let snapshot {
                 self.updateCameraSource(snapshot)
                 self.lastSnapshotDate = snapshot.captureDate
-                self.lastSnapshotPulseAt = Date()
+                self.recencyTier = self.currentRecencyTier(at: Date())
+                if self.recencyTier == .recentSnapshot {
+                    self.recoveryPhase = .idle
+                }
                 if self.state != .live {
                     self.state = .snapshot
                 }
@@ -247,7 +342,10 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
             if self.lastSnapshotDate == nil || snapshot.captureDate > self.lastSnapshotDate! {
                 self.updateCameraSource(snapshot)
                 self.lastSnapshotDate = snapshot.captureDate
-                self.lastSnapshotPulseAt = Date()
+                self.recencyTier = self.currentRecencyTier(at: Date())
+                if self.recencyTier == .recentSnapshot {
+                    self.recoveryPhase = .idle
+                }
                 if self.state != .live {
                     self.state = .snapshot
                 }

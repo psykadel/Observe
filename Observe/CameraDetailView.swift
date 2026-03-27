@@ -48,7 +48,7 @@ struct CameraDetailView: View {
 
                         HStack(spacing: 8) {
                             Circle()
-                                .fill(status.isLive ? Color.green : (status.isFreshSnapshot ? Color.yellow : Color.white.opacity(0.4)))
+                                .fill(statusColor(for: status))
                                 .frame(width: 8, height: 8)
 
                             Text(status.label)
@@ -74,6 +74,19 @@ struct CameraDetailView: View {
         }
         .onDisappear {
             store.clearFocus()
+        }
+    }
+
+    private func statusColor(for status: CameraStatusSnapshot) -> Color {
+        switch status.indicator {
+        case .green:
+            return .green
+        case .yellow:
+            return .yellow
+        case .red:
+            return .red
+        case .neutral:
+            return Color.white.opacity(0.4)
         }
     }
 }

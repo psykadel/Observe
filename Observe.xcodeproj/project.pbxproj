@@ -18,7 +18,19 @@
 		A10000150000000000000009 /* HomeKitCameraStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000009 /* HomeKitCameraStore.swift */; };
 		A1000015000000000000000A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000A /* SettingsView.swift */; };
 		A1000015000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000B /* Assets.xcassets */; };
+		A1000015000000000000000C /* CameraRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000E /* CameraRecoveryPlanner.swift */; };
+		A1000015000000000000000D /* ObserveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000F /* ObserveTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A10000160000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A100000C0000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A100000D0000000000000001;
+			remoteInfo = Observe;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		A10000010000000000000001 /* ObserveApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObserveApp.swift; sourceTree = "<group>"; };
@@ -34,10 +46,20 @@
 		A1000001000000000000000B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1000001000000000000000C /* Observe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Observe.entitlements; sourceTree = "<group>"; };
 		A1000001000000000000000D /* Observe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Observe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000001000000000000000E /* CameraRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRecoveryPlanner.swift; sourceTree = "<group>"; };
+		A1000001000000000000000F /* ObserveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObserveTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000010 /* ObserveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ObserveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		A10000110000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000110000000000000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -51,6 +73,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000020000000000000002 /* Observe */,
+				A10000020000000000000004 /* ObserveTests */,
 				A10000020000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -67,6 +90,7 @@
 				A10000010000000000000007 /* ObservePreferences.swift */,
 				A10000010000000000000008 /* CameraFeedCoordinator.swift */,
 				A10000010000000000000009 /* HomeKitCameraStore.swift */,
+				A1000001000000000000000E /* CameraRecoveryPlanner.swift */,
 				A1000001000000000000000A /* SettingsView.swift */,
 				A1000001000000000000000B /* Assets.xcassets */,
 				A1000001000000000000000C /* Observe.entitlements */,
@@ -78,8 +102,17 @@
 			isa = PBXGroup;
 			children = (
 				A1000001000000000000000D /* Observe.app */,
+				A10000010000000000000010 /* ObserveTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A10000020000000000000004 /* ObserveTests */ = {
+			isa = PBXGroup;
+			children = (
+				A1000001000000000000000F /* ObserveTests.swift */,
+			);
+			path = ObserveTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -102,6 +135,23 @@
 			productReference = A1000001000000000000000D /* Observe.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A100000D0000000000000002 /* ObserveTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000140000000000000003 /* Build configuration list for PBXNativeTarget "ObserveTests" */;
+			buildPhases = (
+				A100000E0000000000000002 /* Sources */,
+				A10000110000000000000002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A10000170000000000000001 /* PBXTargetDependency */,
+			);
+			name = ObserveTests;
+			productName = ObserveTests;
+			productReference = A10000010000000000000010 /* ObserveTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -114,6 +164,10 @@
 				TargetAttributes = {
 					A100000D0000000000000001 = {
 						CreatedOnToolsVersion = 26.4;
+					};
+					A100000D0000000000000002 = {
+						CreatedOnToolsVersion = 26.4;
+						TestTargetID = A100000D0000000000000001;
 					};
 				};
 			};
@@ -131,6 +185,7 @@
 			projectRoot = "";
 			targets = (
 				A100000D0000000000000001 /* Observe */,
+				A100000D0000000000000002 /* ObserveTests */,
 			);
 		};
 /* End PBXProject section */
@@ -160,11 +215,28 @@
 				A10000150000000000000007 /* ObservePreferences.swift in Sources */,
 				A10000150000000000000008 /* CameraFeedCoordinator.swift in Sources */,
 				A10000150000000000000009 /* HomeKitCameraStore.swift in Sources */,
+				A1000015000000000000000C /* CameraRecoveryPlanner.swift in Sources */,
 				A1000015000000000000000A /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A100000E0000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000015000000000000000D /* ObserveTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A10000170000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A100000D0000000000000001 /* Observe */;
+			targetProxy = A10000160000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A10000120000000000000001 /* Debug */ = {
@@ -209,6 +281,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WRM32839J4;
+				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Observe;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
@@ -262,6 +335,58 @@
 			};
 			name = Release;
 		};
+		A10000130000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WRM32839J4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.psykadel.observeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Observe.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Observe";
+				TEST_TARGET_NAME = Observe;
+			};
+			name = Debug;
+		};
+		A10000130000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WRM32839J4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.psykadel.observeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Observe.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Observe";
+				TEST_TARGET_NAME = Observe;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -279,6 +404,15 @@
 			buildConfigurations = (
 				A10000130000000000000001 /* Debug */,
 				A10000130000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A10000140000000000000003 /* Build configuration list for PBXNativeTarget "ObserveTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000130000000000000003 /* Debug */,
+				A10000130000000000000004 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

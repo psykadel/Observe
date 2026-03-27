@@ -1,6 +1,14 @@
 import Foundation
 import HomeKit
 
+enum CameraSchedulingDefaults {
+    static let staleSnapshotThreshold: TimeInterval = 10
+    static let snapshotSuccessInterval: TimeInterval = 2
+    static let snapshotRequestTimeout: TimeInterval = 2.75
+    static let liveRecoveryLeaseDuration: TimeInterval = 3
+    static let liveRecoveryRetryCooldown: TimeInterval = 5
+}
+
 enum WallDensity: String, CaseIterable, Identifiable {
     case oneColumn
     case twoColumns
@@ -80,6 +88,26 @@ enum FeedDisplayState: Equatable {
     }
 }
 
+enum FeedRecencyTier: Int, Equatable {
+    case live
+    case recentSnapshot
+    case staleSnapshot
+    case empty
+}
+
+enum FeedRecoveryPhase: Equatable {
+    case idle
+    case snapshotRecovery
+    case liveRecovery
+}
+
+enum CameraStatusIndicator: Equatable {
+    case neutral
+    case green
+    case yellow
+    case red
+}
+
 struct HomeOption: Identifiable, Hashable {
     let id: String
     let name: String
@@ -88,6 +116,7 @@ struct HomeOption: Identifiable, Hashable {
 
 struct CameraStatusSnapshot {
     let label: String
-    let isLive: Bool
-    let isFreshSnapshot: Bool
+    let recencyTier: FeedRecencyTier
+    let recoveryPhase: FeedRecoveryPhase
+    let indicator: CameraStatusIndicator
 }

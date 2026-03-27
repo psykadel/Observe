@@ -68,20 +68,16 @@ struct CameraTileView: View {
     }
 
     private func statusColor(for status: CameraStatusSnapshot) -> Color {
-        if status.isLive {
+        switch status.indicator {
+        case .green:
             return .green
-        }
-
-        if feed.state == .starting || feed.state == .idle {
+        case .yellow:
+            return .yellow
+        case .red:
+            return .red
+        case .neutral:
             return Color.white.opacity(0.4)
         }
-
-        if let snapshotDate = feed.lastSnapshotDate {
-            let age = Date().timeIntervalSince(snapshotDate)
-            return age <= 10 ? .yellow : .red
-        }
-
-        return Color.white.opacity(0.4)
     }
 
     private var placeholder: some View {
