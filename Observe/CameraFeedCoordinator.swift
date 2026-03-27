@@ -66,7 +66,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
                 let age = max(0, Int(date.timeIntervalSince(lastSnapshotDate)))
                 let isRecentSnapshot = age <= 10
                 let label = if isRecentSnapshot {
-                    "Recent"
+                    "Recent (\(age)s)"
                 } else if age >= 60 {
                     "\(age / 60)m ago"
                 } else {
