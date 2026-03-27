@@ -37,6 +37,33 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section("Stale") {
+                    Text(
+                        "If a camera is showing an image older than this, Observe puts a red box around it so you can quickly tell it is not recent."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    HStack {
+                        Text("Threshold")
+
+                        Spacer()
+
+                        TextField("60", value: staleThresholdBinding, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 72)
+
+                        Text("seconds")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button("Default") {
+                        preferences.resetStaleVisualHighlightSeconds()
+                    }
+                    .disabled(preferences.staleVisualHighlightSeconds == preferences.defaultStaleVisualHighlightSeconds)
+                }
+
                 if !store.priorityOrderedFeeds.isEmpty {
                     Section("Camera Order") {
                         ForEach(store.priorityOrderedFeeds) { feed in
@@ -88,6 +115,13 @@ struct SettingsView: View {
         Binding(
             get: { preferences.wallDensity },
             set: { preferences.wallDensity = $0 }
+        )
+    }
+
+    private var staleThresholdBinding: Binding<Int> {
+        Binding(
+            get: { preferences.staleVisualHighlightSeconds },
+            set: { preferences.setStaleVisualHighlightSeconds($0) }
         )
     }
 

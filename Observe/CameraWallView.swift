@@ -92,7 +92,8 @@ struct CameraWallView: View {
                                 CameraTileView(
                                     feed: feed,
                                     fixedWidth: layout.tileWidth,
-                                    fixedHeight: layout.tileHeight
+                                    fixedHeight: layout.tileHeight,
+                                    staleVisualThreshold: preferences.staleVisualHighlightThreshold
                                 )
                             }
                             .buttonStyle(.plain)

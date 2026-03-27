@@ -145,6 +145,15 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         return age <= CameraSchedulingDefaults.staleSnapshotThreshold ? .recentSnapshot : .staleSnapshot
     }
 
+    func isVisuallyStale(at date: Date, threshold: TimeInterval) -> Bool {
+        guard !isStreaming, let lastSnapshotDate else {
+            return false
+        }
+
+        let age = max(0, date.timeIntervalSince(lastSnapshotDate))
+        return age > threshold
+    }
+
     func preferLive(at date: Date) {
         guard isReachable else {
             state = .offline

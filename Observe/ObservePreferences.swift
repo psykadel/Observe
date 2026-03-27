@@ -6,6 +6,7 @@ final class ObservePreferences: ObservableObject {
         static let selectedHomeID = "observe.selectedHomeID"
         static let density = "observe.wallDensity"
         static let remotePriority = "observe.remotePriority"
+        static let staleVisualHighlightSeconds = "observe.staleVisualHighlightSeconds"
     }
 
     @Published var selectedHomeID: String? {
@@ -20,7 +21,17 @@ final class ObservePreferences: ObservableObject {
         didSet { userDefaults.set(remotePriorityIDs, forKey: Keys.remotePriority) }
     }
 
+    @Published private(set) var staleVisualHighlightSeconds: Int
+
     private let userDefaults: UserDefaults
+
+    var staleVisualHighlightThreshold: TimeInterval {
+        TimeInterval(staleVisualHighlightSeconds)
+    }
+
+    var defaultStaleVisualHighlightSeconds: Int {
+        Int(CameraSchedulingDefaults.staleVisualHighlightThreshold)
+    }
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
@@ -37,6 +48,11 @@ final class ObservePreferences: ObservableObject {
             WallDensity(rawValue: storedDensity) ?? .twoColumns
         }
         self.remotePriorityIDs = userDefaults.stringArray(forKey: Keys.remotePriority) ?? []
+        let storedStaleSeconds = userDefaults.object(forKey: Keys.staleVisualHighlightSeconds) as? Int
+        self.staleVisualHighlightSeconds = max(
+            1,
+            storedStaleSeconds ?? Int(CameraSchedulingDefaults.staleVisualHighlightThreshold)
+        )
     }
 
     func normalizedPriority(availableIDs: [String]) -> [String] {
@@ -76,5 +92,17 @@ final class ObservePreferences: ObservableObject {
         } else if scale < 0.9 {
             wallDensity = wallDensity.stepped(by: 1)
         }
+    }
+
+    func setStaleVisualHighlightSeconds(_ seconds: Int) {
+        let sanitized = max(1, seconds)
+        guard staleVisualHighlightSeconds != sanitized else { return }
+
+        staleVisualHighlightSeconds = sanitized
+        userDefaults.set(sanitized, forKey: Keys.staleVisualHighlightSeconds)
+    }
+
+    func resetStaleVisualHighlightSeconds() {
+        setStaleVisualHighlightSeconds(defaultStaleVisualHighlightSeconds)
     }
 }

@@ -3,6 +3,7 @@ import HomeKit
 
 enum CameraSchedulingDefaults {
     static let staleSnapshotThreshold: TimeInterval = 10
+    static let staleVisualHighlightThreshold: TimeInterval = 60
     static let snapshotSuccessInterval: TimeInterval = 2
     static let snapshotRequestTimeout: TimeInterval = 2.75
     static let liveRecoveryLeaseDuration: TimeInterval = 3
