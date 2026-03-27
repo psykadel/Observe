@@ -1,0 +1,11 @@
+DerivedData/
+build/
+*.xcuserstate
+*.moved-aside
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+output/
+xcuserdata/
+.DS_Store
+.env
