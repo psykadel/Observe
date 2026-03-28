@@ -93,7 +93,10 @@ struct CameraWallView: View {
                                     feed: feed,
                                     fixedWidth: layout.tileWidth,
                                     fixedHeight: layout.tileHeight,
-                                    staleVisualThreshold: preferences.staleVisualHighlightThreshold
+                                    staleVisualThreshold: preferences.isBatteryWakeCamera(id: feed.id)
+                                        ? preferences.batteryStaleThreshold
+                                        : preferences.staleVisualHighlightThreshold,
+                                    isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id)
                                 )
                             }
                             .buttonStyle(.plain)

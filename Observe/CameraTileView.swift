@@ -5,6 +5,7 @@ struct CameraTileView: View {
     let fixedWidth: CGFloat?
     let fixedHeight: CGFloat?
     let staleVisualThreshold: TimeInterval
+    let isBatteryCamera: Bool
 
     private let tileAspectRatio: CGFloat = 16 / 9
 
@@ -12,6 +13,7 @@ struct CameraTileView: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let status = feed.status(at: context.date)
             let showsStaleBorder = feed.isVisuallyStale(at: context.date, threshold: staleVisualThreshold)
+            let showsPlaceholder = feed.cameraSource == nil
 
             ZStack(alignment: .bottomLeading) {
                 CameraSurfaceView(
@@ -20,7 +22,7 @@ struct CameraTileView: View {
                     mode: .wall
                 )
                 .overlay {
-                    if feed.cameraSource == nil {
+                    if showsPlaceholder {
                         placeholder(status: status)
                     }
                 }
@@ -92,10 +94,6 @@ struct CameraTileView: View {
                 Image(systemName: "video.fill")
                     .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(.white.opacity(0.76))
-
-                Text(status.label)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.66))
             }
         }
     }

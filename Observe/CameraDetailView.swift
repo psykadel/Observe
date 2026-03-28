@@ -7,13 +7,19 @@ struct CameraDetailView: View {
     @ObservedObject var store: HomeKitCameraStore
 
     var body: some View {
+        let showsPlaceholder = feed.cameraSource == nil
+
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
 
-            CameraSurfaceView(cameraSource: feed.cameraSource, aspectRatio: feed.displayAspectRatio, mode: .detail)
+            CameraSurfaceView(
+                cameraSource: feed.cameraSource,
+                aspectRatio: feed.displayAspectRatio,
+                mode: .detail
+            )
                 .ignoresSafeArea()
                 .overlay {
-                    if feed.cameraSource == nil {
+                    if showsPlaceholder {
                         ProgressView()
                             .tint(.white)
                     }

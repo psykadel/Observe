@@ -7,6 +7,9 @@ final class ObservePreferences: ObservableObject {
         static let density = "observe.wallDensity"
         static let remotePriority = "observe.remotePriority"
         static let staleVisualHighlightSeconds = "observe.staleVisualHighlightSeconds"
+        static let batteryWakeCameraIDs = "observe.batteryWakeCameraIDs"
+        static let batteryWakeTriggerSeconds = "observe.batteryWakeTriggerSeconds"
+        static let batteryStaleSeconds = "observe.batteryStaleSeconds"
     }
 
     @Published var selectedHomeID: String? {
@@ -22,6 +25,9 @@ final class ObservePreferences: ObservableObject {
     }
 
     @Published private(set) var staleVisualHighlightSeconds: Int
+    @Published private(set) var batteryWakeCameraIDs: [String]
+    @Published private(set) var batteryWakeTriggerSeconds: Int
+    @Published private(set) var batteryStaleSeconds: Int
 
     private let userDefaults: UserDefaults
 
@@ -31,6 +37,14 @@ final class ObservePreferences: ObservableObject {
 
     var defaultStaleVisualHighlightSeconds: Int {
         Int(CameraSchedulingDefaults.staleVisualHighlightThreshold)
+    }
+
+    var batteryWakeTriggerThreshold: TimeInterval {
+        TimeInterval(batteryWakeTriggerSeconds)
+    }
+
+    var batteryStaleThreshold: TimeInterval {
+        TimeInterval(batteryStaleSeconds)
     }
 
     init(userDefaults: UserDefaults = .standard) {
@@ -48,10 +62,21 @@ final class ObservePreferences: ObservableObject {
             WallDensity(rawValue: storedDensity) ?? .twoColumns
         }
         self.remotePriorityIDs = userDefaults.stringArray(forKey: Keys.remotePriority) ?? []
+        self.batteryWakeCameraIDs = userDefaults.stringArray(forKey: Keys.batteryWakeCameraIDs) ?? []
         let storedStaleSeconds = userDefaults.object(forKey: Keys.staleVisualHighlightSeconds) as? Int
         self.staleVisualHighlightSeconds = max(
             1,
             storedStaleSeconds ?? Int(CameraSchedulingDefaults.staleVisualHighlightThreshold)
+        )
+        let storedBatteryWakeTriggerSeconds = userDefaults.object(forKey: Keys.batteryWakeTriggerSeconds) as? Int
+        self.batteryWakeTriggerSeconds = max(
+            1,
+            storedBatteryWakeTriggerSeconds ?? Int(CameraSchedulingDefaults.batteryWakeTriggerThreshold)
+        )
+        let storedBatteryStaleSeconds = userDefaults.object(forKey: Keys.batteryStaleSeconds) as? Int
+        self.batteryStaleSeconds = max(
+            1,
+            storedBatteryStaleSeconds ?? Int(CameraSchedulingDefaults.batteryStaleThreshold)
         )
     }
 
@@ -104,5 +129,41 @@ final class ObservePreferences: ObservableObject {
 
     func resetStaleVisualHighlightSeconds() {
         setStaleVisualHighlightSeconds(defaultStaleVisualHighlightSeconds)
+    }
+
+    func isBatteryWakeCamera(id: String) -> Bool {
+        batteryWakeCameraIDs.contains(id)
+    }
+
+    func setBatteryWakeTriggerSeconds(_ seconds: Int) {
+        let sanitized = max(1, seconds)
+        guard batteryWakeTriggerSeconds != sanitized else { return }
+
+        batteryWakeTriggerSeconds = sanitized
+        userDefaults.set(sanitized, forKey: Keys.batteryWakeTriggerSeconds)
+    }
+
+    func setBatteryStaleSeconds(_ seconds: Int) {
+        let sanitized = max(1, seconds)
+        guard batteryStaleSeconds != sanitized else { return }
+
+        batteryStaleSeconds = sanitized
+        userDefaults.set(sanitized, forKey: Keys.batteryStaleSeconds)
+    }
+
+    func setBatteryWakeEnabled(_ enabled: Bool, for id: String) {
+        var ids = batteryWakeCameraIDs
+
+        if enabled {
+            if !ids.contains(id) {
+                ids.append(id)
+            }
+        } else {
+            ids.removeAll { $0 == id }
+        }
+
+        guard ids != batteryWakeCameraIDs else { return }
+        batteryWakeCameraIDs = ids
+        userDefaults.set(ids, forKey: Keys.batteryWakeCameraIDs)
     }
 }

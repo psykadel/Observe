@@ -4,10 +4,15 @@ import HomeKit
 enum CameraSchedulingDefaults {
     static let staleSnapshotThreshold: TimeInterval = 10
     static let staleVisualHighlightThreshold: TimeInterval = 60
+    static let batteryWakeTriggerThreshold: TimeInterval = 60
+    static let batteryStaleThreshold: TimeInterval = 120
     static let snapshotSuccessInterval: TimeInterval = 2
     static let snapshotRequestTimeout: TimeInterval = 2.75
     static let liveRecoveryLeaseDuration: TimeInterval = 3
     static let liveRecoveryRetryCooldown: TimeInterval = 5
+    static let batteryCaptureWarmup: TimeInterval = 2
+    static let batteryWakeLeaseDuration: TimeInterval = 8
+    static let maxConcurrentBatteryWakeFeeds = 1
 }
 
 enum WallDensity: String, CaseIterable, Identifiable {
@@ -100,6 +105,7 @@ enum FeedRecoveryPhase: Equatable {
     case idle
     case snapshotRecovery
     case liveRecovery
+    case batteryWake
 }
 
 enum CameraStatusIndicator: Equatable {

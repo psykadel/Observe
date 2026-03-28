@@ -57,11 +57,59 @@ struct SettingsView: View {
                         Text("seconds")
                             .foregroundStyle(.secondary)
                     }
+                }
 
-                    Button("Default") {
-                        preferences.resetStaleVisualHighlightSeconds()
+                if !store.priorityOrderedFeeds.isEmpty {
+                    Section("Battery Cameras") {
+                        Text(
+                            "Battery camera snapshots can go stale, look washed out, or miss focus. Turn this on to refresh them from a temporary live feed instead."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                        HStack {
+                            Text("Capture Frame After")
+
+                            Spacer()
+
+                            TextField("60", value: batteryWakeTriggerBinding, format: .number)
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 72)
+
+                            Text("seconds")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        HStack {
+                            Text("Show As Stale")
+
+                            Spacer()
+
+                            TextField("120", value: batteryStaleBinding, format: .number)
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 72)
+
+                            Text("seconds")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(store.priorityOrderedFeeds) { feed in
+                            Toggle(
+                                isOn: batteryWakeBinding(for: feed.id)
+                            ) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(feed.name)
+                                    if let roomName = feed.roomName {
+                                        Text(roomName)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
                     }
-                    .disabled(preferences.staleVisualHighlightSeconds == preferences.defaultStaleVisualHighlightSeconds)
                 }
 
                 if !store.priorityOrderedFeeds.isEmpty {
@@ -92,12 +140,6 @@ struct SettingsView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
-
-                if !store.priorityOrderedFeeds.isEmpty {
-                    ToolbarItem(placement: .primaryAction) {
-                        EditButton()
-                    }
-                }
             }
         }
     }
@@ -122,6 +164,27 @@ struct SettingsView: View {
         Binding(
             get: { preferences.staleVisualHighlightSeconds },
             set: { preferences.setStaleVisualHighlightSeconds($0) }
+        )
+    }
+
+    private func batteryWakeBinding(for feedID: String) -> Binding<Bool> {
+        Binding(
+            get: { preferences.isBatteryWakeCamera(id: feedID) },
+            set: { preferences.setBatteryWakeEnabled($0, for: feedID) }
+        )
+    }
+
+    private var batteryWakeTriggerBinding: Binding<Int> {
+        Binding(
+            get: { preferences.batteryWakeTriggerSeconds },
+            set: { preferences.setBatteryWakeTriggerSeconds($0) }
+        )
+    }
+
+    private var batteryStaleBinding: Binding<Int> {
+        Binding(
+            get: { preferences.batteryStaleSeconds },
+            set: { preferences.setBatteryStaleSeconds($0) }
         )
     }
 
