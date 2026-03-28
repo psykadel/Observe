@@ -158,6 +158,10 @@ private struct CameraWallLayout {
     }
 
     var tileHeight: CGFloat? {
+        if density == .oneColumn, availableSize.width > availableSize.height {
+            return nil
+        }
+
         let visibleRows = density.preferredVisibleRows
         let totalSpacing = CGFloat(max(0, visibleRows - 1)) * spacing
         let usableHeight = max(availableSize.height - totalSpacing, 0)
