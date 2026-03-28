@@ -309,6 +309,18 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    func resetSessionState() {
+        stopLiveIfNeeded()
+        cameraSource = nil
+        lastSnapshotDate = nil
+        lastErrorMessage = nil
+        aspectRatio = 16 / 9
+        recencyTier = .empty
+        recoveryPhase = .idle
+        batteryStillDate = nil
+        state = .idle
+    }
+
     private func updateCameraSource(_ source: HMCameraSource?) {
         cameraSource = source
         guard let source else { return }

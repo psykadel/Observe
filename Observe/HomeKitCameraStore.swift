@@ -63,11 +63,18 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         isAppActive = active
 
         if active {
-            startSession(forceSnapshotRefresh: true)
+            focusedFeedID = nil
+            rebuildHomesAndFeeds()
         } else {
             snapshotSchedulerTask?.cancel()
             constraintEvaluationTask?.cancel()
-            feeds.forEach { $0.stopLiveIfNeeded() }
+            focusedFeedID = nil
+            liveProbeState = nil
+            lastLiveProbeAt = nil
+            sessionStartedAt = nil
+            liveCapacity = 0
+            currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
+            feeds.forEach { $0.resetSessionState() }
         }
     }
 
