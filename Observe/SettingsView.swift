@@ -62,17 +62,31 @@ struct SettingsView: View {
                 if !store.priorityOrderedFeeds.isEmpty {
                     Section("Battery Cameras") {
                         Text(
-                            "Battery camera snapshots can go stale, look washed out, or miss focus. Turn this on to refresh them from a temporary live feed instead."
+                            "Battery camera snapshots can go stale, look washed out, or miss focus. Turn this on to refresh them from a temporary live feed instead. You can control when Observe starts that live refresh, how long it waits before trusting the frame, and when the result is treated as stale again."
                         )
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
                         HStack {
-                            Text("Capture Frame After")
+                            Text("Start Live Capture After")
 
                             Spacer()
 
                             TextField("60", value: batteryWakeTriggerBinding, format: .number)
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 72)
+
+                            Text("seconds")
+                                .foregroundStyle(.secondary)
+                        }
+
+                        HStack {
+                            Text("Wait Before Capturing")
+
+                            Spacer()
+
+                            TextField("5", value: batteryCaptureWarmupBinding, format: .number)
                                 .keyboardType(.numberPad)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: 72)
@@ -185,6 +199,13 @@ struct SettingsView: View {
         Binding(
             get: { preferences.batteryStaleSeconds },
             set: { preferences.setBatteryStaleSeconds($0) }
+        )
+    }
+
+    private var batteryCaptureWarmupBinding: Binding<Int> {
+        Binding(
+            get: { preferences.batteryCaptureWarmupSeconds },
+            set: { preferences.setBatteryCaptureWarmupSeconds($0) }
         )
     }
 

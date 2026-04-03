@@ -10,7 +10,8 @@ enum CameraSchedulingDefaults {
     static let snapshotRequestTimeout: TimeInterval = 2.75
     static let liveRecoveryLeaseDuration: TimeInterval = 3
     static let liveRecoveryRetryCooldown: TimeInterval = 5
-    static let batteryCaptureWarmup: TimeInterval = 2
+    static let batteryCaptureWarmup: TimeInterval = 5
+    static let batteryCaptureLeasePadding: TimeInterval = 3
     static let batteryWakeLeaseDuration: TimeInterval = 8
     static let maxConcurrentBatteryWakeFeeds = 1
 }

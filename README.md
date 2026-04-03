@@ -60,5 +60,5 @@ If your cameras already appear in Apple Home on that phone, they should appear i
 
 - Live video availability depends on HomeKit, your home hub, network conditions, and camera behavior.
 - When live video is limited, Observe tries to keep the highest-priority cameras live and keep the remaining images as fresh as possible.
-- Battery camera timing can be adjusted in Settings with `Capture Frame After` and `Show As Stale`.
+- Battery camera timing can be adjusted in Settings with `Start Live Capture After`, `Wait Before Capturing`, and `Show As Stale`.
 - This project is currently intended for direct install from Xcode, not App Store distribution.

@@ -24,7 +24,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var sessionStartedAt: Date?
     private var feedScheduleStates: [String: FeedScheduleState] = [:]
     private var currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
-    private let recoveryPlanner = CameraRecoveryPlanner()
 
     private let maxConcurrentSnapshotRequests = 3
     private let snapshotSuccessInterval = CameraSchedulingDefaults.snapshotSuccessInterval
@@ -32,8 +31,17 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private let staleSnapshotRetryThreshold = CameraSchedulingDefaults.staleSnapshotThreshold
     private let liveRecoveryLeaseDuration = CameraSchedulingDefaults.liveRecoveryLeaseDuration
     private let liveRecoveryRetryCooldown = CameraSchedulingDefaults.liveRecoveryRetryCooldown
-    private let batteryCaptureWarmup = CameraSchedulingDefaults.batteryCaptureWarmup
-    private let batteryWakeLeaseDuration = CameraSchedulingDefaults.batteryWakeLeaseDuration
+
+    private var batteryCaptureWarmup: TimeInterval {
+        preferences.batteryCaptureWarmupThreshold
+    }
+
+    private var batteryWakeLeaseDuration: TimeInterval {
+        max(
+            CameraSchedulingDefaults.batteryWakeLeaseDuration,
+            batteryCaptureWarmup + CameraSchedulingDefaults.batteryCaptureLeasePadding
+        )
+    }
 
     init(preferences: ObservePreferences) {
         self.preferences = preferences
@@ -235,7 +243,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveBudget = max(minimumLiveCapacity, min(liveCapacity, planningSnapshots.count))
         }
 
-        currentRecoveryPlan = recoveryPlanner.makePlan(
+        currentRecoveryPlan = CameraRecoveryPlanner(
+            batteryWakeLeaseDuration: batteryWakeLeaseDuration
+        ).makePlan(
             feeds: planningSnapshots,
             sessionMode: sessionMode,
             liveCapacity: liveBudget,

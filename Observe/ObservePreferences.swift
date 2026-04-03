@@ -9,6 +9,7 @@ final class ObservePreferences: ObservableObject {
         static let staleVisualHighlightSeconds = "observe.staleVisualHighlightSeconds"
         static let batteryWakeCameraIDs = "observe.batteryWakeCameraIDs"
         static let batteryWakeTriggerSeconds = "observe.batteryWakeTriggerSeconds"
+        static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
         static let batteryStaleSeconds = "observe.batteryStaleSeconds"
     }
 
@@ -27,6 +28,7 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var staleVisualHighlightSeconds: Int
     @Published private(set) var batteryWakeCameraIDs: [String]
     @Published private(set) var batteryWakeTriggerSeconds: Int
+    @Published private(set) var batteryCaptureWarmupSeconds: Int
     @Published private(set) var batteryStaleSeconds: Int
 
     private let userDefaults: UserDefaults
@@ -41,6 +43,10 @@ final class ObservePreferences: ObservableObject {
 
     var batteryWakeTriggerThreshold: TimeInterval {
         TimeInterval(batteryWakeTriggerSeconds)
+    }
+
+    var batteryCaptureWarmupThreshold: TimeInterval {
+        TimeInterval(batteryCaptureWarmupSeconds)
     }
 
     var batteryStaleThreshold: TimeInterval {
@@ -72,6 +78,11 @@ final class ObservePreferences: ObservableObject {
         self.batteryWakeTriggerSeconds = max(
             1,
             storedBatteryWakeTriggerSeconds ?? Int(CameraSchedulingDefaults.batteryWakeTriggerThreshold)
+        )
+        let storedBatteryCaptureWarmupSeconds = userDefaults.object(forKey: Keys.batteryCaptureWarmupSeconds) as? Int
+        self.batteryCaptureWarmupSeconds = max(
+            1,
+            storedBatteryCaptureWarmupSeconds ?? Int(CameraSchedulingDefaults.batteryCaptureWarmup)
         )
         let storedBatteryStaleSeconds = userDefaults.object(forKey: Keys.batteryStaleSeconds) as? Int
         self.batteryStaleSeconds = max(
@@ -141,6 +152,14 @@ final class ObservePreferences: ObservableObject {
 
         batteryWakeTriggerSeconds = sanitized
         userDefaults.set(sanitized, forKey: Keys.batteryWakeTriggerSeconds)
+    }
+
+    func setBatteryCaptureWarmupSeconds(_ seconds: Int) {
+        let sanitized = max(1, seconds)
+        guard batteryCaptureWarmupSeconds != sanitized else { return }
+
+        batteryCaptureWarmupSeconds = sanitized
+        userDefaults.set(sanitized, forKey: Keys.batteryCaptureWarmupSeconds)
     }
 
     func setBatteryStaleSeconds(_ seconds: Int) {

@@ -292,15 +292,18 @@ final class ObserveTests: XCTestCase {
 
         let preferences = ObservePreferences(userDefaults: defaults)
         XCTAssertFalse(preferences.isBatteryWakeCamera(id: "battery"))
+        XCTAssertEqual(preferences.batteryCaptureWarmupSeconds, 5)
 
         preferences.setBatteryWakeEnabled(true, for: "battery")
         preferences.setBatteryWakeTriggerSeconds(75)
+        preferences.setBatteryCaptureWarmupSeconds(9)
         preferences.setBatteryStaleSeconds(150)
         XCTAssertTrue(preferences.isBatteryWakeCamera(id: "battery"))
 
         let reloaded = ObservePreferences(userDefaults: defaults)
         XCTAssertTrue(reloaded.isBatteryWakeCamera(id: "battery"))
         XCTAssertEqual(reloaded.batteryWakeTriggerSeconds, 75)
+        XCTAssertEqual(reloaded.batteryCaptureWarmupSeconds, 9)
         XCTAssertEqual(reloaded.batteryStaleSeconds, 150)
 
         defaults.removePersistentDomain(forName: suiteName)
