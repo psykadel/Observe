@@ -74,6 +74,10 @@ struct CameraDetailView: View {
                 )
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            dismiss()
+        }
         .statusBarHidden()
         .onAppear {
             store.focusOn(feed: feed)
