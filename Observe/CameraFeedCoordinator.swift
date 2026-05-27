@@ -32,6 +32,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     private let accessory: HMAccessory
     private(set) var liveStartRequestedAt: Date?
     private var configuredStaleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold
+    private var configuredBatteryTrustedStillThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold
 
     init(accessory: HMAccessory, profile: HMCameraProfile, profileIndex: Int) {
         self.accessory = accessory
@@ -72,68 +73,15 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     func status(at date: Date) -> CameraStatusSnapshot {
-        if isBatteryWakeCamera {
-            if recoveryPhase == .batteryWake {
-                return CameraStatusSnapshot(
-                    label: "Capturing",
-                    recencyTier: recencyTier,
-                    recoveryPhase: .batteryWake,
-                    indicator: .yellow
-                )
-            }
-        }
-
-        if isStreaming {
-            return CameraStatusSnapshot(
-                label: "Live",
-                recencyTier: .live,
-                recoveryPhase: .idle,
-                indicator: .green
-            )
-        }
-
-        if isBatteryWakeCamera {
-            if displayedStillDate != nil, cameraSource != nil {
-                let indicator: CameraStatusIndicator = recencyTier == .staleSnapshot ? .red : .yellow
-                return CameraStatusSnapshot(
-                    label: recencyTier == .staleSnapshot ? staleLabel(at: date) : recentSnapshotLabel(at: date),
-                    recencyTier: recencyTier,
-                    recoveryPhase: .idle,
-                    indicator: indicator
-                )
-            }
-
-            return CameraStatusSnapshot(
-                label: "Stale",
-                recencyTier: .empty,
-                recoveryPhase: .idle,
-                indicator: .red
-            )
-        }
-
-        switch recencyTier {
-        case .recentSnapshot:
-            return CameraStatusSnapshot(
-                label: recentSnapshotLabel(at: date),
-                recencyTier: .recentSnapshot,
-                recoveryPhase: .idle,
-                indicator: .yellow
-            )
-        case .staleSnapshot:
-            return CameraStatusSnapshot(
-                label: staleLabel(at: date),
-                recencyTier: .staleSnapshot,
-                recoveryPhase: .idle,
-                indicator: .red
-            )
-        case .empty, .live:
-            return CameraStatusSnapshot(
-                label: "Stale",
-                recencyTier: .empty,
-                recoveryPhase: .idle,
-                indicator: .red
-            )
-        }
+        CameraDisplayClassifier.classify(
+            isStreaming: isStreaming,
+            isBatteryCamera: isBatteryWakeCamera,
+            recoveryPhase: recoveryPhase,
+            displayedStillDate: cameraSource == nil ? nil : displayedStillDate,
+            staleThreshold: configuredStaleThreshold,
+            batteryTrustedStillThreshold: configuredBatteryTrustedStillThreshold,
+            now: date
+        ).status
     }
 
     func refreshMetadata() {
@@ -151,6 +99,10 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     func setConfiguredStaleThreshold(_ threshold: TimeInterval) {
         configuredStaleThreshold = max(1, threshold)
+    }
+
+    func setConfiguredBatteryTrustedStillThreshold(_ threshold: TimeInterval) {
+        configuredBatteryTrustedStillThreshold = max(1, threshold)
     }
 
     func markBatteryStillCaptured(at date: Date) {
@@ -182,16 +134,15 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     func isVisuallyStale(at date: Date, threshold: TimeInterval) -> Bool {
-        guard !isStreaming else {
-            return false
-        }
-
-        guard let displayedStillDate else {
-            return recoveryPhase != .batteryWake
-        }
-
-        let age = max(0, date.timeIntervalSince(displayedStillDate))
-        return age > threshold
+        CameraDisplayClassifier.classify(
+            isStreaming: isStreaming,
+            isBatteryCamera: isBatteryWakeCamera,
+            recoveryPhase: recoveryPhase,
+            displayedStillDate: cameraSource == nil ? nil : displayedStillDate,
+            staleThreshold: threshold,
+            batteryTrustedStillThreshold: configuredBatteryTrustedStillThreshold,
+            now: date
+        ).isStale
     }
 
     func preferLive(at date: Date) {
@@ -220,7 +171,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             liveStartRequestedAt = nil
         default:
             if let liveStartRequestedAt,
-               date.timeIntervalSince(liveStartRequestedAt) < CameraSchedulingDefaults.liveRecoveryRetryCooldown {
+               date.timeIntervalSince(liveStartRequestedAt) < CameraSchedulingDefaults.snapshotRequestTimeout {
                 state = .starting
                 return
             }
@@ -331,23 +282,6 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
     }
 
-    private func recentSnapshotLabel(at date: Date) -> String {
-        guard let displayedStillDate else { return "Loading" }
-        let age = max(0, Int(date.timeIntervalSince(displayedStillDate)))
-        if age >= 60 {
-            return "Recent (\(age / 60)m)"
-        }
-        return "Recent (\(age)s)"
-    }
-
-    private func staleLabel(at date: Date) -> String {
-        guard let displayedStillDate else { return "Stale" }
-        let age = max(0, Int(date.timeIntervalSince(displayedStillDate)))
-        if age >= 60 {
-            return "Stale (\(age / 60)m)"
-        }
-        return "Stale (\(age)s)"
-    }
 }
 
 extension CameraFeedCoordinator: HMCameraStreamControlDelegate {

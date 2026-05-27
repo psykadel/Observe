@@ -7,8 +7,7 @@ enum PlannedPresentationMode: Equatable {
 
 enum SnapshotPriority: Int, Equatable {
     case none = 0
-    case maintenance = 1
-    case urgent = 2
+    case urgent = 1
 }
 
 struct FeedPlanningSnapshot: Equatable {
@@ -19,12 +18,8 @@ struct FeedPlanningSnapshot: Equatable {
     let lastSnapshotDate: Date?
     let staleThreshold: TimeInterval
     let isBatteryWakeCamera: Bool
-    let batteryWakeForceEligible: Bool
     let batteryWakeTriggerThreshold: TimeInterval
-    let liveRecoveryLeaseStartedAt: Date?
-    let liveRetryEligibleAt: Date?
     let batteryWakeLeaseStartedAt: Date?
-    let batteryWakeCooldownUntil: Date?
 
     func recencyTier(at now: Date) -> FeedRecencyTier {
         if isStreaming {
@@ -44,38 +39,42 @@ struct FeedPlanningSnapshot: Equatable {
         return max(0, now.timeIntervalSince(lastSnapshotDate))
     }
 
-    func hasActiveRecoveryLease(at now: Date, leaseDuration: TimeInterval) -> Bool {
-        guard let liveRecoveryLeaseStartedAt else { return false }
-        return now.timeIntervalSince(liveRecoveryLeaseStartedAt) < leaseDuration
-    }
-
-    func isEligibleForLiveRecovery(at now: Date) -> Bool {
-        guard !isFocused else { return true }
-        return (liveRetryEligibleAt ?? .distantPast) <= now
-    }
-
-    func hasActiveBatteryWakeLease(at now: Date, leaseDuration: TimeInterval) -> Bool {
-        guard let batteryWakeLeaseStartedAt else { return false }
-        return now.timeIntervalSince(batteryWakeLeaseStartedAt) < leaseDuration
-    }
-
-    func isEligibleForBatteryWake(at now: Date) -> Bool {
-        guard isBatteryWakeCamera, !isFocused, !isStreaming else {
-            return false
+    func hasTrustedImage(at now: Date) -> Bool {
+        if isBatteryWakeCamera {
+            guard let lastSnapshotDate else { return false }
+            return max(0, now.timeIntervalSince(lastSnapshotDate)) <= batteryWakeTriggerThreshold
         }
 
-        guard (batteryWakeCooldownUntil ?? .distantPast) <= now else {
-            return false
-        }
-
-        guard let snapshotAge = snapshotAge(at: now) else {
+        if isStreaming {
             return true
         }
 
-        guard batteryWakeForceEligible || snapshotAge >= batteryWakeTriggerThreshold else {
+        guard let lastSnapshotDate else { return false }
+        return max(0, now.timeIntervalSince(lastSnapshotDate)) <= staleThreshold
+    }
+
+    func needsNonBatterySnapshotRefresh(at now: Date) -> Bool {
+        !isBatteryWakeCamera && !isStreaming
+    }
+
+    func hasActiveBatteryCapture(at now: Date, leaseDuration: TimeInterval) -> Bool {
+        guard let batteryWakeLeaseStartedAt else { return false }
+        return now.timeIntervalSince(batteryWakeLeaseStartedAt) < leaseDuration
+            && !capturedTrustedStillDuringLease(at: now)
+    }
+
+    func needsBatteryCapture(at now: Date, leaseDuration: TimeInterval) -> Bool {
+        guard isBatteryWakeCamera else { return false }
+        return hasActiveBatteryCapture(at: now, leaseDuration: leaseDuration) || !hasTrustedImage(at: now)
+    }
+
+    private func capturedTrustedStillDuringLease(at now: Date) -> Bool {
+        guard let lastSnapshotDate,
+              let batteryWakeLeaseStartedAt else {
             return false
         }
-        return true
+
+        return lastSnapshotDate >= batteryWakeLeaseStartedAt && hasTrustedImage(at: now)
     }
 }
 
@@ -94,14 +93,9 @@ struct CameraRecoveryPlan {
 
 struct CameraRecoveryPlanner {
     let batteryWakeLeaseDuration: TimeInterval
-    let maxConcurrentBatteryWakeFeeds: Int
 
-    init(
-        batteryWakeLeaseDuration: TimeInterval = CameraSchedulingDefaults.batteryWakeLeaseDuration,
-        maxConcurrentBatteryWakeFeeds: Int = CameraSchedulingDefaults.maxConcurrentBatteryWakeFeeds
-    ) {
+    init(batteryWakeLeaseDuration: TimeInterval = CameraSchedulingDefaults.batteryWakeLeaseDuration) {
         self.batteryWakeLeaseDuration = batteryWakeLeaseDuration
-        self.maxConcurrentBatteryWakeFeeds = maxConcurrentBatteryWakeFeeds
     }
 
     func makePlan(
@@ -120,11 +114,14 @@ struct CameraRecoveryPlanner {
         let liveSelection: ConstrainedLiveSelection
         switch sessionMode {
         case .optimistic:
-            liveSelection = ConstrainedLiveSelection(liveIDs: Set(prioritizedFeeds.map(\.id)), batteryWakeIDs: [])
+            liveSelection = ConstrainedLiveSelection(
+                liveIDs: Set(prioritizedFeeds.map(\.id)),
+                batteryCaptureIDs: [],
+                batteryWaitingIDs: []
+            )
         case .constrained:
             liveSelection = constrainedLiveSelection(
                 feeds: prioritizedFeeds,
-                recencyByID: recencyByID,
                 liveCapacity: liveCapacity,
                 now: now
             )
@@ -135,25 +132,17 @@ struct CameraRecoveryPlanner {
             let recencyTier = recencyByID[feed.id] ?? .empty
             let wantsLive = liveSelection.liveIDs.contains(feed.id)
             let recoveryPhase: FeedRecoveryPhase
-            if liveSelection.batteryWakeIDs.contains(feed.id) {
-                recoveryPhase = .batteryWake
+            if liveSelection.batteryCaptureIDs.contains(feed.id) {
+                recoveryPhase = .batteryCapture
+            } else if liveSelection.batteryWaitingIDs.contains(feed.id) {
+                recoveryPhase = .batteryWaiting
             } else {
                 recoveryPhase = .idle
             }
 
-            let snapshotPriority: SnapshotPriority
-            if recoveryPhase == .batteryWake || feed.isBatteryWakeCamera {
-                snapshotPriority = .none
-            } else {
-                switch recencyTier {
-                case .live:
-                    snapshotPriority = .none
-                case .recentSnapshot:
-                    snapshotPriority = wantsLive ? .none : .maintenance
-                case .staleSnapshot, .empty:
-                    snapshotPriority = .urgent
-                }
-            }
+            let snapshotPriority: SnapshotPriority = sessionMode == .constrained && feed.needsNonBatterySnapshotRefresh(at: now)
+                ? .urgent
+                : .none
 
             decisionsByID[feed.id] = PresentationDecision(
                 id: feed.id,
@@ -166,24 +155,6 @@ struct CameraRecoveryPlanner {
 
         let orderedSnapshotIDs = prioritizedFeeds
             .filter { (decisionsByID[$0.id]?.snapshotPriority ?? .none) != .none }
-            .sorted {
-                let lhsDecision = decisionsByID[$0.id]
-                let rhsDecision = decisionsByID[$1.id]
-                let lhsPriority = lhsDecision?.snapshotPriority.rawValue ?? SnapshotPriority.none.rawValue
-                let rhsPriority = rhsDecision?.snapshotPriority.rawValue ?? SnapshotPriority.none.rawValue
-
-                if lhsPriority != rhsPriority {
-                    return lhsPriority > rhsPriority
-                }
-
-                let lhsAge = $0.snapshotAge(at: now) ?? .greatestFiniteMagnitude
-                let rhsAge = $1.snapshotAge(at: now) ?? .greatestFiniteMagnitude
-                if lhsAge != rhsAge {
-                    return lhsAge > rhsAge
-                }
-
-                return $0.priorityIndex < $1.priorityIndex
-            }
             .map(\.id)
 
         return CameraRecoveryPlan(decisionsByID: decisionsByID, orderedSnapshotIDs: orderedSnapshotIDs)
@@ -191,51 +162,82 @@ struct CameraRecoveryPlanner {
 
     private func constrainedLiveSelection(
         feeds: [FeedPlanningSnapshot],
-        recencyByID: [String: FeedRecencyTier],
         liveCapacity: Int,
         now: Date
     ) -> ConstrainedLiveSelection {
         let capacity = max(0, min(liveCapacity, feeds.count))
+        let batteryNeedingTrustedStillIDs = Set(
+            feeds
+                .filter { $0.isBatteryWakeCamera && !$0.hasTrustedImage(at: now) }
+                .map(\.id)
+        )
+
         guard capacity > 0 else {
-            return ConstrainedLiveSelection(liveIDs: [], batteryWakeIDs: [])
+            return ConstrainedLiveSelection(
+                liveIDs: [],
+                batteryCaptureIDs: [],
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs
+            )
         }
 
-        func isBatteryWakeCandidate(_ feed: FeedPlanningSnapshot) -> Bool {
-            feed.hasActiveBatteryWakeLease(at: now, leaseDuration: batteryWakeLeaseDuration)
-                || feed.isEligibleForBatteryWake(at: now)
-        }
+        let orderedFeeds = feeds.sorted { $0.priorityIndex < $1.priorityIndex }
 
-        let orderedFeeds = feeds.sorted {
-            if $0.isFocused != $1.isFocused {
-                return $0.isFocused && !$1.isFocused
-            }
-            return $0.priorityIndex < $1.priorityIndex
-        }
-
-        var selectedIDs = Array(orderedFeeds.prefix(capacity).map(\.id))
-        var batteryWakeIDs: [String] = []
+        var selectedIDs: [String] = []
+        var batteryCaptureIDs: [String] = []
         let focusedFeedID = orderedFeeds.first(where: { $0.isFocused })?.id
 
-        if let captureCandidate = orderedFeeds.first(where: isBatteryWakeCandidate) {
-            if selectedIDs.contains(captureCandidate.id) {
-                batteryWakeIDs = [captureCandidate.id]
-            } else if selectedIDs.count < capacity {
-                selectedIDs.append(captureCandidate.id)
-                batteryWakeIDs = [captureCandidate.id]
-            } else if let replaceIndex = selectedIDs.lastIndex(where: { $0 != focusedFeedID }) {
-                selectedIDs[replaceIndex] = captureCandidate.id
-                batteryWakeIDs = [captureCandidate.id]
+        for feed in orderedFeeds where selectedIDs.count < capacity {
+            guard feed.hasActiveBatteryCapture(at: now, leaseDuration: batteryWakeLeaseDuration) else { continue }
+            selectedIDs.append(feed.id)
+            batteryCaptureIDs.append(feed.id)
+        }
+
+        if let focusedFeedID,
+           selectedIDs.count < capacity,
+           !selectedIDs.contains(focusedFeedID),
+           let focusedFeed = orderedFeeds.first(where: { $0.id == focusedFeedID }) {
+            selectedIDs.append(focusedFeedID)
+            if focusedFeed.needsBatteryCapture(at: now, leaseDuration: batteryWakeLeaseDuration) {
+                batteryCaptureIDs.append(focusedFeedID)
             }
+        }
+
+        if !batteryNeedingTrustedStillIDs.isEmpty {
+            for feed in orderedFeeds where selectedIDs.count < capacity {
+                guard !selectedIDs.contains(feed.id),
+                      feed.needsBatteryCapture(at: now, leaseDuration: batteryWakeLeaseDuration) else { continue }
+                selectedIDs.append(feed.id)
+                batteryCaptureIDs.append(feed.id)
+            }
+
+            return ConstrainedLiveSelection(
+                liveIDs: Set(selectedIDs),
+                batteryCaptureIDs: Set(batteryCaptureIDs),
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting(batteryCaptureIDs)
+            )
+        }
+
+        for feed in orderedFeeds where selectedIDs.count < capacity {
+            guard !selectedIDs.contains(feed.id) else { continue }
+            selectedIDs.append(feed.id)
         }
 
         return ConstrainedLiveSelection(
             liveIDs: Set(selectedIDs),
-            batteryWakeIDs: Set(batteryWakeIDs)
+            batteryCaptureIDs: Set(batteryCaptureIDs),
+            batteryWaitingIDs: []
         )
+    }
+}
+
+private extension Set where Element == String {
+    func subtracting(_ ids: [String]) -> Set<String> {
+        subtracting(Set(ids))
     }
 }
 
 private struct ConstrainedLiveSelection {
     let liveIDs: Set<String>
-    let batteryWakeIDs: Set<String>
+    let batteryCaptureIDs: Set<String>
+    let batteryWaitingIDs: Set<String>
 }

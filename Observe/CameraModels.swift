@@ -2,18 +2,14 @@ import Foundation
 import HomeKit
 
 enum CameraSchedulingDefaults {
-    static let staleSnapshotThreshold: TimeInterval = 10
     static let staleVisualHighlightThreshold: TimeInterval = 60
     static let batteryWakeTriggerThreshold: TimeInterval = 60
     static let batteryStaleThreshold: TimeInterval = 120
-    static let snapshotSuccessInterval: TimeInterval = 2
     static let snapshotRequestTimeout: TimeInterval = 2.75
-    static let liveRecoveryLeaseDuration: TimeInterval = 3
-    static let liveRecoveryRetryCooldown: TimeInterval = 5
     static let batteryCaptureWarmup: TimeInterval = 5
     static let batteryCaptureLeasePadding: TimeInterval = 3
     static let batteryWakeLeaseDuration: TimeInterval = 8
-    static let maxConcurrentBatteryWakeFeeds = 1
+    static let liveCapacityExpansionRetryDelay: TimeInterval = 10
 }
 
 enum WallDensity: String, CaseIterable, Identifiable {
@@ -104,9 +100,8 @@ enum FeedRecencyTier: Int, Equatable {
 
 enum FeedRecoveryPhase: Equatable {
     case idle
-    case snapshotRecovery
-    case liveRecovery
-    case batteryWake
+    case batteryCapture
+    case batteryWaiting
 }
 
 enum CameraStatusIndicator: Equatable {
@@ -122,9 +117,149 @@ struct HomeOption: Identifiable, Hashable {
     let isPrimary: Bool
 }
 
-struct CameraStatusSnapshot {
+struct CameraStatusSnapshot: Equatable {
     let label: String
     let recencyTier: FeedRecencyTier
     let recoveryPhase: FeedRecoveryPhase
     let indicator: CameraStatusIndicator
+}
+
+struct CameraDisplayClassification: Equatable {
+    let status: CameraStatusSnapshot
+    let isStale: Bool
+}
+
+enum CameraDisplayClassifier {
+    static func classify(
+        isStreaming: Bool,
+        isBatteryCamera: Bool,
+        recoveryPhase: FeedRecoveryPhase,
+        displayedStillDate: Date?,
+        staleThreshold: TimeInterval,
+        batteryTrustedStillThreshold: TimeInterval? = nil,
+        now: Date
+    ) -> CameraDisplayClassification {
+        if isStreaming {
+            return CameraDisplayClassification(
+                status: CameraStatusSnapshot(
+                    label: "Live",
+                    recencyTier: .live,
+                    recoveryPhase: .idle,
+                    indicator: .green
+                ),
+                isStale: false
+            )
+        }
+
+        if isBatteryCamera {
+            let hasTrustedBatteryStill = hasTrustedBatteryStill(
+                displayedStillDate: displayedStillDate,
+                threshold: batteryTrustedStillThreshold ?? staleThreshold,
+                now: now
+            )
+            switch recoveryPhase {
+            case .batteryCapture:
+                return CameraDisplayClassification(
+                    status: CameraStatusSnapshot(
+                        label: "Capturing",
+                        recencyTier: recencyTier(
+                            displayedStillDate: displayedStillDate,
+                            threshold: batteryTrustedStillThreshold ?? staleThreshold,
+                            now: now
+                        ),
+                        recoveryPhase: .batteryCapture,
+                        indicator: .yellow
+                    ),
+                    isStale: !hasTrustedBatteryStill
+                )
+            case .batteryWaiting:
+                return CameraDisplayClassification(
+                    status: CameraStatusSnapshot(
+                        label: "Wait for Capture",
+                        recencyTier: recencyTier(
+                            displayedStillDate: displayedStillDate,
+                            threshold: batteryTrustedStillThreshold ?? staleThreshold,
+                            now: now
+                        ),
+                        recoveryPhase: .batteryWaiting,
+                        indicator: .yellow
+                    ),
+                    isStale: !hasTrustedBatteryStill
+                )
+            case .idle:
+                break
+            }
+        }
+
+        guard let displayedStillDate else {
+            return CameraDisplayClassification(
+                status: CameraStatusSnapshot(
+                    label: "Stale",
+                    recencyTier: .empty,
+                    recoveryPhase: .idle,
+                    indicator: .red
+                ),
+                isStale: true
+            )
+        }
+
+        let age = max(0, now.timeIntervalSince(displayedStillDate))
+        if age <= staleThreshold {
+            return CameraDisplayClassification(
+                status: CameraStatusSnapshot(
+                    label: recentLabel(age: age),
+                    recencyTier: .recentSnapshot,
+                    recoveryPhase: .idle,
+                    indicator: .yellow
+                ),
+                isStale: false
+            )
+        }
+
+        return CameraDisplayClassification(
+            status: CameraStatusSnapshot(
+                label: staleLabel(age: age),
+                recencyTier: .staleSnapshot,
+                recoveryPhase: .idle,
+                indicator: .red
+            ),
+            isStale: true
+        )
+    }
+
+    private static func recencyTier(
+        displayedStillDate: Date?,
+        threshold: TimeInterval,
+        now: Date
+    ) -> FeedRecencyTier {
+        guard let displayedStillDate else { return .empty }
+        let age = max(0, now.timeIntervalSince(displayedStillDate))
+        return age <= threshold ? .recentSnapshot : .staleSnapshot
+    }
+
+    private static func hasTrustedBatteryStill(
+        displayedStillDate: Date?,
+        threshold: TimeInterval,
+        now: Date
+    ) -> Bool {
+        guard let displayedStillDate else { return false }
+        let age = max(0, now.timeIntervalSince(displayedStillDate))
+        return age <= threshold
+    }
+
+    private static func recentLabel(age: TimeInterval) -> String {
+        let seconds = max(0, Int(age))
+        if seconds >= 60 {
+            return "Recent (\(seconds / 60)m)"
+        }
+        return "Recent (\(seconds)s)"
+    }
+
+    private static func staleLabel(age: TimeInterval) -> String {
+        let seconds = max(0, Int(age))
+        if seconds >= 60 {
+            return "Stale (\(seconds / 60)m)"
+        }
+        return "Stale (\(seconds)s)"
+    }
 }

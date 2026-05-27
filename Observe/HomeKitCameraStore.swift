@@ -18,19 +18,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private let homeManager = HMHomeManager()
     private weak var selectedHome: HMHome?
     private var snapshotSchedulerTask: Task<Void, Never>?
-    private var constraintEvaluationTask: Task<Void, Never>?
-    private var lastLiveProbeAt: Date?
-    private var liveProbeState: LiveProbeState?
-    private var sessionStartedAt: Date?
     private var feedScheduleStates: [String: FeedScheduleState] = [:]
     private var currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
+    private var liveCapacityExpansionBlockedUntil: Date?
 
     private let maxConcurrentSnapshotRequests = 3
-    private let snapshotSuccessInterval = CameraSchedulingDefaults.snapshotSuccessInterval
     private let snapshotRequestTimeout = CameraSchedulingDefaults.snapshotRequestTimeout
-    private let staleSnapshotRetryThreshold = CameraSchedulingDefaults.staleSnapshotThreshold
-    private let liveRecoveryLeaseDuration = CameraSchedulingDefaults.liveRecoveryLeaseDuration
-    private let liveRecoveryRetryCooldown = CameraSchedulingDefaults.liveRecoveryRetryCooldown
 
     private var batteryCaptureWarmup: TimeInterval {
         preferences.batteryCaptureWarmupThreshold
@@ -63,10 +56,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         priorityOrderedFeeds.filter(\.isVisibleOnWall)
     }
 
-    private var minimumLiveCapacity: Int {
-        min(2, wallFeeds.count)
-    }
-
     func setAppActive(_ active: Bool) {
         isAppActive = active
 
@@ -75,12 +64,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             rebuildHomesAndFeeds()
         } else {
             snapshotSchedulerTask?.cancel()
-            constraintEvaluationTask?.cancel()
             focusedFeedID = nil
-            liveProbeState = nil
-            lastLiveProbeAt = nil
-            sessionStartedAt = nil
             liveCapacity = 0
+            liveCapacityExpansionBlockedUntil = nil
             currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             feeds.forEach { $0.resetSessionState() }
         }
@@ -94,17 +80,17 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     func movePriority(from source: IndexSet, to destination: Int) {
         preferences.movePriority(from: source, to: destination, availableIDs: feeds.map(\.id))
         objectWillChange.send()
-        refreshPresentation(forceSnapshotRefresh: false, focusedFeedID: focusedFeedID)
+        refreshPresentation(focusedFeedID: focusedFeedID)
     }
 
     func focusOn(feed: CameraFeedCoordinator) {
         focusedFeedID = feed.id
-        refreshPresentation(forceSnapshotRefresh: true, focusedFeedID: feed.id)
+        refreshPresentation(focusedFeedID: feed.id)
     }
 
     func clearFocus() {
         focusedFeedID = nil
-        refreshPresentation(forceSnapshotRefresh: false, focusedFeedID: nil)
+        refreshPresentation(focusedFeedID: nil)
     }
 
     func adjustDensity(with scale: CGFloat) {
@@ -137,6 +123,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             feedScheduleStates = [:]
             currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             liveCapacity = 0
+            liveCapacityExpansionBlockedUntil = nil
             return
         }
 
@@ -177,11 +164,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                         snapshotRequestStartedAt: nil,
                         nextEligibleSnapshotAt: .distantPast,
                         consecutiveSnapshotFailures: 0,
-                        liveRecoveryLeaseStartedAt: nil,
-                        liveRetryEligibleAt: .distantPast,
-                        batteryWakeLeaseStartedAt: nil,
-                        batteryWakeCooldownUntil: .distantPast,
-                        lastBatteryWakeAt: Date()
+                        batteryWakeLeaseStartedAt: nil
                     )
                 )
             }
@@ -189,37 +172,30 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         sessionMode = .optimistic
         liveCapacity = wallFeeds.count
-        liveProbeState = nil
-        lastLiveProbeAt = nil
-        startSession(forceSnapshotRefresh: true)
+        liveCapacityExpansionBlockedUntil = nil
+        startSession()
     }
 
-    private func startSession(forceSnapshotRefresh: Bool) {
+    private func startSession() {
         snapshotSchedulerTask?.cancel()
-        constraintEvaluationTask?.cancel()
-        liveProbeState = nil
-        lastLiveProbeAt = nil
-        sessionStartedAt = Date()
 
         guard isAppActive, !feeds.isEmpty else { return }
 
-        refreshPresentation(forceSnapshotRefresh: forceSnapshotRefresh, focusedFeedID: focusedFeedID)
+        refreshPresentation(focusedFeedID: focusedFeedID)
 
         snapshotSchedulerTask = Task { [weak self] in
             while let self, !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 await MainActor.run {
                     self.handleSnapshotTimeouts()
-                    self.refreshPresentation(forceSnapshotRefresh: false, focusedFeedID: self.focusedFeedID)
+                    self.refreshPresentation(focusedFeedID: self.focusedFeedID)
                     self.serviceSnapshotQueue()
-                    self.evaluateLiveProbeIfNeeded()
-                    self.startLiveProbeIfNeeded()
                 }
             }
         }
     }
 
-    private func refreshPresentation(forceSnapshotRefresh: Bool, focusedFeedID: String?) {
+    private func refreshPresentation(focusedFeedID: String?) {
         guard isAppActive else { return }
 
         feeds.forEach { feed in
@@ -229,18 +205,34 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                     ? preferences.batteryStaleThreshold
                     : preferences.staleVisualHighlightThreshold
             )
+            feed.setConfiguredBatteryTrustedStillThreshold(preferences.batteryWakeTriggerThreshold)
         }
 
         let now = Date()
         reconcileFeedScheduleStates(at: now, focusedFeedID: focusedFeedID)
 
         let planningSnapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
+        let currentLiveCount = wallFeeds.filter(\.isStreaming).count
         let liveBudget: Int
         switch sessionMode {
         case .optimistic:
             liveBudget = planningSnapshots.count
         case .constrained:
-            liveBudget = max(minimumLiveCapacity, min(liveCapacity, planningSnapshots.count))
+            liveCapacity = RestrictedLiveCapacity.recordSuccessfulStreams(
+                previousCapacity: liveCapacity,
+                currentLiveCount: currentLiveCount,
+                visibleFeedCount: planningSnapshots.count
+            )
+            let canProbeCapacity = liveCapacityExpansionBlockedUntil.map { now >= $0 } ?? true
+            let allVisibleFeedsTrusted = !planningSnapshots.isEmpty && planningSnapshots.allSatisfy {
+                $0.hasTrustedImage(at: now)
+            }
+            liveBudget = RestrictedLiveCapacity.planningBudget(
+                knownCapacity: liveCapacity,
+                visibleFeedCount: planningSnapshots.count,
+                allVisibleFeedsTrusted: allVisibleFeedsTrusted,
+                canProbeCapacity: canProbeCapacity
+            )
         }
 
         currentRecoveryPlan = CameraRecoveryPlanner(
@@ -260,8 +252,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
             guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
             feed.updatePlanningStatus(recencyTier: decision.recencyTier, recoveryPhase: decision.recoveryPhase)
-            updateBatteryWakeLease(for: feed.id, decision: decision, at: now, focusedFeedID: focusedFeedID)
-            updateLiveRecoveryLease(for: feed.id, decision: decision, at: now, focusedFeedID: focusedFeedID)
+            updateBatteryWakeLease(for: feed.id, decision: decision, at: now)
 
             if decision.presentationMode == .live {
                 feed.preferLive(at: now)
@@ -271,7 +262,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 feed.presentSnapshotIfAvailable()
             }
 
-            if forceSnapshotRefresh, decision.snapshotPriority != .none {
+            if decision.snapshotPriority != .none {
                 queueImmediateSnapshot(for: feed.id, at: now)
             }
         }
@@ -294,12 +285,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 lastSnapshotDate: lastSnapshotDate,
                 staleThreshold: isBatteryWakeCamera ? preferences.batteryStaleThreshold : preferences.staleVisualHighlightThreshold,
                 isBatteryWakeCamera: isBatteryWakeCamera,
-                batteryWakeForceEligible: false,
                 batteryWakeTriggerThreshold: preferences.batteryWakeTriggerThreshold,
-                liveRecoveryLeaseStartedAt: state?.liveRecoveryLeaseStartedAt,
-                liveRetryEligibleAt: state?.liveRetryEligibleAt,
-                batteryWakeLeaseStartedAt: state?.batteryWakeLeaseStartedAt,
-                batteryWakeCooldownUntil: state?.batteryWakeCooldownUntil
+                batteryWakeLeaseStartedAt: state?.batteryWakeLeaseStartedAt
             )
         }
     }
@@ -308,103 +295,40 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         for feed in feeds {
             guard var state = feedScheduleStates[feed.id] else { continue }
 
-            guard feed.isVisibleOnWall else {
-                state.liveRecoveryLeaseStartedAt = nil
-                state.liveRetryEligibleAt = .distantPast
+            guard feed.isVisibleOnWall, preferences.isBatteryWakeCamera(id: feed.id) else {
                 state.batteryWakeLeaseStartedAt = nil
                 feedScheduleStates[feed.id] = state
                 continue
             }
 
-            let recencyTier = recencyTier(for: feed, state: state, now: now)
-            if !preferences.isBatteryWakeCamera(id: feed.id) {
-                state.batteryWakeLeaseStartedAt = nil
-            } else if feed.id == focusedFeedID {
-                if state.batteryWakeLeaseStartedAt != nil {
-                    let didCaptureStill = didCaptureBatteryStill(for: feed.id, since: state.batteryWakeLeaseStartedAt)
-                    state.batteryWakeLeaseStartedAt = nil
-                    state.batteryWakeCooldownUntil = didCaptureStill
-                        ? .distantPast
-                        : now.addingTimeInterval(liveRecoveryRetryCooldown)
-                    state.lastBatteryWakeAt = now
-                }
-            } else if let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt,
+            if let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt,
                       now.timeIntervalSince(batteryWakeLeaseStartedAt) >= batteryWakeLeaseDuration {
-                let didCaptureStill = didCaptureBatteryStill(for: feed.id, since: state.batteryWakeLeaseStartedAt)
                 state.batteryWakeLeaseStartedAt = nil
-                state.batteryWakeCooldownUntil = didCaptureStill
-                    ? .distantPast
-                    : now.addingTimeInterval(liveRecoveryRetryCooldown)
-                state.lastBatteryWakeAt = now
                 state.nextEligibleSnapshotAt = now
-            }
-
-            if feed.id == focusedFeedID || recencyTier == .live || recencyTier == .recentSnapshot {
-                state.liveRecoveryLeaseStartedAt = nil
-                state.liveRetryEligibleAt = .distantPast
-            } else if let liveRecoveryLeaseStartedAt = state.liveRecoveryLeaseStartedAt,
-                      now.timeIntervalSince(liveRecoveryLeaseStartedAt) >= liveRecoveryLeaseDuration {
-                state.liveRecoveryLeaseStartedAt = nil
-                state.liveRetryEligibleAt = now.addingTimeInterval(liveRecoveryRetryCooldown)
             }
 
             feedScheduleStates[feed.id] = state
         }
     }
 
-    private func updateLiveRecoveryLease(
-        for feedID: String,
-        decision: PresentationDecision,
-        at now: Date,
-        focusedFeedID: String?
-    ) {
-        guard var state = feedScheduleStates[feedID] else { return }
-
-        if feedID == focusedFeedID || decision.recoveryPhase != .liveRecovery || decision.recencyTier == .live {
-            state.liveRecoveryLeaseStartedAt = nil
-            if feedID == focusedFeedID || decision.recencyTier == .live || decision.recencyTier == .recentSnapshot {
-                state.liveRetryEligibleAt = .distantPast
-            }
-            feedScheduleStates[feedID] = state
-            return
-        }
-
-        if state.liveRecoveryLeaseStartedAt == nil {
-            state.liveRecoveryLeaseStartedAt = now
-            state.liveRetryEligibleAt = .distantPast
-            feedScheduleStates[feedID] = state
-        }
-    }
-
     private func updateBatteryWakeLease(
         for feedID: String,
         decision: PresentationDecision,
-        at now: Date,
-        focusedFeedID: String?
+        at now: Date
     ) {
         guard var state = feedScheduleStates[feedID] else { return }
 
-        if feedID == focusedFeedID {
-            if state.batteryWakeLeaseStartedAt != nil {
-                let didCaptureStill = didCaptureBatteryStill(for: feedID, since: state.batteryWakeLeaseStartedAt)
-                state.batteryWakeLeaseStartedAt = nil
-                state.batteryWakeCooldownUntil = didCaptureStill
-                    ? .distantPast
-                    : now.addingTimeInterval(liveRecoveryRetryCooldown)
-                state.lastBatteryWakeAt = now
-                feedScheduleStates[feedID] = state
-            }
+        guard preferences.isBatteryWakeCamera(id: feedID) else {
+            state.batteryWakeLeaseStartedAt = nil
+            feedScheduleStates[feedID] = state
             return
         }
 
-        guard decision.recoveryPhase == .batteryWake else { return }
+        guard decision.recoveryPhase == .batteryCapture else { return }
         guard state.batteryWakeLeaseStartedAt == nil else { return }
 
         state.batteryWakeLeaseStartedAt = now
-        state.lastBatteryWakeAt = now
         state.nextEligibleSnapshotAt = .distantFuture
-        state.liveRecoveryLeaseStartedAt = nil
-        state.liveRetryEligibleAt = .distantPast
         feedScheduleStates[feedID] = state
     }
 
@@ -412,7 +336,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard let feed = feeds.first(where: { $0.id == feedID }),
               feed.isBatteryWakeCamera,
               feed.isStreaming,
-              let state = feedScheduleStates[feedID],
+              var state = feedScheduleStates[feedID],
               let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt else {
             return
         }
@@ -421,23 +345,19 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard (feed.batteryStillDate ?? .distantPast) < batteryWakeLeaseStartedAt else { return }
 
         feed.markBatteryStillCaptured(at: now)
+        state.batteryWakeLeaseStartedAt = nil
+        state.nextEligibleSnapshotAt = now
+        feedScheduleStates[feedID] = state
     }
 
     @discardableResult
-    private func concludeBatteryWake(for feedID: String, at date: Date, queueSnapshot: Bool) -> Bool {
+    private func concludeBatteryWake(for feedID: String, at date: Date) -> Bool {
         guard var state = feedScheduleStates[feedID], state.batteryWakeLeaseStartedAt != nil else {
             return false
         }
 
-        let didCaptureStill = didCaptureBatteryStill(for: feedID, since: state.batteryWakeLeaseStartedAt)
         state.batteryWakeLeaseStartedAt = nil
-        state.batteryWakeCooldownUntil = didCaptureStill
-            ? .distantPast
-            : date.addingTimeInterval(liveRecoveryRetryCooldown)
-        state.lastBatteryWakeAt = date
-        if queueSnapshot {
-            state.nextEligibleSnapshotAt = date
-        }
+        state.nextEligibleSnapshotAt = date
         feedScheduleStates[feedID] = state
         return true
     }
@@ -474,34 +394,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 guard !state.snapshotInFlight else { return false }
                 return state.nextEligibleSnapshotAt <= now
             }
-            .sorted { lhs, rhs in
-                let lhsDecision = currentRecoveryPlan.decisionsByID[lhs.id]
-                let rhsDecision = currentRecoveryPlan.decisionsByID[rhs.id]
-                let lhsState = feedScheduleStates[lhs.id]
-                let rhsState = feedScheduleStates[rhs.id]
-                let lhsAge = snapshotAge(for: lhs, now: now)
-                let rhsAge = snapshotAge(for: rhs, now: now)
-                let lhsPriority = lhsDecision?.snapshotPriority.rawValue ?? SnapshotPriority.none.rawValue
-                let rhsPriority = rhsDecision?.snapshotPriority.rawValue ?? SnapshotPriority.none.rawValue
-
-                if lhsPriority != rhsPriority {
-                    return lhsPriority > rhsPriority
-                }
-
-                if lhsAge != rhsAge {
-                    return lhsAge > rhsAge
-                }
-
-                if (lhsState?.consecutiveSnapshotFailures ?? 0) != (rhsState?.consecutiveSnapshotFailures ?? 0) {
-                    return (lhsState?.consecutiveSnapshotFailures ?? 0) > (rhsState?.consecutiveSnapshotFailures ?? 0)
-                }
-
-                if lhsState?.nextEligibleSnapshotAt != rhsState?.nextEligibleSnapshotAt {
-                    return lhsState?.nextEligibleSnapshotAt ?? .distantFuture < rhsState?.nextEligibleSnapshotAt ?? .distantFuture
-                }
-
-                return lhsState?.lastSnapshotSuccessAt ?? .distantPast < rhsState?.lastSnapshotSuccessAt ?? .distantPast
-            }
 
         for feed in dueFeeds.prefix(availableSlots) {
             issueSnapshotRequest(for: feed, at: now)
@@ -530,11 +422,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             state.snapshotInFlight = false
             state.snapshotRequestStartedAt = nil
             state.consecutiveSnapshotFailures = 0
-            let now = Date()
-            let snapshotAge = max(0, now.timeIntervalSince(captureDate))
-            state.nextEligibleSnapshotAt = snapshotAge <= staleSnapshotRetryThreshold
-                ? now.addingTimeInterval(snapshotSuccessInterval)
-                : now
+            state.nextEligibleSnapshotAt = .distantFuture
             feedScheduleStates[feedID] = state
         case .failure:
             handleSnapshotFailure(for: feedID, at: Date())
@@ -564,7 +452,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func snapshotBackoff(for failures: Int) -> TimeInterval {
         switch failures {
         case 0:
-            snapshotSuccessInterval
+            0
         case 1:
             2
         case 2:
@@ -572,23 +460,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         default:
             4
         }
-    }
-
-    private func snapshotAge(for feed: CameraFeedCoordinator, now: Date) -> TimeInterval {
-        let lastSnapshotDate = effectiveStillDate(for: feed, state: feedScheduleStates[feed.id])
-        guard let lastSnapshotDate else { return .greatestFiniteMagnitude }
-        return now.timeIntervalSince(lastSnapshotDate)
-    }
-
-    private func recencyTier(for feed: CameraFeedCoordinator, state: FeedScheduleState, now: Date) -> FeedRecencyTier {
-        if feed.isStreaming {
-            return .live
-        }
-
-        let lastSnapshotDate = effectiveStillDate(for: feed, state: state)
-        guard let lastSnapshotDate else { return .empty }
-        let staleThreshold = feed.isBatteryWakeCamera ? preferences.batteryStaleThreshold : preferences.staleVisualHighlightThreshold
-        return now.timeIntervalSince(lastSnapshotDate) <= staleThreshold ? .recentSnapshot : .staleSnapshot
     }
 
     private func effectiveStillDate(for feed: CameraFeedCoordinator, state: FeedScheduleState?) -> Date? {
@@ -599,105 +470,65 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         return feed.displayedStillDate ?? state?.lastSnapshotSuccessAt
     }
 
-    private func evaluateInitialLiveCapacityIfNeeded() {
-        let visibleFeeds = wallFeeds
-        guard sessionMode == .optimistic, visibleFeeds.count > 1 else {
-            liveCapacity = visibleFeeds.count
-            return
-        }
-
-        let liveCount = visibleFeeds.filter(\.isStreaming).count
-        if liveCount < visibleFeeds.count {
-            liveCapacity = max(minimumLiveCapacity, liveCount)
-            enterConstrainedMode()
-        } else {
-            liveCapacity = visibleFeeds.count
-        }
-    }
-
     private func handleConstrainedSignal(from feedID: String) {
         let now = Date()
-        if concludeBatteryWake(for: feedID, at: now, queueSnapshot: true) {
-            refreshPresentation(forceSnapshotRefresh: false, focusedFeedID: focusedFeedID)
+        if keepBatteryWakeLeaseAliveAfterConstrainedSignal(for: feedID, at: now) {
+            refreshPresentation(focusedFeedID: focusedFeedID)
             return
         }
 
-        if var state = feedScheduleStates[feedID] {
-            state.liveRecoveryLeaseStartedAt = nil
-            state.liveRetryEligibleAt = .distantPast
-            feedScheduleStates[feedID] = state
+        if concludeBatteryWake(for: feedID, at: now) {
+            refreshPresentation(focusedFeedID: focusedFeedID)
+            return
         }
-        queueImmediateSnapshot(for: feedID)
 
-        let currentLiveCount = max(minimumLiveCapacity, wallFeeds.filter(\.isStreaming).count)
+        queueImmediateSnapshot(for: feedID)
+        liveCapacityExpansionBlockedUntil = now.addingTimeInterval(
+            CameraSchedulingDefaults.liveCapacityExpansionRetryDelay
+        )
+
+        let currentLiveCount = wallFeeds.filter(\.isStreaming).count
+        let visibleFeedCount = wallFeeds.count
 
         if sessionMode == .optimistic {
-            if let sessionStartedAt, now.timeIntervalSince(sessionStartedAt) < 8 {
-                refreshPresentation(forceSnapshotRefresh: true, focusedFeedID: focusedFeedID)
-                return
-            }
-            liveCapacity = currentLiveCount
+            liveCapacity = RestrictedLiveCapacity.enteringAfterConstrainedSignal(
+                currentLiveCount: currentLiveCount,
+                visibleFeedCount: visibleFeedCount
+            )
             enterConstrainedMode()
             return
         }
 
-        if let liveProbeState {
-            liveCapacity = max(minimumLiveCapacity, min(liveProbeState.previousCapacity, currentLiveCount))
-            self.liveProbeState = nil
-        } else {
-            liveCapacity = max(minimumLiveCapacity, min(liveCapacity, currentLiveCount))
+        liveCapacity = RestrictedLiveCapacity.afterConstrainedSignal(
+            previousCapacity: liveCapacity,
+            currentLiveCount: currentLiveCount,
+            visibleFeedCount: visibleFeedCount
+        )
+        refreshPresentation(focusedFeedID: focusedFeedID)
+    }
+
+    private func keepBatteryWakeLeaseAliveAfterConstrainedSignal(for feedID: String, at now: Date) -> Bool {
+        guard preferences.isBatteryWakeCamera(id: feedID),
+              var state = feedScheduleStates[feedID],
+              let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt,
+              !didCaptureBatteryStill(for: feedID, since: batteryWakeLeaseStartedAt),
+              now.timeIntervalSince(batteryWakeLeaseStartedAt) < batteryWakeLeaseDuration else {
+            return false
         }
 
-        lastLiveProbeAt = now
-        refreshPresentation(forceSnapshotRefresh: true, focusedFeedID: focusedFeedID)
+        state.nextEligibleSnapshotAt = .distantFuture
+        feedScheduleStates[feedID] = state
+        return true
     }
 
     private func enterConstrainedMode() {
         guard sessionMode != .constrained else {
-            refreshPresentation(forceSnapshotRefresh: true, focusedFeedID: focusedFeedID)
+            refreshPresentation(focusedFeedID: focusedFeedID)
             return
         }
 
         sessionMode = .constrained
-        refreshPresentation(forceSnapshotRefresh: true, focusedFeedID: focusedFeedID)
-    }
-
-    private func startLiveProbeIfNeeded() {
-        guard sessionMode == .constrained else { return }
-        guard liveProbeState == nil else { return }
-        guard liveCapacity < wallFeeds.count else { return }
-
-        let now = Date()
-        if let lastLiveProbeAt, now.timeIntervalSince(lastLiveProbeAt) < 10 {
-            return
-        }
-
-        let targetCapacity = min(liveCapacity + 1, wallFeeds.count)
-        liveProbeState = LiveProbeState(
-            previousCapacity: liveCapacity,
-            targetCapacity: targetCapacity,
-            startedAt: now
-        )
-        liveCapacity = targetCapacity
-        refreshPresentation(forceSnapshotRefresh: false, focusedFeedID: focusedFeedID)
-    }
-
-    private func evaluateLiveProbeIfNeeded() {
-        guard let liveProbeState else { return }
-
-        let now = Date()
-        guard now.timeIntervalSince(liveProbeState.startedAt) >= 3 else { return }
-
-        let currentLiveCount = wallFeeds.filter(\.isStreaming).count
-        if currentLiveCount >= liveProbeState.targetCapacity {
-            liveCapacity = liveProbeState.targetCapacity
-        } else {
-            liveCapacity = max(minimumLiveCapacity, min(liveProbeState.previousCapacity, max(minimumLiveCapacity, currentLiveCount)))
-            refreshPresentation(forceSnapshotRefresh: true, focusedFeedID: focusedFeedID)
-        }
-
-        self.liveProbeState = nil
-        lastLiveProbeAt = now
+        refreshPresentation(focusedFeedID: focusedFeedID)
     }
 }
 
@@ -742,22 +573,18 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
             self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach { feed in
                 feed.markOfflineIfNeeded()
                 guard var state = self.feedScheduleStates[feed.id] else { return }
-                state.liveRecoveryLeaseStartedAt = nil
-                state.liveRetryEligibleAt = .distantPast
                 state.batteryWakeLeaseStartedAt = nil
-                state.batteryWakeCooldownUntil = .distantPast
                 state.nextEligibleSnapshotAt = .distantPast
                 self.feedScheduleStates[feed.id] = state
             }
 
             let visibleCount = self.wallFeeds.count
+            self.liveCapacity = min(self.liveCapacity, visibleCount)
             if visibleCount == 0 {
-                self.liveCapacity = 0
-            } else {
-                self.liveCapacity = min(max(self.minimumLiveCapacity, self.liveCapacity), visibleCount)
+                self.liveCapacityExpansionBlockedUntil = nil
             }
 
-            self.refreshPresentation(forceSnapshotRefresh: true, focusedFeedID: self.focusedFeedID)
+            self.refreshPresentation(focusedFeedID: self.focusedFeedID)
         }
     }
 
@@ -783,15 +610,61 @@ private struct FeedScheduleState {
     var snapshotRequestStartedAt: Date?
     var nextEligibleSnapshotAt: Date
     var consecutiveSnapshotFailures: Int
-    var liveRecoveryLeaseStartedAt: Date?
-    var liveRetryEligibleAt: Date
     var batteryWakeLeaseStartedAt: Date?
-    var batteryWakeCooldownUntil: Date
-    var lastBatteryWakeAt: Date?
 }
 
-private struct LiveProbeState {
-    let previousCapacity: Int
-    let targetCapacity: Int
-    let startedAt: Date
+enum RestrictedLiveCapacity {
+    static func enteringAfterConstrainedSignal(currentLiveCount: Int, visibleFeedCount: Int) -> Int {
+        boundedCapacity(observedLiveCount: currentLiveCount, visibleFeedCount: visibleFeedCount)
+    }
+
+    static func recordSuccessfulStreams(
+        previousCapacity: Int,
+        currentLiveCount: Int,
+        visibleFeedCount: Int
+    ) -> Int {
+        boundedCapacity(
+            observedLiveCount: max(previousCapacity, currentLiveCount),
+            visibleFeedCount: visibleFeedCount
+        )
+    }
+
+    static func planningBudget(
+        knownCapacity: Int,
+        visibleFeedCount: Int,
+        allVisibleFeedsTrusted: Bool,
+        canProbeCapacity: Bool
+    ) -> Int {
+        guard visibleFeedCount > 0 else { return 0 }
+
+        let boundedKnownCapacity = boundedCapacity(
+            observedLiveCount: knownCapacity,
+            visibleFeedCount: visibleFeedCount
+        )
+        guard allVisibleFeedsTrusted, canProbeCapacity else {
+            return boundedKnownCapacity
+        }
+
+        return min(visibleFeedCount, boundedKnownCapacity + 1)
+    }
+
+    static func afterConstrainedSignal(
+        previousCapacity: Int,
+        currentLiveCount: Int,
+        visibleFeedCount: Int
+    ) -> Int {
+        guard visibleFeedCount > 0 else { return 0 }
+
+        let observedCapacity = boundedCapacity(
+            observedLiveCount: max(previousCapacity, currentLiveCount),
+            visibleFeedCount: visibleFeedCount
+        )
+        return min(max(1, observedCapacity), visibleFeedCount)
+    }
+
+    private static func boundedCapacity(observedLiveCount: Int, visibleFeedCount: Int) -> Int {
+        guard visibleFeedCount > 0 else { return 0 }
+
+        return min(max(1, observedLiveCount), visibleFeedCount)
+    }
 }

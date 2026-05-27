@@ -5,239 +5,131 @@ final class ObserveTests: XCTestCase {
     private let planner = CameraRecoveryPlanner()
     private let now = Date(timeIntervalSinceReferenceDate: 1_000_000)
 
-    func testOptimisticModeRequestsLiveForEveryFeedAndSkipsFreshSnapshotWork() {
+    func testOptimisticModeRequestsLiveForEveryFeedWithoutRefreshWork() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(id: "front", priorityIndex: 0, isStreaming: true),
-                makeFeed(id: "back", priorityIndex: 1, lastSnapshotAge: 4)
+                makeFeed(id: "back", priorityIndex: 1, lastSnapshotAge: 90, isBatteryWakeCamera: true),
+                makeFeed(id: "side", priorityIndex: 2)
             ],
             sessionMode: .optimistic,
-            liveCapacity: 2,
+            liveCapacity: 0,
             now: now
         )
 
-        XCTAssertEqual(plan.decisionsByID["front"]?.presentationMode, .live)
-        XCTAssertEqual(plan.decisionsByID["back"]?.presentationMode, .live)
+        XCTAssertEqual(liveIDs(in: plan), ["back", "front", "side"])
+        XCTAssertEqual(plan.decisionsByID["back"]?.recoveryPhase, .idle)
         XCTAssertEqual(plan.orderedSnapshotIDs, [])
     }
 
-    func testConstrainedModePinsFocusedFeedAndPromotesRedFeedOverHealthyLiveFeed() {
+    func testConstrainedCapacityZeroQueuesBatteryAndContinuouslyRefreshesNonBatterySnapshots() {
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(id: "focused", priorityIndex: 0, isFocused: true, lastSnapshotAge: 3),
-                makeFeed(id: "red", priorityIndex: 1, lastSnapshotAge: 14),
-                makeFeed(id: "healthy-live", priorityIndex: 2, isStreaming: true)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 2,
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["focused", "red"])
-        XCTAssertEqual(plan.decisionsByID["red"]?.recoveryPhase, .idle)
-        XCTAssertEqual(plan.decisionsByID["healthy-live"]?.presentationMode, .snapshot)
-    }
-
-    func testBatteryCameraWithNoStillIsImmediatelyEligibleForCapture() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true),
-                makeFeed(id: "battery", priorityIndex: 1, isBatteryWakeCamera: true)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 2,
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["battery", "healthy-live"])
-        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryWake)
-    }
-
-    func testHigherPriorityFeedWinsEvenIfLowerPriorityFeedIsAlreadyLive() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "higher-priority", priorityIndex: 0, lastSnapshotAge: 4),
-                makeFeed(id: "lower-priority-live", priorityIndex: 1, isStreaming: true)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 1,
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["higher-priority"])
-        XCTAssertEqual(plan.decisionsByID["lower-priority-live"]?.presentationMode, .snapshot)
-    }
-
-    func testSnapshotQueuePrefersEmptyThenOldestRedThenYellow() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "live", priorityIndex: 0, isStreaming: true),
-                makeFeed(id: "empty", priorityIndex: 1),
-                makeFeed(id: "older-red", priorityIndex: 2, lastSnapshotAge: 21),
-                makeFeed(id: "newer-red", priorityIndex: 3, lastSnapshotAge: 12),
-                makeFeed(id: "yellow", priorityIndex: 4, lastSnapshotAge: 4)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 1,
-            now: now
-        )
-
-        XCTAssertEqual(plan.orderedSnapshotIDs, ["empty", "older-red", "newer-red", "yellow"])
-    }
-
-    func testRecentSnapshotExitsRecoveryEvenWithOldLeaseMetadata() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(
-                    id: "recent",
-                    priorityIndex: 0,
-                    lastSnapshotAge: 5,
-                    liveRecoveryLeaseStartedAt: now.addingTimeInterval(-2),
-                    liveRetryEligibleAt: now.addingTimeInterval(3)
-                )
+                makeFeed(id: "empty", priorityIndex: 0),
+                makeFeed(id: "battery", priorityIndex: 1, isBatteryWakeCamera: true),
+                makeFeed(id: "stale", priorityIndex: 2, lastSnapshotAge: 90),
+                makeFeed(id: "recent", priorityIndex: 3, lastSnapshotAge: 5)
             ],
             sessionMode: .constrained,
             liveCapacity: 0,
             now: now
         )
 
-        XCTAssertEqual(plan.decisionsByID["recent"]?.recoveryPhase, .idle)
-        XCTAssertEqual(plan.decisionsByID["recent"]?.snapshotPriority, .maintenance)
+        XCTAssertEqual(liveIDs(in: plan), [])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryWaiting)
+        XCTAssertEqual(plan.orderedSnapshotIDs, ["empty", "stale", "recent"])
     }
 
-    func testRedFeedKeepsUrgentSnapshotPriorityWhileAssignedLive() {
+    func testActiveBatteryCaptureLeaseIsPreservedBeforeFocusAndPriority() {
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(id: "red", priorityIndex: 0, lastSnapshotAge: 15),
-                makeFeed(id: "other", priorityIndex: 1, lastSnapshotAge: 5)
-            ],
-            sessionMode: .optimistic,
-            liveCapacity: 2,
-            now: now
-        )
-
-        XCTAssertEqual(plan.decisionsByID["red"]?.presentationMode, .live)
-        XCTAssertEqual(plan.decisionsByID["red"]?.snapshotPriority, .urgent)
-        XCTAssertEqual(plan.orderedSnapshotIDs, ["red"])
-    }
-
-    func testHigherPriorityRecentSnapshotPreemptsLowerPriorityHealthyLiveFeed() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "front-door", priorityIndex: 0, lastSnapshotAge: 4),
-                makeFeed(id: "second", priorityIndex: 1, isStreaming: true),
-                makeFeed(id: "third", priorityIndex: 2, isStreaming: true)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 2,
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["front-door", "second"])
-        XCTAssertEqual(plan.decisionsByID["third"]?.presentationMode, .snapshot)
-    }
-
-    func testTaggedBatteryCameraStaysInSnapshotUntilWakeThreshold() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true),
-                makeFeed(id: "battery", priorityIndex: 1, lastSnapshotAge: 20, isBatteryWakeCamera: true)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 1,
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["healthy-live"])
-        XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .snapshot)
-        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .idle)
-    }
-
-    func testTaggedBatteryCameraUsesBatteryWakeAfterThreshold() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true),
-                makeFeed(id: "battery", priorityIndex: 1, lastSnapshotAge: 70, isBatteryWakeCamera: true)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 2,
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["battery", "healthy-live"])
-        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryWake)
-        XCTAssertEqual(plan.decisionsByID["healthy-live"]?.presentationMode, .live)
-    }
-
-    func testActiveBatteryWakeLeaseKeepsCameraSelectedLive() {
-        let plan = planner.makePlan(
-            feeds: [
+                makeFeed(id: "focused", priorityIndex: 0, isFocused: true, lastSnapshotAge: 5),
                 makeFeed(
-                    id: "battery",
-                    priorityIndex: 1,
-                    lastSnapshotAge: 20,
-                    isBatteryWakeCamera: true,
-                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-2)
-                ),
-                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true)
-            ],
-            sessionMode: .constrained,
-            liveCapacity: 1,
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["battery"])
-        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryWake)
-    }
-
-    func testBatteryWakeCooldownPreventsImmediateReselection() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(
-                    id: "battery",
+                    id: "active-battery",
                     priorityIndex: 1,
                     lastSnapshotAge: 70,
                     isBatteryWakeCamera: true,
-                    batteryWakeCooldownUntil: now.addingTimeInterval(60)
+                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-1)
                 ),
-                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true)
+                makeFeed(id: "new-battery", priorityIndex: 2, isBatteryWakeCamera: true)
             ],
             sessionMode: .constrained,
             liveCapacity: 1,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["healthy-live"])
-        XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .snapshot)
-        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .idle)
+        XCTAssertEqual(liveIDs(in: plan), ["active-battery"])
+        XCTAssertEqual(plan.decisionsByID["active-battery"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["focused"]?.presentationMode, .snapshot)
+        XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryWaiting)
     }
 
-    func testBatteryWakeCanBeForcedEvenWhenSnapshotLooksRecent() {
+    func testFocusedBatteryUsesFocusSlotForTrustedStillCapture() {
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(
-                    id: "battery",
-                    priorityIndex: 1,
-                    lastSnapshotAge: 5,
-                    isBatteryWakeCamera: true,
-                    batteryWakeForceEligible: true
-                ),
-                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true)
+                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true),
+                makeFeed(id: "focused-battery", priorityIndex: 1, isFocused: true, isBatteryWakeCamera: true)
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 1,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["focused-battery"])
+        XCTAssertEqual(plan.decisionsByID["focused-battery"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["healthy-live"]?.presentationMode, .snapshot)
+    }
+
+    func testBatteryCaptureCandidatesUseRemainingSlotsInUISortOrder() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true),
+                makeFeed(id: "battery-first", priorityIndex: 1, isBatteryWakeCamera: true),
+                makeFeed(id: "battery-second", priorityIndex: 2, lastSnapshotAge: 90, isBatteryWakeCamera: true),
+                makeFeed(id: "battery-third", priorityIndex: 3, isBatteryWakeCamera: true)
             ],
             sessionMode: .constrained,
             liveCapacity: 2,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["battery", "healthy-live"])
-        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryWake)
+        XCTAssertEqual(liveIDs(in: plan), ["battery-first", "battery-second"])
+        XCTAssertEqual(plan.decisionsByID["battery-first"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["battery-second"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["battery-third"]?.recoveryPhase, .batteryWaiting)
+        XCTAssertEqual(plan.decisionsByID["healthy-live"]?.presentationMode, .snapshot)
     }
 
-    func testFocusedFeedIsNotDisplacedByBatteryWake() {
+    func testNormalLiveAssignmentAfterEveryVisibleCameraIsTrusted() {
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(id: "focused", priorityIndex: 0, isFocused: true, lastSnapshotAge: 3),
-                makeFeed(id: "battery", priorityIndex: 1, lastSnapshotAge: 70, isBatteryWakeCamera: true),
+                makeFeed(id: "battery", priorityIndex: 0, lastSnapshotAge: 5, isBatteryWakeCamera: true),
+                makeFeed(id: "focused", priorityIndex: 1, isFocused: true, lastSnapshotAge: 5),
+                makeFeed(id: "second", priorityIndex: 2, lastSnapshotAge: 5),
+                makeFeed(id: "third", priorityIndex: 3, lastSnapshotAge: 5)
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 2,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery", "focused"])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .idle)
+        XCTAssertEqual(plan.decisionsByID["second"]?.presentationMode, .snapshot)
+        XCTAssertEqual(plan.orderedSnapshotIDs, ["focused", "second", "third"])
+    }
+
+    func testCapturedBatteryStillReleasesSlotAndRotatesToNextWaitingBattery() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(
+                    id: "captured-battery",
+                    priorityIndex: 0,
+                    lastSnapshotAge: 1,
+                    isBatteryWakeCamera: true,
+                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-2)
+                ),
+                makeFeed(id: "next-battery", priorityIndex: 1, isBatteryWakeCamera: true),
                 makeFeed(id: "healthy-live", priorityIndex: 2, isStreaming: true)
             ],
             sessionMode: .constrained,
@@ -245,39 +137,190 @@ final class ObserveTests: XCTestCase {
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["focused"])
-        XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .snapshot)
+        XCTAssertEqual(liveIDs(in: plan), ["next-battery"])
+        XCTAssertEqual(plan.decisionsByID["captured-battery"]?.recoveryPhase, .idle)
+        XCTAssertEqual(plan.decisionsByID["next-battery"]?.recoveryPhase, .batteryCapture)
     }
 
-    func testOnlyOneBatteryWakeCameraIsSelectedAtATime() {
+    func testNonBatterySnapshotRefreshesContinuouslyUseUIPriorityOnly() {
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(id: "battery-older", priorityIndex: 1, lastSnapshotAge: 80, isBatteryWakeCamera: true),
-                makeFeed(id: "battery-newer", priorityIndex: 2, lastSnapshotAge: 70, isBatteryWakeCamera: true),
-                makeFeed(id: "healthy-live", priorityIndex: 0, isStreaming: true)
+                makeFeed(id: "stale-first", priorityIndex: 0, lastSnapshotAge: 80),
+                makeFeed(id: "empty-second", priorityIndex: 1),
+                makeFeed(id: "battery", priorityIndex: 2, isBatteryWakeCamera: true),
+                makeFeed(id: "recent", priorityIndex: 3, lastSnapshotAge: 5),
+                makeFeed(id: "live", priorityIndex: 4, isStreaming: true)
             ],
             sessionMode: .constrained,
-            liveCapacity: 2,
+            liveCapacity: 0,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["battery-older", "healthy-live"])
-        XCTAssertEqual(plan.decisionsByID["battery-older"]?.recoveryPhase, .batteryWake)
-        XCTAssertEqual(plan.decisionsByID["battery-newer"]?.presentationMode, .snapshot)
+        XCTAssertEqual(plan.orderedSnapshotIDs, ["stale-first", "empty-second", "recent"])
     }
 
-    func testOptimisticModeDoesNotUseBatteryWakeRecoveryPhase() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "battery", priorityIndex: 0, lastSnapshotAge: 70, isBatteryWakeCamera: true)
-            ],
-            sessionMode: .optimistic,
-            liveCapacity: 1,
+    func testRestrictedCapacityKeepsOneSlotWhenConstrainedBeforeStreamsReportLive() {
+        XCTAssertEqual(
+            RestrictedLiveCapacity.enteringAfterConstrainedSignal(currentLiveCount: 0, visibleFeedCount: 4),
+            1
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.afterConstrainedSignal(previousCapacity: 2, currentLiveCount: 0, visibleFeedCount: 4),
+            2
+        )
+    }
+
+    func testRestrictedCapacityRecordsSuccessfulLiveHighWaterMark() {
+        XCTAssertEqual(
+            RestrictedLiveCapacity.recordSuccessfulStreams(previousCapacity: 1, currentLiveCount: 2, visibleFeedCount: 4),
+            2
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.recordSuccessfulStreams(previousCapacity: 2, currentLiveCount: 1, visibleFeedCount: 4),
+            2
+        )
+    }
+
+    func testRestrictedCapacityProbesOneExtraSlotAfterAllFeedsAreTrusted() {
+        XCTAssertEqual(
+            RestrictedLiveCapacity.planningBudget(
+                knownCapacity: 1,
+                visibleFeedCount: 4,
+                allVisibleFeedsTrusted: true,
+                canProbeCapacity: true
+            ),
+            2
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.planningBudget(
+                knownCapacity: 1,
+                visibleFeedCount: 4,
+                allVisibleFeedsTrusted: false,
+                canProbeCapacity: true
+            ),
+            1
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.planningBudget(
+                knownCapacity: 2,
+                visibleFeedCount: 4,
+                allVisibleFeedsTrusted: true,
+                canProbeCapacity: false
+            ),
+            2
+        )
+    }
+
+    func testRestrictedCapacityStillAllowsExplicitZeroWhenNoFeedsAreVisible() {
+        XCTAssertEqual(
+            RestrictedLiveCapacity.enteringAfterConstrainedSignal(currentLiveCount: 0, visibleFeedCount: 0),
+            0
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.afterConstrainedSignal(previousCapacity: 2, currentLiveCount: 0, visibleFeedCount: 0),
+            0
+        )
+    }
+
+    func testDisplayClassifierMarksLiveAsGreenAndNotStale() {
+        let classification = CameraDisplayClassifier.classify(
+            isStreaming: true,
+            isBatteryCamera: false,
+            recoveryPhase: .idle,
+            displayedStillDate: nil,
+            staleThreshold: 60,
             now: now
         )
 
-        XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .live)
-        XCTAssertNotEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryWake)
+        XCTAssertEqual(classification.status.label, "Live")
+        XCTAssertEqual(classification.status.indicator, .green)
+        XCTAssertFalse(classification.isStale)
+    }
+
+    func testDisplayClassifierMarksBatteryCaptureAndWaitingWithoutTrustedStillAsStale() {
+        let capturing = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryCapture,
+            displayedStillDate: nil,
+            staleThreshold: 120,
+            batteryTrustedStillThreshold: 60,
+            now: now
+        )
+        let waiting = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryWaiting,
+            displayedStillDate: now.addingTimeInterval(-90),
+            staleThreshold: 120,
+            batteryTrustedStillThreshold: 60,
+            now: now
+        )
+
+        XCTAssertEqual(capturing.status.label, "Capturing")
+        XCTAssertEqual(waiting.status.label, "Wait for Capture")
+        XCTAssertEqual(capturing.status.indicator, .yellow)
+        XCTAssertEqual(waiting.status.indicator, .yellow)
+        XCTAssertTrue(capturing.isStale)
+        XCTAssertTrue(waiting.isStale)
+    }
+
+    func testDisplayClassifierMarksBatteryCaptureAndWaitingWithTrustedStillAsNotStale() {
+        let capturing = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryCapture,
+            displayedStillDate: now.addingTimeInterval(-30),
+            staleThreshold: 120,
+            batteryTrustedStillThreshold: 60,
+            now: now
+        )
+        let waiting = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryWaiting,
+            displayedStillDate: now.addingTimeInterval(-30),
+            staleThreshold: 120,
+            batteryTrustedStillThreshold: 60,
+            now: now
+        )
+
+        XCTAssertFalse(capturing.isStale)
+        XCTAssertFalse(waiting.isStale)
+    }
+
+    func testDisplayClassifierKeepsStatusAndBorderStaleStateTogether() {
+        let missing = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: false,
+            recoveryPhase: .idle,
+            displayedStillDate: nil,
+            staleThreshold: 60,
+            now: now
+        )
+        let recent = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: false,
+            recoveryPhase: .idle,
+            displayedStillDate: now.addingTimeInterval(-30),
+            staleThreshold: 60,
+            now: now
+        )
+        let stale = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .idle,
+            displayedStillDate: now.addingTimeInterval(-90),
+            staleThreshold: 60,
+            now: now
+        )
+
+        XCTAssertEqual(missing.status.indicator, .red)
+        XCTAssertTrue(missing.isStale)
+        XCTAssertEqual(recent.status.indicator, .yellow)
+        XCTAssertFalse(recent.isStale)
+        XCTAssertEqual(stale.status.indicator, .red)
+        XCTAssertTrue(stale.isStale)
     }
 
     @MainActor
@@ -315,20 +358,15 @@ final class ObserveTests: XCTestCase {
         isFocused: Bool = false,
         isStreaming: Bool = false,
         lastSnapshotAge: TimeInterval? = nil,
-        staleThreshold: TimeInterval = CameraSchedulingDefaults.staleSnapshotThreshold,
-        liveRecoveryLeaseStartedAt: Date? = nil,
-        liveRetryEligibleAt: Date? = nil,
+        staleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold,
         isBatteryWakeCamera: Bool = false,
-        batteryWakeForceEligible: Bool = false,
         batteryWakeTriggerThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold,
-        batteryWakeLeaseStartedAt: Date? = nil,
-        batteryWakeCooldownUntil: Date? = nil
+        batteryWakeLeaseStartedAt: Date? = nil
     ) -> FeedPlanningSnapshot {
-        let resolvedStaleThreshold = if isBatteryWakeCamera {
-            CameraSchedulingDefaults.batteryStaleThreshold
-        } else {
-            staleThreshold
-        }
+        let resolvedStaleThreshold = isBatteryWakeCamera
+            ? CameraSchedulingDefaults.batteryStaleThreshold
+            : staleThreshold
+
         return FeedPlanningSnapshot(
             id: id,
             priorityIndex: priorityIndex,
@@ -337,12 +375,8 @@ final class ObserveTests: XCTestCase {
             lastSnapshotDate: lastSnapshotAge.map { now.addingTimeInterval(-$0) },
             staleThreshold: resolvedStaleThreshold,
             isBatteryWakeCamera: isBatteryWakeCamera,
-            batteryWakeForceEligible: batteryWakeForceEligible,
             batteryWakeTriggerThreshold: batteryWakeTriggerThreshold,
-            liveRecoveryLeaseStartedAt: liveRecoveryLeaseStartedAt,
-            liveRetryEligibleAt: liveRetryEligibleAt,
-            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
-            batteryWakeCooldownUntil: batteryWakeCooldownUntil
+            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt
         )
     }
 
