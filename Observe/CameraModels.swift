@@ -15,6 +15,7 @@ enum CameraSchedulingDefaults {
 enum WallDensity: String, CaseIterable, Identifiable {
     case oneColumn
     case twoColumns
+    case auto
 
     var id: String { rawValue }
 
@@ -22,13 +23,14 @@ enum WallDensity: String, CaseIterable, Identifiable {
         switch self {
         case .oneColumn: "1 Column"
         case .twoColumns: "2 Columns"
+        case .auto: "Auto"
         }
     }
 
     var columnCount: Int {
         switch self {
         case .oneColumn: 1
-        case .twoColumns: 2
+        case .twoColumns, .auto: 2
         }
     }
 

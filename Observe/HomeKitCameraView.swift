@@ -3,6 +3,7 @@ import SwiftUI
 
 enum CameraSurfaceMode {
     case wall
+    case wallFit
     case detail
 }
 
@@ -45,7 +46,7 @@ struct CameraSurfaceView: View {
         case .wall:
             let wallAspectRatio = CGFloat(16.0 / 9.0)
             return fillSize(for: availableSize, aspectRatio: wallAspectRatio)
-        case .detail:
+        case .wallFit, .detail:
             return fitSize(for: availableSize, aspectRatio: normalizedAspectRatio)
         }
     }

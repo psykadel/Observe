@@ -6,6 +6,7 @@ struct CameraTileView: View {
     let fixedHeight: CGFloat?
     let staleVisualThreshold: TimeInterval
     let isBatteryCamera: Bool
+    var surfaceMode: CameraSurfaceMode = .wall
 
     private let tileAspectRatio: CGFloat = 16 / 9
 
@@ -19,7 +20,7 @@ struct CameraTileView: View {
                 CameraSurfaceView(
                     cameraSource: feed.cameraSource,
                     aspectRatio: feed.displayAspectRatio,
-                    mode: .wall
+                    mode: surfaceMode
                 )
                 .overlay {
                     if showsPlaceholder {
