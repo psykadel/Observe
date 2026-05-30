@@ -1,4 +1,6 @@
 import CoreGraphics
+import HomeKit
+import SwiftUI
 import XCTest
 @testable import Observe
 
@@ -324,11 +326,12 @@ final class ObserveTests: XCTestCase {
         XCTAssertTrue(stale.isStale)
     }
 
-    func testWallDensityIncludesAutoAfterTwoColumns() {
-        XCTAssertEqual(WallDensity.allCases, [.oneColumn, .twoColumns, .auto])
-        XCTAssertEqual(WallDensity.allCases.map(\.title), ["1 Column", "2 Columns", "Auto"])
-        XCTAssertEqual(WallDensity.twoColumns.stepped(by: 1), .auto)
-        XCTAssertEqual(WallDensity.auto.stepped(by: -1), .twoColumns)
+    func testWallDensityOrdersAutoBeforeColumnOptions() {
+        XCTAssertEqual(WallDensity.allCases, [.auto, .oneColumn, .twoColumns])
+        XCTAssertEqual(WallDensity.allCases.map(\.title), ["Auto", "1 Column", "2 Columns"])
+        XCTAssertEqual(WallDensity.auto.stepped(by: 1), .oneColumn)
+        XCTAssertEqual(WallDensity.oneColumn.stepped(by: 1), .twoColumns)
+        XCTAssertEqual(WallDensity.twoColumns.stepped(by: -1), .oneColumn)
     }
 
     @MainActor
@@ -383,6 +386,103 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(ObservePreferences(userDefaults: defaults).wallDensity, .twoColumns)
 
         defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @MainActor
+    func testWallDensitySwipeNavigationPersistsInSettingsOrder() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        preferences.wallDensity = .auto
+
+        preferences.adjustDensity(withHorizontalSwipe: -80)
+        XCTAssertEqual(preferences.wallDensity, .oneColumn)
+        XCTAssertEqual(ObservePreferences(userDefaults: defaults).wallDensity, .oneColumn)
+
+        preferences.adjustDensity(withHorizontalSwipe: -80)
+        XCTAssertEqual(preferences.wallDensity, .twoColumns)
+
+        preferences.adjustDensity(withHorizontalSwipe: 80)
+        XCTAssertEqual(preferences.wallDensity, .oneColumn)
+        preferences.adjustDensity(withHorizontalSwipe: 80)
+        XCTAssertEqual(preferences.wallDensity, .auto)
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func testCameraWallDismissesFullScreenSelectionWhenAppLeavesForeground() {
+        XCTAssertFalse(CameraWallPresentation.shouldClearSelection(scenePhase: .active, hasSelectedFeed: true))
+        XCTAssertFalse(CameraWallPresentation.shouldClearSelection(scenePhase: .inactive, hasSelectedFeed: true))
+        XCTAssertTrue(CameraWallPresentation.shouldClearSelection(scenePhase: .background, hasSelectedFeed: true))
+        XCTAssertFalse(CameraWallPresentation.shouldClearSelection(scenePhase: .background, hasSelectedFeed: false))
+    }
+
+    func testHomeKitOffAndNotRespondingRemoveCameraFromWallSlots() {
+        XCTAssertTrue(CameraWallAvailability.isVisibleOnWall(isReachable: true, isAvailableInSession: true, isHomeKitCameraActive: true))
+        XCTAssertTrue(CameraWallAvailability.isVisibleOnWall(isReachable: true, isAvailableInSession: true, isHomeKitCameraActive: nil))
+        XCTAssertFalse(CameraWallAvailability.isVisibleOnWall(isReachable: false, isAvailableInSession: true, isHomeKitCameraActive: true))
+        XCTAssertTrue(CameraWallAvailability.isVisibleOnWall(isReachable: true, isAvailableInSession: false, isHomeKitCameraActive: true))
+        XCTAssertFalse(CameraWallAvailability.isVisibleOnWall(isReachable: true, isAvailableInSession: true, isHomeKitCameraActive: false))
+    }
+
+    func testHomeKitInactiveCharacteristicRemovesCameraFromWallSlots() {
+        XCTAssertEqual(CameraWallAvailability.homeKitCameraActiveState(from: HMCharacteristicValueActivationState.active.rawValue), true)
+        XCTAssertEqual(CameraWallAvailability.homeKitCameraActiveState(from: HMCharacteristicValueActivationState.inactive.rawValue), false)
+        XCTAssertEqual(CameraWallAvailability.homeKitCameraActiveState(from: NSNumber(value: HMCharacteristicValueActivationState.active.rawValue)), true)
+        XCTAssertEqual(CameraWallAvailability.homeKitCameraActiveState(from: NSNumber(value: HMCharacteristicValueActivationState.inactive.rawValue)), false)
+        XCTAssertNil(CameraWallAvailability.homeKitCameraActiveState(from: nil))
+    }
+
+    func testHomeKitCameraActiveCharacteristicControlsWallSlots() {
+        let offSnapshot = CameraWallAvailability.CharacteristicSnapshot(
+            serviceType: "0000021a-0000-1000-8000-0026bb765291",
+            characteristicType: "0000021b-0000-1000-8000-0026bb765291",
+            value: false
+        )
+        let onSnapshot = CameraWallAvailability.CharacteristicSnapshot(
+            serviceType: "0000021A-0000-1000-8000-0026BB765291",
+            characteristicType: "0000021B-0000-1000-8000-0026BB765291",
+            value: true
+        )
+
+        XCTAssertEqual(CameraWallAvailability.homeKitCameraActiveState(from: [offSnapshot]), false)
+        XCTAssertEqual(CameraWallAvailability.homeKitCameraActiveState(from: [onSnapshot]), true)
+    }
+
+    func testRTPInactiveAloneDoesNotRemoveCameraFromWallSlots() {
+        let rtpInactive = CameraWallAvailability.CharacteristicSnapshot(
+            serviceType: HMServiceTypeCameraRTPStreamManagement,
+            characteristicType: HMCharacteristicTypeActive,
+            value: false
+        )
+        let rtpActive = CameraWallAvailability.CharacteristicSnapshot(
+            serviceType: HMServiceTypeCameraRTPStreamManagement,
+            characteristicType: HMCharacteristicTypeActive,
+            value: true
+        )
+        let detectingActivity = CameraWallAvailability.CharacteristicSnapshot(
+            serviceType: "0000021A-0000-1000-8000-0026BB765291",
+            characteristicType: "0000021B-0000-1000-8000-0026BB765291",
+            value: true
+        )
+
+        XCTAssertNil(CameraWallAvailability.homeKitCameraActiveState(from: [rtpInactive]))
+        XCTAssertNil(CameraWallAvailability.homeKitCameraActiveState(from: [rtpActive]))
+        XCTAssertEqual(CameraWallAvailability.homeKitCameraActiveState(from: [rtpInactive, detectingActivity]), true)
+    }
+
+    func testTransientHomeKitErrorsDoNotRemoveCameraFromWallSlots() {
+        XCTAssertFalse(CameraWallAvailability.shouldRemoveFromCurrentSession(errorCode: HMError.Code.networkUnavailable.rawValue))
+        XCTAssertFalse(CameraWallAvailability.shouldRemoveFromCurrentSession(errorCode: HMError.Code.accessoryCommunicationFailure.rawValue))
+        XCTAssertFalse(CameraWallAvailability.shouldRemoveFromCurrentSession(errorCode: HMError.Code.timedOutWaitingForAccessory.rawValue))
+        XCTAssertFalse(CameraWallAvailability.shouldRemoveFromCurrentSession(errorCode: HMError.Code.maximumObjectLimitReached.rawValue))
+        XCTAssertFalse(CameraWallAvailability.shouldRemoveFromCurrentSession(errorCode: HMError.Code.accessoryIsBusy.rawValue))
     }
 
     func testAutoWallLayoutFitsOneThroughTenCamerasInPortraitWithoutCropping() {

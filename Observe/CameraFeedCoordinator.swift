@@ -16,6 +16,8 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     @Published private(set) var name: String
     @Published private(set) var roomName: String?
     @Published private(set) var isReachable: Bool
+    @Published private(set) var isAvailableInSession = true
+    @Published private(set) var isHomeKitCameraActive: Bool?
     @Published private(set) var state: FeedDisplayState = .idle
     @Published private(set) var cameraSource: HMCameraSource?
     @Published private(set) var lastSnapshotDate: Date?
@@ -28,6 +30,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     var onConstrainedSignal: ((String) -> Void)?
     var onSnapshotResult: ((String, SnapshotRequestResult) -> Void)?
+    var onAvailabilityChanged: ((String) -> Void)?
 
     private let accessory: HMAccessory
     private(set) var liveStartRequestedAt: Date?
@@ -62,7 +65,11 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     var isVisibleOnWall: Bool {
-        isReachable
+        CameraWallAvailability.isVisibleOnWall(
+            isReachable: isReachable,
+            isAvailableInSession: isAvailableInSession,
+            isHomeKitCameraActive: isHomeKitCameraActive
+        )
     }
 
     var displayedStillDate: Date? {
@@ -88,6 +95,46 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         name = profileIndex == 0 ? accessory.name : "\(accessory.name) \(profileIndex + 1)"
         roomName = accessory.room?.name
         isReachable = accessory.isReachable
+        refreshHomeKitCameraActiveState()
+    }
+
+    func refreshSessionAvailabilityFromAccessory() {
+        isReachable = accessory.isReachable
+        refreshHomeKitCameraActiveState()
+        if isHomeKitCameraActive != false {
+            isAvailableInSession = true
+        }
+    }
+
+    func refreshHomeKitCameraActiveState() {
+        updateHomeKitCameraActiveState(from: cameraAvailabilitySnapshots)
+    }
+
+    func readHomeKitCameraActiveState() {
+        cameraAvailabilityCharacteristics.forEach { characteristic in
+            if characteristic.properties.contains(HMCharacteristicPropertySupportsEventNotification),
+               !characteristic.isNotificationEnabled {
+                characteristic.enableNotification(true) { _ in }
+            }
+
+            characteristic.readValue { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshHomeKitCameraActiveState()
+                }
+            }
+        }
+    }
+
+    func refreshHomeKitCameraActiveStateIfNeeded(for characteristic: HMCharacteristic) {
+        let serviceType = characteristic.service?.serviceType ?? ""
+        guard CameraWallAvailability.isCameraAvailabilityCharacteristic(
+            serviceType: serviceType,
+            characteristicType: characteristic.characteristicType
+        ) else {
+            return
+        }
+
+        refreshHomeKitCameraActiveState()
     }
 
     func setBatteryWakeEnabled(_ enabled: Bool) {
@@ -147,8 +194,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     func preferLive(at date: Date) {
         guard isReachable else {
-            state = .offline
-            liveStartRequestedAt = nil
+            markOffline()
             return
         }
 
@@ -184,10 +230,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     func presentSnapshotIfAvailable() {
         if isBatteryWakeCamera {
             if !isReachable {
-                state = .offline
-                cameraSource = nil
-                recencyTier = .empty
-                recoveryPhase = .idle
+                markOffline()
             } else if batteryStillDate != nil && cameraSource != nil {
                 if state != .offline {
                     state = .snapshot
@@ -209,10 +252,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
                 state = .snapshot
             }
         } else if !isReachable {
-            state = .offline
-            cameraSource = nil
-            recencyTier = .empty
-            recoveryPhase = .idle
+            markOffline()
         } else if state == .idle {
             state = .starting
         }
@@ -225,10 +265,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
 
         guard isReachable else {
-            state = .offline
-            cameraSource = nil
-            recencyTier = .empty
-            recoveryPhase = .idle
+            markOffline()
             return false
         }
 
@@ -252,16 +289,15 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     func markOfflineIfNeeded() {
         isReachable = accessory.isReachable
         if !isReachable {
-            state = .offline
-            cameraSource = nil
-            liveStartRequestedAt = nil
-            recencyTier = .empty
-            recoveryPhase = .idle
+            markOffline()
         }
     }
 
     func resetSessionState() {
         stopLiveIfNeeded()
+        isReachable = accessory.isReachable
+        isAvailableInSession = true
+        refreshHomeKitCameraActiveState()
         cameraSource = nil
         lastSnapshotDate = nil
         lastErrorMessage = nil
@@ -272,6 +308,73 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         state = .idle
     }
 
+    private var cameraAvailabilityServices: [HMService] {
+        var servicesByID: [String: HMService] = [:]
+        (profile.services + accessory.services).forEach { service in
+            servicesByID[service.uniqueIdentifier.uuidString] = service
+        }
+        return Array(servicesByID.values)
+    }
+
+    private var cameraAvailabilityCharacteristics: [HMCharacteristic] {
+        cameraAvailabilityServices
+            .flatMap(\.characteristics)
+            .filter { characteristic in
+                CameraWallAvailability.isCameraAvailabilityCharacteristic(
+                    serviceType: characteristic.service?.serviceType ?? "",
+                    characteristicType: characteristic.characteristicType
+                )
+            }
+    }
+
+    private var cameraAvailabilitySnapshots: [CameraWallAvailability.CharacteristicSnapshot] {
+        cameraAvailabilityCharacteristics.map { characteristic in
+            CameraWallAvailability.CharacteristicSnapshot(
+                serviceType: characteristic.service?.serviceType ?? "",
+                characteristicType: characteristic.characteristicType,
+                value: characteristic.value
+            )
+        }
+    }
+
+    private func updateHomeKitCameraActiveState(from snapshots: [CameraWallAvailability.CharacteristicSnapshot]) {
+        guard let active = CameraWallAvailability.homeKitCameraActiveState(from: snapshots) else {
+            return
+        }
+
+        let wasVisibleOnWall = isVisibleOnWall
+        isHomeKitCameraActive = active
+
+        if active {
+            markHomeKitOn(wasVisibleOnWall: wasVisibleOnWall)
+        } else {
+            markHomeKitOff(wasVisibleOnWall: wasVisibleOnWall)
+        }
+    }
+
+    private func markHomeKitOff(wasVisibleOnWall: Bool? = nil) {
+        let wasVisibleOnWall = wasVisibleOnWall ?? isVisibleOnWall
+        isAvailableInSession = false
+        state = .offline
+        cameraSource = nil
+        lastSnapshotDate = nil
+        liveStartRequestedAt = nil
+        recencyTier = .empty
+        recoveryPhase = .idle
+        batteryStillDate = nil
+
+        if wasVisibleOnWall {
+            onAvailabilityChanged?(id)
+        }
+    }
+
+    private func markOffline() {
+        state = .offline
+        liveStartRequestedAt = nil
+        recencyTier = .empty
+        recoveryPhase = .idle
+    }
+
     private func updateCameraSource(_ source: HMCameraSource?) {
         cameraSource = source
         guard let source else { return }
@@ -279,6 +382,19 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         let sourceAspectRatio = CGFloat(source.aspectRatio)
         if sourceAspectRatio.isFinite, sourceAspectRatio > 0 {
             aspectRatio = sourceAspectRatio
+        }
+
+        markHomeKitOn()
+    }
+
+    private func markHomeKitOn(wasVisibleOnWall: Bool? = nil) {
+        let wasVisibleOnWall = wasVisibleOnWall ?? isVisibleOnWall
+        isReachable = accessory.isReachable
+        guard isHomeKitCameraActive != false else { return }
+
+        isAvailableInSession = true
+        if !wasVisibleOnWall, isVisibleOnWall {
+            onAvailabilityChanged?(id)
         }
     }
 

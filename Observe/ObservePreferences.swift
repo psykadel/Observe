@@ -130,6 +130,13 @@ final class ObservePreferences: ObservableObject {
         }
     }
 
+    func adjustDensity(withHorizontalSwipe translationWidth: CGFloat) {
+        let minimumSwipeDistance: CGFloat = 48
+        guard abs(translationWidth) >= minimumSwipeDistance else { return }
+
+        wallDensity = wallDensity.stepped(by: translationWidth < 0 ? 1 : -1)
+    }
+
     func setStaleVisualHighlightSeconds(_ seconds: Int) {
         let sanitized = max(1, seconds)
         guard staleVisualHighlightSeconds != sanitized else { return }

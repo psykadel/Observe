@@ -2,6 +2,8 @@ import HomeKit
 import SwiftUI
 
 struct CameraWallView: View {
+    @Environment(\.scenePhase) private var scenePhase
+
     @ObservedObject var store: HomeKitCameraStore
     @ObservedObject var preferences: ObservePreferences
 
@@ -35,6 +37,14 @@ struct CameraWallView: View {
         .fullScreenCover(item: $selectedFeed) { feed in
             CameraDetailView(feed: feed, store: store)
         }
+        .onChange(of: scenePhase) { _, phase in
+            if CameraWallPresentation.shouldClearSelection(
+                scenePhase: phase,
+                hasSelectedFeed: selectedFeed != nil
+            ) {
+                selectedFeed = nil
+            }
+        }
     }
 
     @ViewBuilder
@@ -52,8 +62,8 @@ struct CameraWallView: View {
                 )
             } else if store.wallFeeds.isEmpty {
                 placeholder(
-                    title: "No Cameras Online",
-                    subtitle: "Observe hides offline cameras from the wall until they reconnect."
+                    title: "No Active Cameras",
+                    subtitle: "Observe hides cameras only when HomeKit reports them as off."
                 )
             } else {
                 cameraWall
@@ -120,6 +130,7 @@ struct CameraWallView: View {
             }
             .scrollDisabled(!layout.requiresScrolling)
             .gesture(densityGesture)
+            .simultaneousGesture(wallSwipeGesture)
         }
     }
 
@@ -159,6 +170,7 @@ struct CameraWallView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .gesture(densityGesture)
+            .simultaneousGesture(wallSwipeGesture)
         }
     }
 
@@ -166,6 +178,17 @@ struct CameraWallView: View {
         MagnifyGesture()
             .onEnded { value in
                 store.adjustDensity(with: value.magnification)
+            }
+    }
+
+    private var wallSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 36)
+            .onEnded { value in
+                let width = value.translation.width
+                let height = value.translation.height
+                guard abs(width) > abs(height) * 1.5 else { return }
+
+                store.adjustDensity(withHorizontalSwipe: width)
             }
     }
 
@@ -185,6 +208,12 @@ struct CameraWallView: View {
                 .padding(.horizontal, 20)
             Spacer()
         }
+    }
+}
+
+enum CameraWallPresentation {
+    static func shouldClearSelection(scenePhase: ScenePhase, hasSelectedFeed: Bool) -> Bool {
+        hasSelectedFeed && scenePhase == .background
     }
 }
 

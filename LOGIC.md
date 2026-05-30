@@ -4,6 +4,33 @@
 
 APP START / SESSION START
 |
++-- Persist user settings only
+|   |
+|   +-- Keep user choices such as selected home, camera order, wall layout,
+|       stale thresholds, and battery-camera settings across app opens.
+|   +-- Do not persist the active operational camera session as authoritative.
+|   +-- Rebuild the active wall from current HomeKit discovery and current
+|       per-session camera availability each time a fresh wall session starts.
+|
++-- Build active visible wall set
+|   |
+|   +-- Include every camera discovered for the selected home unless HomeKit
+|       explicitly reports that camera as off or not responding.
+|   +-- Cameras that are powered off, reported inactive by HomeKit's
+|       HomeKitCameraActive state, or reported manually disabled by HomeKit's
+|       camera operating mode state, must not occupy wall layout slots.
+|   +-- Cameras whose HomeKit accessory is not reachable / not responding must
+|       not occupy wall layout slots.
+|   +-- Do not remove cameras from the wall for restricted-mode pressure,
+|       transient stream failures, snapshot failures, network errors, or
+|       HomeKit communication errors while the accessory is still reachable.
+|       Those conditions may change status, live assignment, or refresh
+|       behavior, but they must not consume the camera's wall identity or make
+|       it disappear.
+|   +-- If HomeKit later reports an off or not-responding camera as active and
+|       reachable again, it may re-enter the wall according to the persisted
+|       user priority order.
+|
 +-- Start in OPTIMISTIC MODE
     |
     +-- Are HomeKit live connections constrained?

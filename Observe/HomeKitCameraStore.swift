@@ -97,6 +97,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         preferences.adjustDensity(with: scale)
     }
 
+    func adjustDensity(withHorizontalSwipe translationWidth: CGFloat) {
+        preferences.adjustDensity(withHorizontalSwipe: translationWidth)
+    }
+
     private func rebuildHomesAndFeeds() {
         homes = homeManager.homes
             .map { HomeOption(id: $0.uniqueIdentifier.uuidString, name: $0.name, isPrimary: $0.isPrimary) }
@@ -146,6 +150,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                         self?.handleSnapshotResult(for: feedID, result: result)
                     }
                 }
+                feed.onAvailabilityChanged = { [weak self] feedID in
+                    Task { @MainActor [weak self] in
+                        self?.handleAvailabilityChange(for: feedID)
+                    }
+                }
+                feed.refreshHomeKitCameraActiveState()
+                feed.readHomeKitCameraActiveState()
                 discoveredFeeds.append(feed)
             }
         }
@@ -530,6 +541,29 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         sessionMode = .constrained
         refreshPresentation(focusedFeedID: focusedFeedID)
     }
+
+    private func handleAvailabilityChange(for feedID: String) {
+        if focusedFeedID == feedID {
+            focusedFeedID = nil
+        }
+
+        if var state = feedScheduleStates[feedID] {
+            state.batteryWakeLeaseStartedAt = nil
+            state.snapshotInFlight = false
+            state.snapshotRequestStartedAt = nil
+            state.nextEligibleSnapshotAt = .distantFuture
+            feedScheduleStates[feedID] = state
+        }
+
+        let visibleCount = wallFeeds.count
+        liveCapacity = min(liveCapacity, visibleCount)
+        if visibleCount == 0 {
+            liveCapacityExpansionBlockedUntil = nil
+        }
+
+        objectWillChange.send()
+        refreshPresentation(focusedFeedID: focusedFeedID)
+    }
 }
 
 extension HomeKitCameraStore: HMHomeManagerDelegate {
@@ -567,11 +601,21 @@ extension HomeKitCameraStore: HMHomeDelegate {
 }
 
 extension HomeKitCameraStore: HMAccessoryDelegate {
+    nonisolated func accessory(_ accessory: HMAccessory, service: HMService, didUpdateValueFor characteristic: HMCharacteristic) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach {
+                $0.refreshHomeKitCameraActiveStateIfNeeded(for: characteristic)
+            }
+            self.refreshPresentation(focusedFeedID: self.focusedFeedID)
+        }
+    }
+
     nonisolated func accessoryDidUpdateReachability(_ accessory: HMAccessory) {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach { feed in
-                feed.markOfflineIfNeeded()
+                feed.refreshSessionAvailabilityFromAccessory()
                 guard var state = self.feedScheduleStates[feed.id] else { return }
                 state.batteryWakeLeaseStartedAt = nil
                 state.nextEligibleSnapshotAt = .distantPast
@@ -584,6 +628,7 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
                 self.liveCapacityExpansionBlockedUntil = nil
             }
 
+            self.objectWillChange.send()
             self.refreshPresentation(focusedFeedID: self.focusedFeedID)
         }
     }

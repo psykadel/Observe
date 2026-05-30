@@ -1,5 +1,6 @@
 DerivedData/
 build/
+.build/
 *.xcuserstate
 *.moved-aside
 *.mode1v3

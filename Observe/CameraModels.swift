@@ -13,9 +13,9 @@ enum CameraSchedulingDefaults {
 }
 
 enum WallDensity: String, CaseIterable, Identifiable {
+    case auto
     case oneColumn
     case twoColumns
-    case auto
 
     var id: String { rawValue }
 
@@ -50,6 +50,111 @@ enum WallDensity: String, CaseIterable, Identifiable {
 
         let nextIndex = max(0, min(allCases.count - 1, currentIndex + delta))
         return allCases[nextIndex]
+    }
+}
+
+enum CameraWallAvailability {
+    struct CharacteristicSnapshot {
+        let serviceType: String
+        let characteristicType: String
+        let value: Any?
+    }
+
+    private static let homeKitCameraActiveCharacteristicTypes = Set([
+        "0000021B-0000-1000-8000-0026BB765291",
+        "public.hap.characteristics.homekit-camera-active"
+    ].map(normalizedType))
+
+    private static let manuallyDisabledCharacteristicTypes = Set([
+        "00000227-0000-1000-8000-0026BB765291",
+        "public.hap.characteristics.manually-disabled"
+    ].map(normalizedType))
+
+    static func isVisibleOnWall(
+        isReachable: Bool,
+        isAvailableInSession: Bool,
+        isHomeKitCameraActive: Bool?
+    ) -> Bool {
+        isReachable && isHomeKitCameraActive != false
+    }
+
+    static func homeKitCameraActiveState(from value: Any?) -> Bool? {
+        guard let value else {
+            return nil
+        }
+
+        if let value = value as? Bool {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.intValue != HMCharacteristicValueActivationState.inactive.rawValue
+        }
+
+        if let value = value as? Int {
+            return value != HMCharacteristicValueActivationState.inactive.rawValue
+        }
+
+        return nil
+    }
+
+    static func homeKitCameraActiveState(from snapshots: [CharacteristicSnapshot]) -> Bool? {
+        let homeKitActiveValues = snapshots
+            .filter { homeKitCameraActiveCharacteristicTypes.contains(normalizedType($0.characteristicType)) }
+            .compactMap { boolState(from: $0.value) }
+
+        if homeKitActiveValues.contains(false) {
+            return false
+        }
+        if homeKitActiveValues.contains(true) {
+            return true
+        }
+
+        let isManuallyDisabled = snapshots
+            .filter { manuallyDisabledCharacteristicTypes.contains(normalizedType($0.characteristicType)) }
+            .compactMap { boolState(from: $0.value) }
+            .contains(true)
+        if isManuallyDisabled {
+            return false
+        }
+
+        return nil
+    }
+
+    static func isCameraAvailabilityCharacteristic(serviceType _: String, characteristicType: String) -> Bool {
+        let normalizedCharacteristicType = normalizedType(characteristicType)
+
+        return homeKitCameraActiveCharacteristicTypes.contains(normalizedCharacteristicType)
+            || manuallyDisabledCharacteristicTypes.contains(normalizedCharacteristicType)
+    }
+
+    static func shouldRemoveFromCurrentSession(errorCode _: Int?) -> Bool {
+        // HomeKit communication errors may affect status/refresh, but never wall membership.
+        false
+    }
+
+    private static func boolState(from value: Any?) -> Bool? {
+        guard let value else {
+            return nil
+        }
+
+        if let value = value as? Bool {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.boolValue
+        }
+
+        if let value = value as? Int {
+            return value != 0
+        }
+
+        return nil
+    }
+
+    private static func normalizedType(_ value: String) -> String {
+        value.uppercased()
     }
 }
 
