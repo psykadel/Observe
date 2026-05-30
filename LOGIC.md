@@ -67,7 +67,7 @@ RESTRICTED MODE
 |
 +-- Primary goal
 |   |
-|   +-- Make sure every visible camera has a recent / trusted image.
+|   +-- Make sure every visible camera has a recent / trusted image as quickly as possible.
 |
 +-- Determine whether each visible camera has a trusted image
 |   |
@@ -98,7 +98,8 @@ RESTRICTED MODE
 |   |   |
 |   |   +-- Refresh snapshots immediately and continuously.
 |   |   +-- Request the next snapshot as soon as the previous request
-|   |       succeeds, fails, or backoff allows.
+|   |       succeeds, fails, the per-camera 5-second minimum refresh
+|   |       interval has elapsed, and backoff allows.
 |   |   +-- Empty / stale cameras are more urgent than already-recent cameras.
 |   |   +-- Preserve UI priority order within each snapshot urgency tier.
 |   |   +-- A recent snapshot is trusted for display and stale marking.
@@ -127,30 +128,35 @@ RESTRICTED MODE
     |   +-- Yes
     |       |
     |       +-- Refresh non-battery snapshots continuously.
-    |       +-- Mark due battery cameras as "Wait for Capture".
+    |       +-- Mark due battery cameras as "Queued".
     |       +-- Do not start any live feeds.
     |
     +-- Is at least one live slot available?
         |
         +-- Yes
             |
-            +-- 1. Preserve active battery trusted-still captures
-            |   |
-            |   +-- Any battery camera already using a live slot to capture
-            |       a trusted still keeps that slot.
-            |   +-- Do not swap, rotate, reprioritize, or reclaim that slot
-            |       while the trusted still is still pending.
-            |   +-- Release the slot only after success or timeout.
-            |   +-- A battery camera that is already warm live can become trusted
-            |       as soon as the trusted-still warmup is satisfied.
-            |
-            +-- 2. Reserve the first unleased live slot for the focused
+            +-- 1. Reserve the first live slot for the focused
             |      full-screen feed, if any
             |   |
-            |   +-- Focus wins among slots that are not already leased to an
-            |       active battery trusted-still capture.
+            |   +-- Focus is an explicit cancellation reason for another
+            |       active battery trusted-still capture if capacity is full.
             |   +-- If the focused camera is battery-powered, this live slot may
             |       also satisfy its battery wake / trusted still requirement.
+            |
+            +-- 2. Preserve active battery trusted-still captures
+            |   |
+            |   +-- Any battery camera already using a live slot to capture
+            |       a trusted still keeps that slot unless focus explicitly
+            |       needs the slot.
+            |   +-- Do not swap, rotate, reprioritize, or reclaim that slot
+            |       while the trusted still is still pending.
+            |   +-- Release the slot only after success, timeout, or explicit
+            |       focus cancellation.
+            |   +-- A battery camera that is already warm live can become trusted
+            |       as soon as the trusted-still warmup after live start is satisfied.
+            |   +-- While HomeKit is still trying to establish live, use a separate
+            |       live-start timeout so slow connection setup does not rotate the
+            |       protected slot on the shorter capture warmup clock.
             |
             +-- 3. While any visible battery camera lacks a trusted still
             |   |
@@ -160,14 +166,17 @@ RESTRICTED MODE
             |   +-- If known restricted capacity may be too low and capacity probing
             |       is not blocked, cautiously try one additional live slot for
             |       eligible battery wake work.
-            |   +-- Mark cameras waiting for a slot as "Wait for Capture"
+            |   +-- Mark cameras waiting for a slot as "Queued"
             |       with a yellow indicator.
-            |   +-- When a leased battery camera captures a still after lease start:
+            |   +-- When a leased battery camera captures a still after the
+            |       configured warmup time has elapsed since the stream became live:
             |       |
             |       +-- Mark it trusted.
             |       +-- Release / rotate the slot to the next waiting battery camera.
             |   +-- When a leased battery camera times out without a trusted still:
             |       |
+            |       +-- If the stream became live, measure the capture timeout from
+            |           live start so "Wait Before Capturing" means seconds live.
             |       +-- Release / rotate the slot to the next waiting battery camera.
             |       +-- Keep the failed camera waiting under retry backoff until eligible.
             |
@@ -211,43 +220,60 @@ For ordinary live / recent / stale states, status and border must agree:
 
 Battery capture and waiting states are the exception:
 
-- Keep the useful "Capturing" or "Wait for Capture" status text.
-- Keep the yellow indicator.
-- Show the stale red border until the battery camera has a trusted Observe-captured still.
+- A battery camera that owns a live slot for trusted-still capture shows
+  "Live Capture".
+- Once that capture stream is live, keep showing "Live Capture", switch the
+  indicator to green, and append the remaining warmup countdown, for example
+  "Live Capture (5s)".
+- A battery camera that still needs a trusted still but does not currently own
+  a live capture slot shows "Queued" with a yellow indicator.
+- Show the stale red border only when the displayed still has actually reached
+  the configured "Show As Stale" age, or when no still is available.
 
 FOR EACH VISIBLE CAMERA
 |
-+-- Is the camera currently streaming live?
++-- Is this a battery camera currently capturing or queued for live capture?
     |
     +-- Yes
     |   |
-    |   +-- Not stale.
-    |   +-- Status: Live.
-    |   +-- Indicator: Green.
-    |   +-- Border: None.
+    |   +-- Is the live capture stream currently live?
+    |       |
+    |       +-- Yes
+    |       |   |
+    |       |   +-- Not stale.
+    |       |   +-- Status: Live Capture with warmup countdown.
+    |       |   +-- Indicator: Green.
+    |       |   +-- Border: None.
+    |       |
+    |       +-- No
+    |           |
+    |           +-- Does it have a displayed still within the configured
+    |               "Show As Stale" threshold?
+    |               |
+    |               +-- Yes
+    |               |   |
+    |               |   +-- Not stale.
+    |               |   +-- Status: Live Capture or Queued.
+    |               |   +-- Indicator: Yellow.
+    |               |   +-- Border: None.
+    |               |
+    |               +-- No
+    |                   |
+    |                   +-- Stale.
+    |                   +-- Status: Live Capture or Queued.
+    |                   +-- Indicator: Yellow.
+    |                   +-- Border: Stale.
     |
     +-- No
         |
-        +-- Is this a battery camera currently capturing or waiting for live?
+        +-- Is the camera currently streaming live?
             |
             +-- Yes
             |   |
-            |   +-- Does it already have a trusted Observe-captured still within
-            |       the "Start Live Capture After" threshold?
-            |       |
-            |       +-- Yes
-            |       |   |
-            |       |   +-- Not stale.
-            |       |   +-- Status: Capturing or Wait for Capture.
-            |       |   +-- Indicator: Yellow.
-            |       |   +-- Border: None.
-            |       |
-            |       +-- No
-            |           |
-            |           +-- Stale.
-            |           +-- Status: Capturing or Wait for Capture.
-            |           +-- Indicator: Yellow.
-            |           +-- Border: Stale.
+            |   +-- Not stale.
+            |   +-- Status: Live.
+            |   +-- Indicator: Green.
+            |   +-- Border: None.
             |
             +-- No
                 |

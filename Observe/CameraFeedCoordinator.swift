@@ -37,6 +37,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     private(set) var liveStartedAt: Date?
     private var configuredStaleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold
     private var configuredBatteryTrustedStillThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold
+    private var configuredBatteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup
 
     init(accessory: HMAccessory, profile: HMCameraProfile, profileIndex: Int) {
         self.accessory = accessory
@@ -85,9 +86,11 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             isStreaming: isStreaming,
             isBatteryCamera: isBatteryWakeCamera,
             recoveryPhase: recoveryPhase,
+            liveStartedAt: liveStartedAt,
             displayedStillDate: cameraSource == nil ? nil : displayedStillDate,
             staleThreshold: configuredStaleThreshold,
             batteryTrustedStillThreshold: configuredBatteryTrustedStillThreshold,
+            batteryCaptureWarmup: configuredBatteryCaptureWarmup,
             now: date
         ).status
     }
@@ -153,6 +156,10 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         configuredBatteryTrustedStillThreshold = max(1, threshold)
     }
 
+    func setConfiguredBatteryCaptureWarmup(_ warmup: TimeInterval) {
+        configuredBatteryCaptureWarmup = max(1, warmup)
+    }
+
     func markBatteryStillCaptured(at date: Date) {
         guard isBatteryWakeCamera else { return }
         batteryStillDate = date
@@ -186,9 +193,11 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             isStreaming: isStreaming,
             isBatteryCamera: isBatteryWakeCamera,
             recoveryPhase: recoveryPhase,
+            liveStartedAt: liveStartedAt,
             displayedStillDate: cameraSource == nil ? nil : displayedStillDate,
             staleThreshold: threshold,
             batteryTrustedStillThreshold: configuredBatteryTrustedStillThreshold,
+            batteryCaptureWarmup: configuredBatteryCaptureWarmup,
             now: date
         ).isStale
     }

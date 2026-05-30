@@ -6,9 +6,11 @@ enum CameraSchedulingDefaults {
     static let batteryWakeTriggerThreshold: TimeInterval = 60
     static let batteryStaleThreshold: TimeInterval = 120
     static let snapshotRequestTimeout: TimeInterval = 2.75
+    static let minimumSnapshotRefreshInterval: TimeInterval = 5
     static let batteryCaptureWarmup: TimeInterval = 5
     static let batteryCaptureLeasePadding: TimeInterval = 3
     static let batteryWakeLeaseDuration: TimeInterval = 8
+    static let batteryWakeLiveStartTimeout: TimeInterval = 30
     static let liveCapacityExpansionRetryDelay: TimeInterval = 10
 }
 
@@ -241,11 +243,58 @@ enum CameraDisplayClassifier {
         isStreaming: Bool,
         isBatteryCamera: Bool,
         recoveryPhase: FeedRecoveryPhase,
+        liveStartedAt: Date? = nil,
         displayedStillDate: Date?,
         staleThreshold: TimeInterval,
         batteryTrustedStillThreshold: TimeInterval? = nil,
+        batteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup,
         now: Date
     ) -> CameraDisplayClassification {
+        if isBatteryCamera {
+            let isBatteryStillVisuallyStale = isStillVisuallyStale(
+                displayedStillDate: displayedStillDate,
+                threshold: staleThreshold,
+                now: now
+            )
+            switch recoveryPhase {
+            case .batteryCapture:
+                return CameraDisplayClassification(
+                    status: CameraStatusSnapshot(
+                        label: batteryCaptureLabel(
+                            isStreaming: isStreaming,
+                            liveStartedAt: liveStartedAt,
+                            warmup: batteryCaptureWarmup,
+                            now: now
+                        ),
+                        recencyTier: isStreaming ? .live : recencyTier(
+                            displayedStillDate: displayedStillDate,
+                            threshold: staleThreshold,
+                            now: now
+                        ),
+                        recoveryPhase: .batteryCapture,
+                        indicator: isStreaming ? .green : .yellow
+                    ),
+                    isStale: isStreaming ? false : isBatteryStillVisuallyStale
+                )
+            case .batteryWaiting:
+                return CameraDisplayClassification(
+                    status: CameraStatusSnapshot(
+                        label: "Queued",
+                        recencyTier: recencyTier(
+                            displayedStillDate: displayedStillDate,
+                            threshold: staleThreshold,
+                            now: now
+                        ),
+                        recoveryPhase: .batteryWaiting,
+                        indicator: .yellow
+                    ),
+                    isStale: isBatteryStillVisuallyStale
+                )
+            case .idle:
+                break
+            }
+        }
+
         if isStreaming {
             return CameraDisplayClassification(
                 status: CameraStatusSnapshot(
@@ -256,46 +305,6 @@ enum CameraDisplayClassifier {
                 ),
                 isStale: false
             )
-        }
-
-        if isBatteryCamera {
-            let hasTrustedBatteryStill = hasTrustedBatteryStill(
-                displayedStillDate: displayedStillDate,
-                threshold: batteryTrustedStillThreshold ?? staleThreshold,
-                now: now
-            )
-            switch recoveryPhase {
-            case .batteryCapture:
-                return CameraDisplayClassification(
-                    status: CameraStatusSnapshot(
-                        label: "Capturing",
-                        recencyTier: recencyTier(
-                            displayedStillDate: displayedStillDate,
-                            threshold: batteryTrustedStillThreshold ?? staleThreshold,
-                            now: now
-                        ),
-                        recoveryPhase: .batteryCapture,
-                        indicator: .yellow
-                    ),
-                    isStale: !hasTrustedBatteryStill
-                )
-            case .batteryWaiting:
-                return CameraDisplayClassification(
-                    status: CameraStatusSnapshot(
-                        label: "Wait for Capture",
-                        recencyTier: recencyTier(
-                            displayedStillDate: displayedStillDate,
-                            threshold: batteryTrustedStillThreshold ?? staleThreshold,
-                            now: now
-                        ),
-                        recoveryPhase: .batteryWaiting,
-                        indicator: .yellow
-                    ),
-                    isStale: !hasTrustedBatteryStill
-                )
-            case .idle:
-                break
-            }
         }
 
         guard let displayedStillDate else {
@@ -344,14 +353,28 @@ enum CameraDisplayClassifier {
         return age <= threshold ? .recentSnapshot : .staleSnapshot
     }
 
-    private static func hasTrustedBatteryStill(
+    private static func batteryCaptureLabel(
+        isStreaming: Bool,
+        liveStartedAt: Date?,
+        warmup: TimeInterval,
+        now: Date
+    ) -> String {
+        guard isStreaming, let liveStartedAt else {
+            return "Live Capture"
+        }
+
+        let remaining = max(0, warmup - now.timeIntervalSince(liveStartedAt))
+        return "Live Capture (\(Int(ceil(remaining)))s)"
+    }
+
+    private static func isStillVisuallyStale(
         displayedStillDate: Date?,
         threshold: TimeInterval,
         now: Date
     ) -> Bool {
-        guard let displayedStillDate else { return false }
+        guard let displayedStillDate else { return true }
         let age = max(0, now.timeIntervalSince(displayedStillDate))
-        return age <= threshold
+        return age > threshold
     }
 
     private static func recentLabel(age: TimeInterval) -> String {

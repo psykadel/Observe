@@ -20,6 +20,7 @@ struct FeedPlanningSnapshot: Equatable {
     let priorityIndex: Int
     let isFocused: Bool
     let isStreaming: Bool
+    let liveStartedAt: Date?
     let lastSnapshotDate: Date?
     let staleThreshold: TimeInterval
     let isBatteryWakeCamera: Bool
@@ -72,15 +73,37 @@ struct FeedPlanningSnapshot: Equatable {
         }
     }
 
-    func hasActiveBatteryCapture(at now: Date, leaseDuration: TimeInterval) -> Bool {
+    func hasActiveBatteryCapture(
+        at now: Date,
+        leaseDuration: TimeInterval,
+        warmup: TimeInterval,
+        liveStartTimeout: TimeInterval
+    ) -> Bool {
         guard let batteryWakeLeaseStartedAt else { return false }
-        return now.timeIntervalSince(batteryWakeLeaseStartedAt) < leaseDuration
-            && !capturedTrustedStillDuringLease(at: now)
+        return !BatteryWakeLeaseTimeoutPolicy.hasTimedOut(
+            isStreaming: isStreaming,
+            liveStartedAt: liveStartedAt,
+            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
+            warmup: warmup,
+            leaseDuration: leaseDuration,
+            liveStartTimeout: liveStartTimeout,
+            now: now
+        ) && !capturedTrustedStillDuringLease(at: now)
     }
 
-    func needsBatteryCapture(at now: Date, leaseDuration: TimeInterval) -> Bool {
+    func needsBatteryCapture(
+        at now: Date,
+        leaseDuration: TimeInterval,
+        warmup: TimeInterval,
+        liveStartTimeout: TimeInterval
+    ) -> Bool {
         guard isBatteryWakeCamera else { return false }
-        if hasActiveBatteryCapture(at: now, leaseDuration: leaseDuration) {
+        if hasActiveBatteryCapture(
+            at: now,
+            leaseDuration: leaseDuration,
+            warmup: warmup,
+            liveStartTimeout: liveStartTimeout
+        ) {
             return true
         }
         return !hasTrustedImage(at: now) && isBatteryWakeRetryEligible(at: now)
@@ -116,9 +139,17 @@ struct CameraRecoveryPlan {
 
 struct CameraRecoveryPlanner {
     let batteryWakeLeaseDuration: TimeInterval
+    let batteryCaptureWarmup: TimeInterval
+    let batteryWakeLiveStartTimeout: TimeInterval
 
-    init(batteryWakeLeaseDuration: TimeInterval = CameraSchedulingDefaults.batteryWakeLeaseDuration) {
+    init(
+        batteryWakeLeaseDuration: TimeInterval = CameraSchedulingDefaults.batteryWakeLeaseDuration,
+        batteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup,
+        batteryWakeLiveStartTimeout: TimeInterval = CameraSchedulingDefaults.batteryWakeLiveStartTimeout
+    ) {
         self.batteryWakeLeaseDuration = batteryWakeLeaseDuration
+        self.batteryCaptureWarmup = batteryCaptureWarmup
+        self.batteryWakeLiveStartTimeout = batteryWakeLiveStartTimeout
     }
 
     func makePlan(
@@ -211,28 +242,41 @@ struct CameraRecoveryPlanner {
 
         var selectedIDs: [String] = []
         var batteryCaptureIDs: [String] = []
-        let focusedFeedID = orderedFeeds.first(where: { $0.isFocused })?.id
+        let focusedFeed = orderedFeeds.first(where: { $0.isFocused })
 
-        for feed in orderedFeeds where selectedIDs.count < capacity {
-            guard feed.hasActiveBatteryCapture(at: now, leaseDuration: batteryWakeLeaseDuration) else { continue }
-            selectedIDs.append(feed.id)
-            batteryCaptureIDs.append(feed.id)
+        if let focusedFeed, selectedIDs.count < capacity {
+            selectedIDs.append(focusedFeed.id)
+            if focusedFeed.needsBatteryCapture(
+                at: now,
+                leaseDuration: batteryWakeLeaseDuration,
+                warmup: batteryCaptureWarmup,
+                liveStartTimeout: batteryWakeLiveStartTimeout
+            ) {
+                batteryCaptureIDs.append(focusedFeed.id)
+            }
         }
 
-        if let focusedFeedID,
-           selectedIDs.count < capacity,
-           !selectedIDs.contains(focusedFeedID),
-           let focusedFeed = orderedFeeds.first(where: { $0.id == focusedFeedID }) {
-            selectedIDs.append(focusedFeedID)
-            if focusedFeed.needsBatteryCapture(at: now, leaseDuration: batteryWakeLeaseDuration) {
-                batteryCaptureIDs.append(focusedFeedID)
-            }
+        for feed in orderedFeeds where selectedIDs.count < capacity {
+            guard !selectedIDs.contains(feed.id) else { continue }
+            guard feed.hasActiveBatteryCapture(
+                at: now,
+                leaseDuration: batteryWakeLeaseDuration,
+                warmup: batteryCaptureWarmup,
+                liveStartTimeout: batteryWakeLiveStartTimeout
+            ) else { continue }
+            selectedIDs.append(feed.id)
+            batteryCaptureIDs.append(feed.id)
         }
 
         if !batteryNeedingTrustedStillIDs.isEmpty {
             for feed in orderedFeeds where selectedIDs.count < capacity {
                 guard !selectedIDs.contains(feed.id),
-                      feed.needsBatteryCapture(at: now, leaseDuration: batteryWakeLeaseDuration) else { continue }
+                      feed.needsBatteryCapture(
+                        at: now,
+                        leaseDuration: batteryWakeLeaseDuration,
+                        warmup: batteryCaptureWarmup,
+                        liveStartTimeout: batteryWakeLiveStartTimeout
+                      ) else { continue }
                 selectedIDs.append(feed.id)
                 batteryCaptureIDs.append(feed.id)
             }

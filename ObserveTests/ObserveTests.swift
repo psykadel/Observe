@@ -49,7 +49,7 @@ final class ObserveTests: XCTestCase {
     func testActiveBatteryCaptureLeaseIsPreservedBeforeFocusAndPriority() {
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(id: "focused", priorityIndex: 0, isFocused: true, lastSnapshotAge: 5),
+                makeFeed(id: "highest-priority", priorityIndex: 0, lastSnapshotAge: 5),
                 makeFeed(
                     id: "active-battery",
                     priorityIndex: 1,
@@ -66,7 +66,100 @@ final class ObserveTests: XCTestCase {
 
         XCTAssertEqual(liveIDs(in: plan), ["active-battery"])
         XCTAssertEqual(plan.decisionsByID["active-battery"]?.recoveryPhase, .batteryCapture)
-        XCTAssertEqual(plan.decisionsByID["focused"]?.presentationMode, .snapshot)
+        XCTAssertEqual(plan.decisionsByID["highest-priority"]?.presentationMode, .snapshot)
+        XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryWaiting)
+    }
+
+    func testActiveBatteryCaptureLeaseIsPreservedDuringPostLiveWarmup() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "new-battery", priorityIndex: 0, isBatteryWakeCamera: true),
+                makeFeed(
+                    id: "active-battery",
+                    priorityIndex: 1,
+                    isStreaming: true,
+                    liveStartedAt: now.addingTimeInterval(-2),
+                    lastSnapshotAge: 70,
+                    isBatteryWakeCamera: true,
+                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-10)
+                )
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 1,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["active-battery"])
+        XCTAssertEqual(plan.decisionsByID["active-battery"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryWaiting)
+    }
+
+    func testActiveBatteryCaptureLeaseIsPreservedWhileWaitingForLiveConnection() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "new-battery", priorityIndex: 0, isBatteryWakeCamera: true),
+                makeFeed(
+                    id: "active-battery",
+                    priorityIndex: 1,
+                    lastSnapshotAge: 70,
+                    isBatteryWakeCamera: true,
+                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-10)
+                )
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 1,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["active-battery"])
+        XCTAssertEqual(plan.decisionsByID["active-battery"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryWaiting)
+    }
+
+    func testBatteryCaptureLeaseTimesOutWhenLiveConnectionNeverStarts() {
+        let planner = CameraRecoveryPlanner(batteryWakeLiveStartTimeout: 30)
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "new-battery", priorityIndex: 0, isBatteryWakeCamera: true),
+                makeFeed(
+                    id: "stuck-battery",
+                    priorityIndex: 1,
+                    lastSnapshotAge: 70,
+                    isBatteryWakeCamera: true,
+                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-31)
+                )
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 1,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["new-battery"])
+        XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["stuck-battery"]?.recoveryPhase, .batteryWaiting)
+    }
+
+    func testFocusedFeedMayExplicitlyCancelActiveBatteryCaptureWhenCapacityIsFull() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "focused", priorityIndex: 0, isFocused: true, lastSnapshotAge: 5),
+                makeFeed(
+                    id: "active-battery",
+                    priorityIndex: 1,
+                    lastSnapshotAge: 70,
+                    isBatteryWakeCamera: true,
+                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-1)
+                ),
+                makeFeed(id: "new-battery", priorityIndex: 2, isBatteryWakeCamera: true)
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 1,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["focused"])
+        XCTAssertEqual(plan.decisionsByID["focused"]?.presentationMode, .live)
+        XCTAssertEqual(plan.decisionsByID["active-battery"]?.recoveryPhase, .batteryWaiting)
         XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryWaiting)
     }
 
@@ -212,6 +305,36 @@ final class ObserveTests: XCTestCase {
         )
     }
 
+    func testSnapshotQueueEnforcesMinimumRefreshIntervalPerCamera() {
+        XCTAssertEqual(
+            SnapshotQueuePolicy.nextEligibleDate(
+                current: .distantFuture,
+                requestedAt: now,
+                lastRequestIssuedAt: now.addingTimeInterval(-1),
+                minimumInterval: 5
+            ),
+            now.addingTimeInterval(4)
+        )
+        XCTAssertEqual(
+            SnapshotQueuePolicy.nextEligibleDate(
+                current: now.addingTimeInterval(10),
+                requestedAt: now,
+                lastRequestIssuedAt: now.addingTimeInterval(-1),
+                minimumInterval: 5
+            ),
+            now.addingTimeInterval(10)
+        )
+        XCTAssertEqual(
+            SnapshotQueuePolicy.nextEligibleDate(
+                current: .distantFuture,
+                requestedAt: now,
+                lastRequestIssuedAt: now.addingTimeInterval(-8),
+                minimumInterval: 5
+            ),
+            now
+        )
+    }
+
     func testBatteryTrustedStillCanBeCapturedFromAnyWarmLiveStream() {
         let liveStartedAt = now.addingTimeInterval(-6)
 
@@ -255,6 +378,32 @@ final class ObserveTests: XCTestCase {
                 liveStartedAt: liveStartedAt,
                 batteryStillDate: now.addingTimeInterval(-1),
                 batteryWakeLeaseStartedAt: nil,
+                warmup: 5,
+                now: now
+            )
+        )
+    }
+
+    func testBatteryTrustedStillWarmupStartsAfterLiveConnection() {
+        XCTAssertFalse(
+            BatteryTrustedStillCapturePolicy.shouldCapture(
+                isBatteryCamera: true,
+                isStreaming: true,
+                liveStartedAt: now.addingTimeInterval(-2),
+                batteryStillDate: nil,
+                batteryWakeLeaseStartedAt: now.addingTimeInterval(-10),
+                warmup: 5,
+                now: now
+            )
+        )
+
+        XCTAssertTrue(
+            BatteryTrustedStillCapturePolicy.shouldCapture(
+                isBatteryCamera: true,
+                isStreaming: true,
+                liveStartedAt: now.addingTimeInterval(-6),
+                batteryStillDate: nil,
+                batteryWakeLeaseStartedAt: now.addingTimeInterval(-10),
                 warmup: 5,
                 now: now
             )
@@ -365,7 +514,43 @@ final class ObserveTests: XCTestCase {
         XCTAssertFalse(classification.isStale)
     }
 
-    func testDisplayClassifierMarksBatteryCaptureAndWaitingWithoutTrustedStillAsStale() {
+    func testDisplayClassifierKeepsBatteryCaptureLabelWhileLiveWithCountdown() {
+        let classification = CameraDisplayClassifier.classify(
+            isStreaming: true,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryCapture,
+            liveStartedAt: now.addingTimeInterval(-1.4),
+            displayedStillDate: now.addingTimeInterval(-90),
+            staleThreshold: 60,
+            batteryTrustedStillThreshold: 30,
+            batteryCaptureWarmup: 5,
+            now: now
+        )
+
+        XCTAssertEqual(classification.status.label, "Live Capture (4s)")
+        XCTAssertEqual(classification.status.indicator, .green)
+        XCTAssertEqual(classification.status.recencyTier, .live)
+        XCTAssertFalse(classification.isStale)
+    }
+
+    func testDisplayClassifierMarksBatteryCaptureBeforeLiveAsYellow() {
+        let classification = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryCapture,
+            displayedStillDate: now.addingTimeInterval(-45),
+            staleThreshold: 60,
+            batteryTrustedStillThreshold: 30,
+            batteryCaptureWarmup: 5,
+            now: now
+        )
+
+        XCTAssertEqual(classification.status.label, "Live Capture")
+        XCTAssertEqual(classification.status.indicator, .yellow)
+        XCTAssertFalse(classification.isStale)
+    }
+
+    func testDisplayClassifierMarksBatteryCaptureAndWaitingWithoutDisplayedStillAsStale() {
         let capturing = CameraDisplayClassifier.classify(
             isStreaming: false,
             isBatteryCamera: true,
@@ -379,14 +564,14 @@ final class ObserveTests: XCTestCase {
             isStreaming: false,
             isBatteryCamera: true,
             recoveryPhase: .batteryWaiting,
-            displayedStillDate: now.addingTimeInterval(-90),
+            displayedStillDate: nil,
             staleThreshold: 120,
             batteryTrustedStillThreshold: 60,
             now: now
         )
 
-        XCTAssertEqual(capturing.status.label, "Capturing")
-        XCTAssertEqual(waiting.status.label, "Wait for Capture")
+        XCTAssertEqual(capturing.status.label, "Live Capture")
+        XCTAssertEqual(waiting.status.label, "Queued")
         XCTAssertEqual(capturing.status.indicator, .yellow)
         XCTAssertEqual(waiting.status.indicator, .yellow)
         XCTAssertTrue(capturing.isStale)
@@ -415,6 +600,38 @@ final class ObserveTests: XCTestCase {
 
         XCTAssertFalse(capturing.isStale)
         XCTAssertFalse(waiting.isStale)
+    }
+
+    func testBatteryCaptureDoesNotShowStaleBorderUntilVisualThresholdIsReached() {
+        let classification = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryCapture,
+            displayedStillDate: now.addingTimeInterval(-45),
+            staleThreshold: 60,
+            batteryTrustedStillThreshold: 30,
+            now: now
+        )
+
+        XCTAssertEqual(classification.status.label, "Live Capture")
+        XCTAssertEqual(classification.status.indicator, .yellow)
+        XCTAssertFalse(classification.isStale)
+    }
+
+    func testBatteryCaptureShowsStaleBorderAfterVisualThresholdIsReached() {
+        let classification = CameraDisplayClassifier.classify(
+            isStreaming: false,
+            isBatteryCamera: true,
+            recoveryPhase: .batteryCapture,
+            displayedStillDate: now.addingTimeInterval(-61),
+            staleThreshold: 60,
+            batteryTrustedStillThreshold: 30,
+            now: now
+        )
+
+        XCTAssertEqual(classification.status.label, "Live Capture")
+        XCTAssertEqual(classification.status.indicator, .yellow)
+        XCTAssertTrue(classification.isStale)
     }
 
     func testDisplayClassifierKeepsStatusAndBorderStaleStateTogether() {
@@ -486,6 +703,38 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(reloaded.batteryStaleSeconds, 150)
 
         defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func testNumberSettingDraftClampsTypedAndAdjustedValuesToMinimum() {
+        var draft = NumberSettingDraft(value: 5, minimumValue: 1)
+
+        draft.adjust(by: -10)
+        XCTAssertEqual(draft.value, 1)
+        XCTAssertEqual(draft.text, "1")
+
+        draft.updateText("0")
+        XCTAssertEqual(draft.value, 1)
+        XCTAssertEqual(draft.text, "0")
+
+        draft.updateText("42")
+        XCTAssertEqual(draft.value, 42)
+        XCTAssertEqual(draft.text, "42")
+    }
+
+    func testNumberSettingDraftIgnoresNonNumericTypedTextUntilValid() {
+        var draft = NumberSettingDraft(value: 15, minimumValue: 1)
+
+        draft.updateText("")
+        XCTAssertEqual(draft.value, 15)
+        XCTAssertEqual(draft.text, "")
+
+        draft.updateText("abc")
+        XCTAssertEqual(draft.value, 15)
+        XCTAssertEqual(draft.text, "abc")
+
+        draft.setValue(30)
+        XCTAssertEqual(draft.value, 30)
+        XCTAssertEqual(draft.text, "30")
     }
 
     @MainActor
@@ -742,6 +991,7 @@ final class ObserveTests: XCTestCase {
         priorityIndex: Int,
         isFocused: Bool = false,
         isStreaming: Bool = false,
+        liveStartedAt: Date? = nil,
         lastSnapshotAge: TimeInterval? = nil,
         staleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold,
         isBatteryWakeCamera: Bool = false,
@@ -758,6 +1008,7 @@ final class ObserveTests: XCTestCase {
             priorityIndex: priorityIndex,
             isFocused: isFocused,
             isStreaming: isStreaming,
+            liveStartedAt: liveStartedAt,
             lastSnapshotDate: lastSnapshotAge.map { now.addingTimeInterval(-$0) },
             staleThreshold: resolvedStaleThreshold,
             isBatteryWakeCamera: isBatteryWakeCamera,
