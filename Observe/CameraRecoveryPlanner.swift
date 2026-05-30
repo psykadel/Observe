@@ -5,9 +5,14 @@ enum PlannedPresentationMode: Equatable {
     case snapshot
 }
 
-enum SnapshotPriority: Int, Equatable {
+enum SnapshotPriority: Int, Comparable, Equatable {
     case none = 0
-    case urgent = 1
+    case refresh = 1
+    case urgent = 2
+
+    static func < (lhs: SnapshotPriority, rhs: SnapshotPriority) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
 }
 
 struct FeedPlanningSnapshot: Equatable {
@@ -20,6 +25,7 @@ struct FeedPlanningSnapshot: Equatable {
     let isBatteryWakeCamera: Bool
     let batteryWakeTriggerThreshold: TimeInterval
     let batteryWakeLeaseStartedAt: Date?
+    let batteryWakeRetryAfter: Date?
 
     func recencyTier(at now: Date) -> FeedRecencyTier {
         if isStreaming {
@@ -53,8 +59,17 @@ struct FeedPlanningSnapshot: Equatable {
         return max(0, now.timeIntervalSince(lastSnapshotDate)) <= staleThreshold
     }
 
-    func needsNonBatterySnapshotRefresh(at now: Date) -> Bool {
-        !isBatteryWakeCamera && !isStreaming
+    func snapshotPriority(at now: Date) -> SnapshotPriority {
+        guard !isBatteryWakeCamera, !isStreaming else { return .none }
+
+        switch recencyTier(at: now) {
+        case .empty, .staleSnapshot:
+            return .urgent
+        case .recentSnapshot:
+            return .refresh
+        case .live:
+            return .none
+        }
     }
 
     func hasActiveBatteryCapture(at now: Date, leaseDuration: TimeInterval) -> Bool {
@@ -65,7 +80,10 @@ struct FeedPlanningSnapshot: Equatable {
 
     func needsBatteryCapture(at now: Date, leaseDuration: TimeInterval) -> Bool {
         guard isBatteryWakeCamera else { return false }
-        return hasActiveBatteryCapture(at: now, leaseDuration: leaseDuration) || !hasTrustedImage(at: now)
+        if hasActiveBatteryCapture(at: now, leaseDuration: leaseDuration) {
+            return true
+        }
+        return !hasTrustedImage(at: now) && isBatteryWakeRetryEligible(at: now)
     }
 
     private func capturedTrustedStillDuringLease(at now: Date) -> Bool {
@@ -75,6 +93,11 @@ struct FeedPlanningSnapshot: Equatable {
         }
 
         return lastSnapshotDate >= batteryWakeLeaseStartedAt && hasTrustedImage(at: now)
+    }
+
+    private func isBatteryWakeRetryEligible(at now: Date) -> Bool {
+        guard let batteryWakeRetryAfter else { return true }
+        return now >= batteryWakeRetryAfter
     }
 }
 
@@ -140,21 +163,25 @@ struct CameraRecoveryPlanner {
                 recoveryPhase = .idle
             }
 
-            let snapshotPriority: SnapshotPriority = sessionMode == .constrained && feed.needsNonBatterySnapshotRefresh(at: now)
-                ? .urgent
-                : .none
-
             decisionsByID[feed.id] = PresentationDecision(
                 id: feed.id,
                 presentationMode: wantsLive ? .live : .snapshot,
                 recencyTier: recencyTier,
                 recoveryPhase: recoveryPhase,
-                snapshotPriority: snapshotPriority
+                snapshotPriority: feed.snapshotPriority(at: now)
             )
         }
 
         let orderedSnapshotIDs = prioritizedFeeds
             .filter { (decisionsByID[$0.id]?.snapshotPriority ?? .none) != .none }
+            .sorted {
+                let lhsPriority = decisionsByID[$0.id]?.snapshotPriority ?? .none
+                let rhsPriority = decisionsByID[$1.id]?.snapshotPriority ?? .none
+                if lhsPriority != rhsPriority {
+                    return lhsPriority > rhsPriority
+                }
+                return $0.priorityIndex < $1.priorityIndex
+            }
             .map(\.id)
 
         return CameraRecoveryPlan(decisionsByID: decisionsByID, orderedSnapshotIDs: orderedSnapshotIDs)

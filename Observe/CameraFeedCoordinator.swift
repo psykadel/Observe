@@ -34,6 +34,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     private let accessory: HMAccessory
     private(set) var liveStartRequestedAt: Date?
+    private(set) var liveStartedAt: Date?
     private var configuredStaleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold
     private var configuredBatteryTrustedStillThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold
 
@@ -202,6 +203,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             updateCameraSource(stream)
             state = .live
             liveStartRequestedAt = nil
+            markLiveStartedIfNeeded(at: date)
             return
         }
 
@@ -215,6 +217,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             updateCameraSource(profile.streamControl?.cameraStream)
             state = .live
             liveStartRequestedAt = nil
+            markLiveStartedIfNeeded(at: date)
         default:
             if let liveStartRequestedAt,
                date.timeIntervalSince(liveStartRequestedAt) < CameraSchedulingDefaults.snapshotRequestTimeout {
@@ -284,6 +287,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             break
         }
         liveStartRequestedAt = nil
+        liveStartedAt = nil
     }
 
     func markOfflineIfNeeded() {
@@ -359,6 +363,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         cameraSource = nil
         lastSnapshotDate = nil
         liveStartRequestedAt = nil
+        liveStartedAt = nil
         recencyTier = .empty
         recoveryPhase = .idle
         batteryStillDate = nil
@@ -371,6 +376,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     private func markOffline() {
         state = .offline
         liveStartRequestedAt = nil
+        liveStartedAt = nil
         recencyTier = .empty
         recoveryPhase = .idle
     }
@@ -398,16 +404,24 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    private func markLiveStartedIfNeeded(at date: Date) {
+        if liveStartedAt == nil {
+            liveStartedAt = date
+        }
+    }
+
 }
 
 extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
     nonisolated func cameraStreamControlDidStartStream(_ cameraStreamControl: HMCameraStreamControl) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let now = Date()
             self.updateCameraSource(cameraStreamControl.cameraStream)
             self.state = .live
             self.lastErrorMessage = nil
             self.liveStartRequestedAt = nil
+            self.markLiveStartedIfNeeded(at: now)
             self.recencyTier = .live
             self.recoveryPhase = .idle
         }
@@ -417,6 +431,7 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.liveStartRequestedAt = nil
+            self.liveStartedAt = nil
 
             if let error = error as NSError? {
                 self.lastErrorMessage = error.localizedDescription

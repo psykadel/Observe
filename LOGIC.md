@@ -38,6 +38,12 @@ APP START / SESSION START
         +-- No
         |   |
         |   +-- Keep all visible cameras live.
+        |   +-- While live streams are still starting, request fallback snapshots
+        |       for non-battery cameras that are not yet live.
+        |   +-- Prioritize empty / stale non-battery snapshots ahead of recent
+        |       continuous refresh snapshots.
+        |   +-- Snapshot fallback work does not consume live slots and must not
+        |       block live startup.
         |
         +-- Yes
             |
@@ -93,6 +99,8 @@ RESTRICTED MODE
 |   |   +-- Refresh snapshots immediately and continuously.
 |   |   +-- Request the next snapshot as soon as the previous request
 |   |       succeeds, fails, or backoff allows.
+|   |   +-- Empty / stale cameras are more urgent than already-recent cameras.
+|   |   +-- Preserve UI priority order within each snapshot urgency tier.
 |   |   +-- A recent snapshot is trusted for display and stale marking.
 |   |   +-- A trusted snapshot does not stop ongoing non-battery refresh work.
 |   |   +-- Snapshot refreshes do not consume restricted live slots.
@@ -102,7 +110,15 @@ RESTRICTED MODE
 |       |
 |       +-- Must receive a live slot long enough to wake.
 |       +-- Must capture an Observe-captured still.
+|       +-- Any warm live battery stream may produce the Observe-captured still,
+|           whether it began during optimistic startup, focused live viewing,
+|           or a restricted live wake lease.
 |       +-- After the Observe-captured still is received, the camera becomes trusted.
+|       +-- If a live wake lease times out without a trusted still:
+|           |
+|           +-- Release the live slot.
+|           +-- Put that camera under a short retry backoff.
+|           +-- Let the next eligible waiting battery camera try the slot.
 |
 +-- Build live-slot plan
     |
@@ -125,6 +141,8 @@ RESTRICTED MODE
             |   +-- Do not swap, rotate, reprioritize, or reclaim that slot
             |       while the trusted still is still pending.
             |   +-- Release the slot only after success or timeout.
+            |   +-- A battery camera that is already warm live can become trusted
+            |       as soon as the trusted-still warmup is satisfied.
             |
             +-- 2. Reserve the first unleased live slot for the focused
             |      full-screen feed, if any
@@ -139,12 +157,19 @@ RESTRICTED MODE
             |   +-- Use unleased remaining live slots for battery wake candidates.
             |   +-- Choose battery wake candidates in UI sort order.
             |   +-- Rotate to the next waiting candidate as slots become available.
+            |   +-- If known restricted capacity may be too low and capacity probing
+            |       is not blocked, cautiously try one additional live slot for
+            |       eligible battery wake work.
             |   +-- Mark cameras waiting for a slot as "Wait for Capture"
             |       with a yellow indicator.
             |   +-- When a leased battery camera captures a still after lease start:
             |       |
             |       +-- Mark it trusted.
             |       +-- Release / rotate the slot to the next waiting battery camera.
+            |   +-- When a leased battery camera times out without a trusted still:
+            |       |
+            |       +-- Release / rotate the slot to the next waiting battery camera.
+            |       +-- Keep the failed camera waiting under retry backoff until eligible.
             |
             +-- 4. Once every visible camera has a trusted image
                 |
