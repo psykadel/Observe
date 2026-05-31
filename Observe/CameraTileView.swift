@@ -6,6 +6,7 @@ struct CameraTileView: View {
     let fixedHeight: CGFloat?
     let staleVisualThreshold: TimeInterval
     let isBatteryCamera: Bool
+    var showsName = true
     var surfaceMode: CameraSurfaceMode = .wall
 
     private let tileAspectRatio: CGFloat = 16 / 9
@@ -35,10 +36,12 @@ struct CameraTileView: View {
                 )
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(feed.name)
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    if showsName {
+                        Text(feed.name)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
 
                     statusLine(status: status)
                 }

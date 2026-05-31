@@ -55,6 +55,33 @@ enum WallDensity: String, CaseIterable, Identifiable {
     }
 }
 
+enum CameraNameVisibility: String, CaseIterable, Identifiable {
+    case show
+    case oneColumnOnly
+    case hide
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .show: "Show"
+        case .oneColumnOnly: "1 Column Only"
+        case .hide: "Hide"
+        }
+    }
+
+    func showsName(isOneColumnLayout: Bool) -> Bool {
+        switch self {
+        case .show:
+            true
+        case .oneColumnOnly:
+            isOneColumnLayout
+        case .hide:
+            false
+        }
+    }
+}
+
 enum CameraWallAvailability {
     struct CharacteristicSnapshot {
         let serviceType: String

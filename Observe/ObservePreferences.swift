@@ -5,6 +5,7 @@ final class ObservePreferences: ObservableObject {
     private enum Keys {
         static let selectedHomeID = "observe.selectedHomeID"
         static let density = "observe.wallDensity"
+        static let cameraNameVisibility = "observe.cameraNameVisibility"
         static let remotePriority = "observe.remotePriority"
         static let staleVisualHighlightSeconds = "observe.staleVisualHighlightSeconds"
         static let batteryWakeCameraIDs = "observe.batteryWakeCameraIDs"
@@ -20,6 +21,10 @@ final class ObservePreferences: ObservableObject {
 
     @Published var wallDensity: WallDensity {
         didSet { userDefaults.set(wallDensity.rawValue, forKey: Keys.density) }
+    }
+
+    @Published var cameraNameVisibility: CameraNameVisibility {
+        didSet { userDefaults.set(cameraNameVisibility.rawValue, forKey: Keys.cameraNameVisibility) }
     }
 
     @Published var remotePriorityIDs: [String] {
@@ -68,6 +73,8 @@ final class ObservePreferences: ObservableObject {
         default:
             WallDensity(rawValue: storedDensity) ?? .twoColumns
         }
+        let storedCameraNameVisibility = userDefaults.string(forKey: Keys.cameraNameVisibility) ?? ""
+        self.cameraNameVisibility = CameraNameVisibility(rawValue: storedCameraNameVisibility) ?? .show
         self.remotePriorityIDs = userDefaults.stringArray(forKey: Keys.remotePriority) ?? []
         self.batteryWakeCameraIDs = userDefaults.stringArray(forKey: Keys.batteryWakeCameraIDs) ?? []
         let storedStaleSeconds = userDefaults.object(forKey: Keys.staleVisualHighlightSeconds) as? Int

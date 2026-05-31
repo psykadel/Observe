@@ -753,6 +753,16 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(WallDensity.twoColumns.stepped(by: -1), .oneColumn)
     }
 
+    func testCameraNameVisibilityControlsWallNameDisplay() {
+        XCTAssertTrue(CameraNameVisibility.show.showsName(isOneColumnLayout: false))
+        XCTAssertTrue(CameraNameVisibility.show.showsName(isOneColumnLayout: true))
+        XCTAssertFalse(CameraNameVisibility.oneColumnOnly.showsName(isOneColumnLayout: false))
+        XCTAssertTrue(CameraNameVisibility.oneColumnOnly.showsName(isOneColumnLayout: true))
+        XCTAssertFalse(CameraNameVisibility.hide.showsName(isOneColumnLayout: false))
+        XCTAssertFalse(CameraNameVisibility.hide.showsName(isOneColumnLayout: true))
+        XCTAssertEqual(CameraNameVisibility.allCases.map(\.title), ["Show", "1 Column Only", "Hide"])
+    }
+
     @MainActor
     func testBatteryWakePreferenceRoundTrip() {
         let suiteName = "ObserveTests.\(UUID().uuidString)"
@@ -835,6 +845,28 @@ final class ObserveTests: XCTestCase {
 
         defaults.set("overview", forKey: "observe.wallDensity")
         XCTAssertEqual(ObservePreferences(userDefaults: defaults).wallDensity, .twoColumns)
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @MainActor
+    func testCameraNameVisibilityPreferenceRoundTrip() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertEqual(preferences.cameraNameVisibility, .show)
+
+        preferences.cameraNameVisibility = .oneColumnOnly
+        XCTAssertEqual(ObservePreferences(userDefaults: defaults).cameraNameVisibility, .oneColumnOnly)
+
+        preferences.cameraNameVisibility = .hide
+        XCTAssertEqual(ObservePreferences(userDefaults: defaults).cameraNameVisibility, .hide)
 
         defaults.removePersistentDomain(forName: suiteName)
     }

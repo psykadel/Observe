@@ -36,6 +36,16 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+
+                }
+
+                Section("Camera Names") {
+                    Picker("Show Camera Names", selection: cameraNameVisibilityBinding) {
+                        ForEach(CameraNameVisibility.allCases) { visibility in
+                            Text(visibility.title).tag(visibility)
+                        }
+                    }
+                    .pickerStyle(.segmented)
                 }
 
                 Section("Stale") {
@@ -151,6 +161,13 @@ struct SettingsView: View {
         Binding(
             get: { preferences.wallDensity },
             set: { preferences.wallDensity = $0 }
+        )
+    }
+
+    private var cameraNameVisibilityBinding: Binding<CameraNameVisibility> {
+        Binding(
+            get: { preferences.cameraNameVisibility },
+            set: { preferences.cameraNameVisibility = $0 }
         )
     }
 

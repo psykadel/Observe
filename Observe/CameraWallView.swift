@@ -98,6 +98,9 @@ struct CameraWallView: View {
                 cameraCount: store.wallFeeds.count
             )
             let items = layout.items(for: store.wallFeeds)
+            let showsNames = preferences.cameraNameVisibility.showsName(
+                isOneColumnLayout: preferences.wallDensity == .oneColumn
+            )
 
             ScrollView(.vertical, showsIndicators: layout.requiresScrolling) {
                 LazyVGrid(columns: layout.columns, spacing: layout.spacing) {
@@ -115,7 +118,8 @@ struct CameraWallView: View {
                                     staleVisualThreshold: preferences.isBatteryWakeCamera(id: feed.id)
                                         ? preferences.batteryStaleThreshold
                                         : preferences.staleVisualHighlightThreshold,
-                                    isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id)
+                                    isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id),
+                                    showsName: showsNames
                                 )
                             }
                             .buttonStyle(.plain)
@@ -142,6 +146,7 @@ struct CameraWallView: View {
                 CameraWallAutoLayout.Camera(id: $0.id, aspectRatio: $0.displayAspectRatio)
             }
             let tiles = layout.tiles(for: cameras)
+            let oneColumnTileIDs = CameraWallNamePresentation.oneColumnTileIDs(in: tiles)
             let feedsByID = Dictionary(uniqueKeysWithValues: visibleFeeds.map { ($0.id, $0) })
 
             ZStack(alignment: .topLeading) {
@@ -159,6 +164,9 @@ struct CameraWallView: View {
                                     ? preferences.batteryStaleThreshold
                                     : preferences.staleVisualHighlightThreshold,
                                 isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id),
+                                showsName: preferences.cameraNameVisibility.showsName(
+                                    isOneColumnLayout: oneColumnTileIDs.contains(tile.id)
+                                ),
                                 surfaceMode: .wallFit
                             )
                         }
@@ -214,6 +222,19 @@ struct CameraWallView: View {
 enum CameraWallPresentation {
     static func shouldClearSelection(scenePhase: ScenePhase, hasSelectedFeed: Bool) -> Bool {
         hasSelectedFeed && scenePhase == .background
+    }
+}
+
+enum CameraWallNamePresentation {
+    static func oneColumnTileIDs(in tiles: [CameraWallAutoLayout.Tile]) -> Set<String> {
+        let tilesByRow = Dictionary(grouping: tiles) { tile in
+            Int((tile.frame.midY * 100).rounded())
+        }
+
+        return tilesByRow.values.reduce(into: Set<String>()) { result, rowTiles in
+            guard rowTiles.count == 1, let tile = rowTiles.first else { return }
+            result.insert(tile.id)
+        }
     }
 }
 
