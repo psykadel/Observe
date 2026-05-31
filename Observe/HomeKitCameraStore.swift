@@ -21,6 +21,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var feedScheduleStates: [String: FeedScheduleState] = [:]
     private var currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
     private var liveCapacityExpansionBlockedUntil: Date?
+    private var liveCapacityIncludesUnconfirmedMemory = false
 
     private let maxConcurrentSnapshotRequests = 3
     private let snapshotRequestTimeout = CameraSchedulingDefaults.snapshotRequestTimeout
@@ -71,6 +72,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             focusedFeedID = nil
             liveCapacity = 0
             liveCapacityExpansionBlockedUntil = nil
+            liveCapacityIncludesUnconfirmedMemory = false
             currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             feeds.forEach { $0.resetSessionState() }
         }
@@ -132,6 +134,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             liveCapacity = 0
             liveCapacityExpansionBlockedUntil = nil
+            liveCapacityIncludesUnconfirmedMemory = false
             return
         }
 
@@ -191,6 +194,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         sessionMode = .optimistic
         liveCapacity = wallFeeds.count
         liveCapacityExpansionBlockedUntil = nil
+        liveCapacityIncludesUnconfirmedMemory = false
         startSession()
     }
 
@@ -236,6 +240,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         case .optimistic:
             liveBudget = planningSnapshots.count
         case .constrained:
+            if currentLiveCount > 0 {
+                recordRememberedRestrictedLiveCapacity(currentLiveCount, visibleFeedCount: planningSnapshots.count)
+            }
+            if liveCapacityIncludesUnconfirmedMemory, currentLiveCount >= liveCapacity {
+                liveCapacityIncludesUnconfirmedMemory = false
+            }
             liveCapacity = RestrictedLiveCapacity.recordSuccessfulStreams(
                 previousCapacity: liveCapacity,
                 currentLiveCount: currentLiveCount,
@@ -596,19 +606,33 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let visibleFeedCount = wallFeeds.count
 
         if sessionMode == .optimistic {
+            let rememberedCapacity = preferences.rememberedRestrictedLiveCapacity(
+                homeID: selectedHome?.uniqueIdentifier.uuidString,
+                visibleCameraCount: visibleFeedCount
+            )
             liveCapacity = RestrictedLiveCapacity.enteringAfterConstrainedSignal(
                 currentLiveCount: currentLiveCount,
-                visibleFeedCount: visibleFeedCount
+                visibleFeedCount: visibleFeedCount,
+                rememberedCapacity: rememberedCapacity
             )
+            liveCapacityIncludesUnconfirmedMemory = (rememberedCapacity ?? 0) > max(1, currentLiveCount)
             enterConstrainedMode()
             return
         }
 
-        liveCapacity = RestrictedLiveCapacity.afterConstrainedSignal(
-            previousCapacity: liveCapacity,
-            currentLiveCount: currentLiveCount,
-            visibleFeedCount: visibleFeedCount
-        )
+        if liveCapacityIncludesUnconfirmedMemory {
+            liveCapacity = RestrictedLiveCapacity.enteringAfterConstrainedSignal(
+                currentLiveCount: currentLiveCount,
+                visibleFeedCount: visibleFeedCount
+            )
+            liveCapacityIncludesUnconfirmedMemory = false
+        } else {
+            liveCapacity = RestrictedLiveCapacity.afterConstrainedSignal(
+                previousCapacity: liveCapacity,
+                currentLiveCount: currentLiveCount,
+                visibleFeedCount: visibleFeedCount
+            )
+        }
         refreshPresentation(focusedFeedID: focusedFeedID)
     }
 
@@ -680,10 +704,19 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveCapacity = min(liveCapacity, visibleCount)
         if visibleCount == 0 {
             liveCapacityExpansionBlockedUntil = nil
+            liveCapacityIncludesUnconfirmedMemory = false
         }
 
         objectWillChange.send()
         refreshPresentation(focusedFeedID: focusedFeedID)
+    }
+
+    private func recordRememberedRestrictedLiveCapacity(_ capacity: Int, visibleFeedCount: Int) {
+        preferences.recordRestrictedLiveCapacity(
+            capacity,
+            homeID: selectedHome?.uniqueIdentifier.uuidString,
+            visibleCameraCount: visibleFeedCount
+        )
     }
 }
 
@@ -749,6 +782,7 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
             self.liveCapacity = min(self.liveCapacity, visibleCount)
             if visibleCount == 0 {
                 self.liveCapacityExpansionBlockedUntil = nil
+                self.liveCapacityIncludesUnconfirmedMemory = false
             }
 
             self.objectWillChange.send()
@@ -853,8 +887,15 @@ enum BatteryWakeLeaseTimeoutPolicy {
 }
 
 enum RestrictedLiveCapacity {
-    static func enteringAfterConstrainedSignal(currentLiveCount: Int, visibleFeedCount: Int) -> Int {
-        boundedCapacity(observedLiveCount: currentLiveCount, visibleFeedCount: visibleFeedCount)
+    static func enteringAfterConstrainedSignal(
+        currentLiveCount: Int,
+        visibleFeedCount: Int,
+        rememberedCapacity: Int? = nil
+    ) -> Int {
+        boundedCapacity(
+            observedLiveCount: max(currentLiveCount, rememberedCapacity ?? 0),
+            visibleFeedCount: visibleFeedCount
+        )
     }
 
     static func recordSuccessfulStreams(

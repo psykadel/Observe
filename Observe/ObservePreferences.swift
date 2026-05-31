@@ -11,6 +11,7 @@ final class ObservePreferences: ObservableObject {
         static let batteryWakeTriggerSeconds = "observe.batteryWakeTriggerSeconds"
         static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
         static let batteryStaleSeconds = "observe.batteryStaleSeconds"
+        static let restrictedLiveCapacities = "observe.restrictedLiveCapacities"
     }
 
     @Published var selectedHomeID: String? {
@@ -149,6 +150,32 @@ final class ObservePreferences: ObservableObject {
         setStaleVisualHighlightSeconds(defaultStaleVisualHighlightSeconds)
     }
 
+    func rememberedRestrictedLiveCapacity(homeID: String?, visibleCameraCount: Int) -> Int? {
+        guard let key = restrictedLiveCapacityKey(homeID: homeID, visibleCameraCount: visibleCameraCount) else {
+            return nil
+        }
+
+        guard let stored = restrictedLiveCapacities()[key], stored > 0 else {
+            return nil
+        }
+
+        return min(stored, visibleCameraCount)
+    }
+
+    func recordRestrictedLiveCapacity(_ capacity: Int, homeID: String?, visibleCameraCount: Int) {
+        guard let key = restrictedLiveCapacityKey(homeID: homeID, visibleCameraCount: visibleCameraCount),
+              capacity > 0 else {
+            return
+        }
+
+        let boundedCapacity = min(capacity, visibleCameraCount)
+        var capacities = restrictedLiveCapacities()
+        guard boundedCapacity > (capacities[key] ?? 0) else { return }
+
+        capacities[key] = boundedCapacity
+        userDefaults.set(capacities, forKey: Keys.restrictedLiveCapacities)
+    }
+
     func isBatteryWakeCamera(id: String) -> Bool {
         batteryWakeCameraIDs.contains(id)
     }
@@ -191,5 +218,23 @@ final class ObservePreferences: ObservableObject {
         guard ids != batteryWakeCameraIDs else { return }
         batteryWakeCameraIDs = ids
         userDefaults.set(ids, forKey: Keys.batteryWakeCameraIDs)
+    }
+
+    private func restrictedLiveCapacities() -> [String: Int] {
+        let dictionary = userDefaults.dictionary(forKey: Keys.restrictedLiveCapacities) ?? [:]
+        return dictionary.compactMapValues { value in
+            if let intValue = value as? Int {
+                return intValue
+            }
+            if let numberValue = value as? NSNumber {
+                return numberValue.intValue
+            }
+            return nil
+        }
+    }
+
+    private func restrictedLiveCapacityKey(homeID: String?, visibleCameraCount: Int) -> String? {
+        guard let homeID, !homeID.isEmpty, visibleCameraCount > 0 else { return nil }
+        return "\(homeID)#\(visibleCameraCount)"
     }
 }

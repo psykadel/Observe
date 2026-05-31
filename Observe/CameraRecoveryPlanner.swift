@@ -281,6 +281,8 @@ struct CameraRecoveryPlanner {
                 batteryCaptureIDs.append(feed.id)
             }
 
+            fillRemainingLiveSlots(from: orderedFeeds, selectedIDs: &selectedIDs, capacity: capacity)
+
             return ConstrainedLiveSelection(
                 liveIDs: Set(selectedIDs),
                 batteryCaptureIDs: Set(batteryCaptureIDs),
@@ -288,16 +290,24 @@ struct CameraRecoveryPlanner {
             )
         }
 
-        for feed in orderedFeeds where selectedIDs.count < capacity {
-            guard !selectedIDs.contains(feed.id) else { continue }
-            selectedIDs.append(feed.id)
-        }
+        fillRemainingLiveSlots(from: orderedFeeds, selectedIDs: &selectedIDs, capacity: capacity)
 
         return ConstrainedLiveSelection(
             liveIDs: Set(selectedIDs),
             batteryCaptureIDs: Set(batteryCaptureIDs),
             batteryWaitingIDs: []
         )
+    }
+
+    private func fillRemainingLiveSlots(
+        from feeds: [FeedPlanningSnapshot],
+        selectedIDs: inout [String],
+        capacity: Int
+    ) {
+        for feed in feeds where selectedIDs.count < capacity {
+            guard !selectedIDs.contains(feed.id) else { continue }
+            selectedIDs.append(feed.id)
+        }
     }
 }
 

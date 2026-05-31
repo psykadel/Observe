@@ -57,7 +57,13 @@ APP START / SESSION START
             +-- The one-slot fallback is only an initial fallback.
                 |
                 +-- Restricted live capacity must be learned from the highest number of
-                    simultaneous live streams that have actually succeeded in this session.
+                |   simultaneous live streams that have actually succeeded.
+                +-- Remember confirmed restricted capacity by selected home and visible
+                |   camera count.
+                +-- On a later launch, if restricted mode is entered for that same
+                |   wall context, start from the remembered capacity instead of one.
+                +-- If HomeKit rejects that remembered capacity, drop back to the
+                    currently observed live count and continue normally.
 
 ---
 
@@ -163,6 +169,8 @@ RESTRICTED MODE
             |   +-- Use unleased remaining live slots for battery wake candidates.
             |   +-- Choose battery wake candidates in UI sort order.
             |   +-- Rotate to the next waiting candidate as slots become available.
+            |   +-- If battery wake work does not consume all known live capacity,
+            |       fill the remaining slots with the normal UI-priority live feeds.
             |   +-- If known restricted capacity may be too low and capacity probing
             |       is not blocked, cautiously try one additional live slot for
             |       eligible battery wake work.

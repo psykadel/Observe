@@ -199,6 +199,31 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(plan.decisionsByID["healthy-live"]?.presentationMode, .snapshot)
     }
 
+    func testUnusedBatteryCaptureCapacityFallsBackToNormalLivePriority() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "top-live", priorityIndex: 0, lastSnapshotAge: 5),
+                makeFeed(id: "second-live", priorityIndex: 1, lastSnapshotAge: 5),
+                makeFeed(
+                    id: "active-battery",
+                    priorityIndex: 2,
+                    lastSnapshotAge: 70,
+                    isBatteryWakeCamera: true,
+                    batteryWakeLeaseStartedAt: now.addingTimeInterval(-1)
+                ),
+                makeFeed(id: "trusted-battery", priorityIndex: 3, lastSnapshotAge: 5, isBatteryWakeCamera: true)
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 2,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["active-battery", "top-live"])
+        XCTAssertEqual(plan.decisionsByID["active-battery"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(plan.decisionsByID["top-live"]?.presentationMode, .live)
+        XCTAssertEqual(plan.decisionsByID["second-live"]?.presentationMode, .snapshot)
+    }
+
     func testNormalLiveAssignmentAfterEveryVisibleCameraIsTrusted() {
         let plan = planner.makePlan(
             feeds: [
@@ -421,6 +446,33 @@ final class ObserveTests: XCTestCase {
         )
     }
 
+    func testRestrictedCapacityStartsFromRememberedCapacityWhenEnteringConstrainedMode() {
+        XCTAssertEqual(
+            RestrictedLiveCapacity.enteringAfterConstrainedSignal(
+                currentLiveCount: 0,
+                visibleFeedCount: 6,
+                rememberedCapacity: 2
+            ),
+            2
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.enteringAfterConstrainedSignal(
+                currentLiveCount: 1,
+                visibleFeedCount: 6,
+                rememberedCapacity: 3
+            ),
+            3
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.enteringAfterConstrainedSignal(
+                currentLiveCount: 0,
+                visibleFeedCount: 1,
+                rememberedCapacity: 3
+            ),
+            1
+        )
+    }
+
     func testRestrictedCapacityRecordsSuccessfulLiveHighWaterMark() {
         XCTAssertEqual(
             RestrictedLiveCapacity.recordSuccessfulStreams(previousCapacity: 1, currentLiveCount: 2, visibleFeedCount: 4),
@@ -497,6 +549,31 @@ final class ObserveTests: XCTestCase {
             RestrictedLiveCapacity.afterConstrainedSignal(previousCapacity: 2, currentLiveCount: 0, visibleFeedCount: 0),
             0
         )
+    }
+
+    @MainActor
+    func testRememberedRestrictedCapacityPersistsPerHomeAndVisibleCameraCount() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertNil(preferences.rememberedRestrictedLiveCapacity(homeID: "home-a", visibleCameraCount: 6))
+
+        preferences.recordRestrictedLiveCapacity(2, homeID: "home-a", visibleCameraCount: 6)
+        preferences.recordRestrictedLiveCapacity(1, homeID: "home-a", visibleCameraCount: 6)
+        preferences.recordRestrictedLiveCapacity(3, homeID: "home-a", visibleCameraCount: 5)
+
+        let reloaded = ObservePreferences(userDefaults: defaults)
+        XCTAssertEqual(reloaded.rememberedRestrictedLiveCapacity(homeID: "home-a", visibleCameraCount: 6), 2)
+        XCTAssertEqual(reloaded.rememberedRestrictedLiveCapacity(homeID: "home-a", visibleCameraCount: 5), 3)
+        XCTAssertNil(reloaded.rememberedRestrictedLiveCapacity(homeID: "home-b", visibleCameraCount: 6))
+
+        defaults.removePersistentDomain(forName: suiteName)
     }
 
     func testDisplayClassifierMarksLiveAsGreenAndNotStale() {
