@@ -1,5 +1,8 @@
 import HomeKit
 import SwiftUI
+#if targetEnvironment(macCatalyst)
+import UIKit
+#endif
 
 struct CameraWallView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -9,6 +12,9 @@ struct CameraWallView: View {
 
     @State private var selectedFeed: CameraFeedCoordinator?
     @State private var showsSettings = false
+    @State private var hasRequestedLaunchMaximize = false
+
+    private var wallPlatform: CameraWallPlatform { .current }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -18,6 +24,7 @@ struct CameraWallView: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 2)
                 .padding(.bottom, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Button {
                 showsSettings = true
@@ -45,6 +52,10 @@ struct CameraWallView: View {
                 selectedFeed = nil
             }
         }
+        .maximizeMainWindowOnLaunch(
+            platform: wallPlatform,
+            hasRequestedMaximize: $hasRequestedLaunchMaximize
+        )
     }
 
     @ViewBuilder
@@ -83,7 +94,8 @@ struct CameraWallView: View {
 
     @ViewBuilder
     private var cameraWall: some View {
-        if preferences.wallDensity == .auto {
+        let density = preferences.effectiveWallDensity(for: wallPlatform)
+        if density == .auto {
             cameraAutoWall
         } else {
             cameraGrid
@@ -92,14 +104,15 @@ struct CameraWallView: View {
 
     private var cameraGrid: some View {
         GeometryReader { proxy in
+            let density = preferences.effectiveWallDensity(for: wallPlatform)
             let layout = CameraWallLayout(
-                density: preferences.wallDensity,
+                density: density,
                 availableSize: proxy.size,
                 cameraCount: store.wallFeeds.count
             )
             let items = layout.items(for: store.wallFeeds)
             let showsNames = preferences.cameraNameVisibility.showsName(
-                isOneColumnLayout: preferences.wallDensity == .oneColumn
+                isOneColumnLayout: density == .oneColumn
             )
 
             ScrollView(.vertical, showsIndicators: layout.requiresScrolling) {
@@ -138,7 +151,17 @@ struct CameraWallView: View {
         }
     }
 
+    @ViewBuilder
     private var cameraAutoWall: some View {
+        switch wallPlatform {
+        case .iPhone:
+            cameraPhoneAutoWall
+        case .mac:
+            cameraMacAutoWall
+        }
+    }
+
+    private var cameraPhoneAutoWall: some View {
         GeometryReader { proxy in
             let layout = CameraWallAutoLayout(availableSize: proxy.size)
             let visibleFeeds = Array(store.wallFeeds.prefix(CameraWallAutoLayout.maxCameraCount))
@@ -182,6 +205,48 @@ struct CameraWallView: View {
         }
     }
 
+    private var cameraMacAutoWall: some View {
+        GeometryReader { proxy in
+            let layout = CameraWallMacAutoLayout(availableSize: proxy.size)
+            let visibleFeeds = store.wallFeeds
+            let cameras = visibleFeeds.map {
+                CameraWallAutoLayout.Camera(id: $0.id, aspectRatio: $0.displayAspectRatio)
+            }
+            let result = layout.layout(for: cameras)
+            let oneColumnTileIDs = CameraWallNamePresentation.oneColumnTileIDs(in: result.tiles)
+            let feedsByID = Dictionary(uniqueKeysWithValues: visibleFeeds.map { ($0.id, $0) })
+
+            ZStack(alignment: .topLeading) {
+                ForEach(result.tiles) { tile in
+                    if let feed = feedsByID[tile.id] {
+                        Button {
+                            store.focusOn(feed: feed)
+                            selectedFeed = feed
+                        } label: {
+                            CameraTileView(
+                                feed: feed,
+                                fixedWidth: tile.frame.width,
+                                fixedHeight: tile.frame.height,
+                                staleVisualThreshold: preferences.isBatteryWakeCamera(id: feed.id)
+                                    ? preferences.batteryStaleThreshold
+                                    : preferences.staleVisualHighlightThreshold,
+                                isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id),
+                                showsName: preferences.cameraNameVisibility.showsName(
+                                    isOneColumnLayout: oneColumnTileIDs.contains(tile.id)
+                                ),
+                                surfaceMode: .wallFit
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: tile.frame.width, height: tile.frame.height)
+                        .position(x: tile.frame.midX, y: tile.frame.midY)
+                    }
+                }
+            }
+            .frame(width: result.contentSize.width, height: result.contentSize.height)
+        }
+    }
+
     private var densityGesture: some Gesture {
         MagnifyGesture()
             .onEnded { value in
@@ -216,6 +281,7 @@ struct CameraWallView: View {
                 .padding(.horizontal, 20)
             Spacer()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -237,6 +303,77 @@ enum CameraWallNamePresentation {
         }
     }
 }
+
+private extension View {
+    func maximizeMainWindowOnLaunch(
+        platform: CameraWallPlatform,
+        hasRequestedMaximize: Binding<Bool>
+    ) -> some View {
+        modifier(MainWindowLaunchMaximizeModifier(
+            platform: platform,
+            hasRequestedMaximize: hasRequestedMaximize
+        ))
+    }
+}
+
+private struct MainWindowLaunchMaximizeModifier: ViewModifier {
+    let platform: CameraWallPlatform
+    @Binding var hasRequestedMaximize: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if targetEnvironment(macCatalyst)
+        if MainWindowPresentation.shouldMaximizeOnLaunch(for: platform) {
+            content.background(
+                MainWindowAccessor { windowScene in
+                    guard !hasRequestedMaximize else { return }
+                    hasRequestedMaximize = true
+                    windowScene.maximizeForObserveLaunch()
+                }
+            )
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+#if targetEnvironment(macCatalyst)
+private struct MainWindowAccessor: UIViewRepresentable {
+    let onWindowSceneAvailable: (UIWindowScene) -> Void
+
+    func makeUIView(context _: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        DispatchQueue.main.async { [weak view] in
+            if let windowScene = view?.window?.windowScene {
+                onWindowSceneAvailable(windowScene)
+            }
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context _: Context) {
+        DispatchQueue.main.async { [weak uiView] in
+            if let windowScene = uiView?.window?.windowScene {
+                onWindowSceneAvailable(windowScene)
+            }
+        }
+    }
+}
+
+private extension UIWindowScene {
+    func maximizeForObserveLaunch() {
+        let displayFrame = screen.applicationFrame
+        guard displayFrame.width > 0, displayFrame.height > 0 else { return }
+
+        requestGeometryUpdate(.Mac(systemFrame: displayFrame)) { error in
+            NSLog("Observe failed to maximize the launch window: %@", error.localizedDescription)
+        }
+    }
+}
+#endif
 
 private struct CameraWallLayout {
     let density: WallDensity
@@ -476,5 +613,155 @@ struct CameraWallAutoLayout {
     private struct CandidateLayout {
         let tiles: [Tile]
         let score: CGFloat
+    }
+}
+
+struct CameraWallMacAutoLayout {
+    struct Layout: Equatable {
+        let tiles: [CameraWallAutoLayout.Tile]
+        let contentSize: CGSize
+    }
+
+    static let minimumTileWidth: CGFloat = 120
+    static let preferredTileWidth: CGFloat = 220
+
+    let availableSize: CGSize
+    let spacing: CGFloat
+
+    init(availableSize: CGSize, spacing: CGFloat = 8) {
+        self.availableSize = availableSize
+        self.spacing = spacing
+    }
+
+    func layout(for cameras: [CameraWallAutoLayout.Camera]) -> Layout {
+        let normalizedCameras = cameras.map { camera in
+            CameraWallAutoLayout.Camera(id: camera.id, aspectRatio: normalizedAspectRatio(camera.aspectRatio))
+        }
+        guard !normalizedCameras.isEmpty, availableSize.width > 0, availableSize.height > 0 else {
+            return Layout(tiles: [], contentSize: availableSize)
+        }
+
+        return columnCounts(for: normalizedCameras.count)
+            .compactMap { candidateLayout(for: normalizedCameras, columnCount: $0) }
+            .max { $0.score < $1.score }?
+            .layout ?? Layout(tiles: [], contentSize: availableSize)
+    }
+
+    private func candidateLayout(
+        for cameras: [CameraWallAutoLayout.Camera],
+        columnCount: Int
+    ) -> CandidateLayout? {
+        let safeSize = CGSize(
+            width: max(availableSize.width, 1),
+            height: max(availableSize.height, 1)
+        )
+        let columnSpacing = CGFloat(max(0, columnCount - 1)) * spacing
+        guard safeSize.width > columnSpacing else { return nil }
+
+        let unscaledTileWidth = max((safeSize.width - columnSpacing) / CGFloat(columnCount), 1)
+        let rows = cameras.chunked(size: columnCount)
+
+        let rowSpacing = CGFloat(max(0, rows.count - 1)) * spacing
+        guard safeSize.height > rowSpacing else { return nil }
+
+        let unscaledRowHeights = rows.map { row in
+            row.map { unscaledTileWidth / $0.aspectRatio }.max() ?? 0
+        }
+        let unscaledTileHeight = unscaledRowHeights.reduce(CGFloat.zero, +)
+        guard unscaledTileHeight > 0 else { return nil }
+
+        let tileScale = min(1, (safeSize.height - rowSpacing) / unscaledTileHeight)
+        let tileWidth = max(unscaledTileWidth * tileScale, 1)
+        let rowHeights = unscaledRowHeights.map { max($0 * tileScale, 1) }
+        let contentHeight = rowHeights.reduce(CGFloat.zero, +) + rowSpacing
+        let startY = max((safeSize.height - contentHeight) / 2, 0)
+
+        var tiles: [CameraWallAutoLayout.Tile] = []
+        var y = startY
+        for (rowIndex, row) in rows.enumerated() {
+            let rowHeight = rowHeights[rowIndex]
+            let rowWidth = CGFloat(row.count) * tileWidth + CGFloat(max(0, row.count - 1)) * spacing
+            var x = max((safeSize.width - rowWidth) / 2, 0)
+
+            for camera in row {
+                let tileHeight = tileWidth / camera.aspectRatio
+                let frame = CGRect(
+                    x: x,
+                    y: y + max((rowHeight - tileHeight) / 2, 0),
+                    width: tileWidth,
+                    height: tileHeight
+                )
+                tiles.append(CameraWallAutoLayout.Tile(id: camera.id, frame: frame, aspectRatio: camera.aspectRatio))
+                x += tileWidth + spacing
+            }
+
+            y += rowHeight + spacing
+        }
+
+        guard tiles.allSatisfy({ $0.frame.maxX <= safeSize.width + 0.01 && $0.frame.maxY <= safeSize.height + 0.01 }) else {
+            return nil
+        }
+
+        return CandidateLayout(
+            layout: Layout(tiles: tiles, contentSize: availableSize),
+            score: score(
+                tiles: tiles,
+                contentHeight: contentHeight,
+                columnCount: columnCount,
+                rowCount: rows.count
+            )
+        )
+    }
+
+    private func columnCounts(for cameraCount: Int) -> [Int] {
+        Array(1...max(cameraCount, 1))
+    }
+
+    private func score(
+        tiles: [CameraWallAutoLayout.Tile],
+        contentHeight: CGFloat,
+        columnCount: Int,
+        rowCount: Int
+    ) -> CGFloat {
+        let viewportArea = max(availableSize.width * availableSize.height, 1)
+        let usefulArea = tiles.reduce(CGFloat.zero) { $0 + $1.frame.width * $1.frame.height }
+        let coverageScore = usefulArea / viewportArea
+        let minimumWidth = tiles.map(\.frame.width).min() ?? 0
+        let minimumWidthScore = min(minimumWidth / Self.preferredTileWidth, 1)
+        let tooSmallPenalty = pow(max((Self.minimumTileWidth - minimumWidth) / Self.minimumTileWidth, 0), 2)
+        let heightUnderfill = max(availableSize.height - contentHeight, 0) / max(availableSize.height, 1)
+        let columnBalance = CGFloat(columnCount) / CGFloat(max(tiles.count, 1))
+
+        return coverageScore * 1_000
+            + minimumWidthScore * 150
+            + columnBalance * 20
+            - tooSmallPenalty * 700
+            - heightUnderfill * 40
+            - CGFloat(rowCount) * 4
+    }
+
+    private func normalizedAspectRatio(_ aspectRatio: CGFloat) -> CGFloat {
+        let safeAspectRatio = aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : 16 / 9
+        return max(0.75, min(safeAspectRatio, 2.2))
+    }
+
+    private struct CandidateLayout {
+        let layout: Layout
+        let score: CGFloat
+    }
+}
+
+private extension Array {
+    func chunked(size: Int) -> [[Element]] {
+        guard size > 0 else { return [] }
+
+        var chunks: [[Element]] = []
+        var startIndex = self.startIndex
+        while startIndex < endIndex {
+            let chunkEndIndex = index(startIndex, offsetBy: size, limitedBy: endIndex) ?? endIndex
+            chunks.append(Array(self[startIndex..<chunkEndIndex]))
+            startIndex = chunkEndIndex
+        }
+        return chunks
     }
 }

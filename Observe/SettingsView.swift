@@ -29,14 +29,16 @@ struct SettingsView: View {
 
                 }
 
-                Section("Wall") {
-                    Picker("Density", selection: densityBinding) {
-                        ForEach(WallDensity.allCases) { density in
-                            Text(density.title).tag(density)
+                if SettingsPresentation.showsWallDensitySection(for: .current) {
+                    Section("Wall") {
+                        Picker("Density", selection: densityBinding) {
+                            ForEach(WallDensity.selectableCases(for: .current)) { density in
+                                Text(density.title).tag(density)
+                            }
                         }
-                    }
-                    .pickerStyle(.segmented)
+                        .pickerStyle(.segmented)
 
+                    }
                 }
 
                 Section("Camera Names") {
@@ -134,7 +136,7 @@ struct SettingsView: View {
             .navigationTitle("Observe")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: doneToolbarPlacement) {
                     Button("Done") { dismiss() }
                 }
             }
@@ -145,6 +147,15 @@ struct SettingsView: View {
                 )
                 .presentationDetents([.height(420), .medium])
             }
+        }
+    }
+
+    private var doneToolbarPlacement: ToolbarItemPlacement {
+        switch SettingsPresentation.doneButtonPlacement(for: .current) {
+        case .leading:
+            .cancellationAction
+        case .trailing:
+            .confirmationAction
         }
     }
 

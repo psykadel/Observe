@@ -753,6 +753,22 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(WallDensity.twoColumns.stepped(by: -1), .oneColumn)
     }
 
+    func testWallDensityOptionsStayEditableOnIPhoneButAutoOnlyOnMac() {
+        XCTAssertEqual(WallDensity.selectableCases(for: .iPhone), [.auto, .oneColumn, .twoColumns])
+        XCTAssertEqual(WallDensity.selectableCases(for: .mac), [.auto])
+        XCTAssertTrue(SettingsPresentation.showsWallDensitySection(for: .iPhone))
+        XCTAssertFalse(SettingsPresentation.showsWallDensitySection(for: .mac))
+        XCTAssertTrue(CameraWallInteraction.allowsDensityAdjustment(for: .iPhone))
+        XCTAssertFalse(CameraWallInteraction.allowsDensityAdjustment(for: .mac))
+        XCTAssertEqual(SettingsPresentation.doneButtonPlacement(for: .iPhone), .leading)
+        XCTAssertEqual(SettingsPresentation.doneButtonPlacement(for: .mac), .trailing)
+    }
+
+    func testMainWindowLaunchesMaximizedOnlyOnMac() {
+        XCTAssertFalse(MainWindowPresentation.shouldMaximizeOnLaunch(for: .iPhone))
+        XCTAssertTrue(MainWindowPresentation.shouldMaximizeOnLaunch(for: .mac))
+    }
+
     func testCameraNameVisibilityControlsWallNameDisplay() {
         XCTAssertTrue(CameraNameVisibility.show.showsName(isOneColumnLayout: false))
         XCTAssertTrue(CameraNameVisibility.show.showsName(isOneColumnLayout: true))
@@ -1095,6 +1111,74 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(tiles[3].aspectRatio, 16 / 9, accuracy: 0.001)
     }
 
+    func testMacAutoWallLayoutChoosesColumnsFromWindowShape() {
+        let cameras = makeAutoLayoutCameras(count: 10)
+        let square = CameraWallMacAutoLayout(
+            availableSize: CGSize(width: 900, height: 900),
+            spacing: 8
+        ).layout(for: cameras)
+        let wide = CameraWallMacAutoLayout(
+            availableSize: CGSize(width: 1440, height: 900),
+            spacing: 8
+        ).layout(for: cameras)
+        let narrow = CameraWallMacAutoLayout(
+            availableSize: CGSize(width: 500, height: 900),
+            spacing: 8
+        ).layout(for: cameras)
+
+        XCTAssertEqual(maxRowSize(in: square.tiles), 3)
+        XCTAssertEqual(maxRowSize(in: wide.tiles), 4)
+        XCTAssertEqual(maxRowSize(in: narrow.tiles), 2)
+        XCTAssertEqual(square.contentSize, CGSize(width: 900, height: 900))
+        XCTAssertEqual(wide.contentSize, CGSize(width: 1440, height: 900))
+        XCTAssertEqual(narrow.contentSize, CGSize(width: 500, height: 900))
+        assertMacTiles(square.tiles, fitIn: CGSize(width: 900, height: 900), message: "square")
+        assertMacTiles(wide.tiles, fitIn: CGSize(width: 1440, height: 900), message: "wide")
+        assertMacTiles(narrow.tiles, fitIn: CGSize(width: 500, height: 900), message: "narrow")
+    }
+
+    func testMacAutoWallLayoutFitsEveryTileInSmallWindows() {
+        let cameras = makeAutoLayoutCameras(count: 4)
+        let availableSize = CGSize(width: 320, height: 360)
+        let layout = CameraWallMacAutoLayout(
+            availableSize: availableSize,
+            spacing: 8
+        ).layout(for: cameras)
+
+        XCTAssertEqual(layout.tiles.map(\.id), cameras.map(\.id))
+        XCTAssertEqual(layout.contentSize, availableSize)
+        XCTAssertTrue(layout.tiles.allSatisfy { $0.frame.width >= CameraWallMacAutoLayout.minimumTileWidth })
+        assertMacTiles(layout.tiles, fitIn: availableSize, message: "small window")
+    }
+
+    func testMacAutoWallLayoutFitsEveryTileInAwkwardResizableWindows() {
+        let cameras = makeAutoLayoutCameras(count: 10)
+        let sizes = [
+            CGSize(width: 1212, height: 839),
+            CGSize(width: 1180, height: 680),
+            CGSize(width: 760, height: 560),
+            CGSize(width: 520, height: 720)
+        ]
+
+        for size in sizes {
+            let layout = CameraWallMacAutoLayout(availableSize: size, spacing: 8).layout(for: cameras)
+
+            XCTAssertEqual(layout.tiles.map(\.id), cameras.map(\.id), "\(size)")
+            XCTAssertEqual(layout.contentSize, size, "\(size)")
+            assertMacTiles(layout.tiles, fitIn: size, message: "\(size)")
+        }
+    }
+
+    func testMacAutoWallLayoutIncludesMoreThanThePhoneAutoLimit() {
+        let cameras = makeAutoLayoutCameras(count: CameraWallAutoLayout.maxCameraCount + 2)
+        let availableSize = CGSize(width: 1440, height: 900)
+        let layout = CameraWallMacAutoLayout(availableSize: availableSize, spacing: 8).layout(for: cameras)
+
+        XCTAssertEqual(layout.tiles.map(\.id), cameras.map(\.id))
+        XCTAssertEqual(layout.contentSize, availableSize)
+        assertMacTiles(layout.tiles, fitIn: availableSize, message: "more than phone limit")
+    }
+
     private func makeFeed(
         id: String,
         priorityIndex: Int,
@@ -1155,6 +1239,20 @@ final class ObserveTests: XCTestCase {
             XCTAssertLessThanOrEqual(tile.frame.maxX, availableSize.width + 0.01, message, file: file, line: line)
             XCTAssertLessThanOrEqual(tile.frame.maxY, availableSize.height + 0.01, message, file: file, line: line)
             XCTAssertEqual(tile.frame.width / tile.frame.height, tile.aspectRatio, accuracy: 0.001, message, file: file, line: line)
+        }
+    }
+
+    private func assertMacTiles(
+        _ tiles: [CameraWallAutoLayout.Tile],
+        fitIn contentSize: CGSize,
+        message: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        assertAutoTiles(tiles, fitIn: contentSize, message: message, file: file, line: line)
+        XCTAssertFalse(tiles.isEmpty, message, file: file, line: line)
+        for tile in tiles {
+            XCTAssertGreaterThanOrEqual(tile.frame.width, CameraWallMacAutoLayout.minimumTileWidth, message, file: file, line: line)
         }
     }
 

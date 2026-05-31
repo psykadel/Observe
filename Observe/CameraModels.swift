@@ -44,6 +44,15 @@ enum WallDensity: String, CaseIterable, Identifiable {
         return preferredVisibleRows * columnCount
     }
 
+    static func selectableCases(for platform: CameraWallPlatform) -> [WallDensity] {
+        switch platform {
+        case .iPhone:
+            allCases
+        case .mac:
+            [.auto]
+        }
+    }
+
     func stepped(by delta: Int) -> WallDensity {
         let allCases = Self.allCases
         guard let currentIndex = allCases.firstIndex(of: self) else {
@@ -52,6 +61,66 @@ enum WallDensity: String, CaseIterable, Identifiable {
 
         let nextIndex = max(0, min(allCases.count - 1, currentIndex + delta))
         return allCases[nextIndex]
+    }
+}
+
+enum CameraWallPlatform {
+    case iPhone
+    case mac
+
+    static var current: CameraWallPlatform {
+        #if targetEnvironment(macCatalyst) || os(macOS)
+        .mac
+        #else
+        .iPhone
+        #endif
+    }
+}
+
+enum SettingsPresentation {
+    static func showsWallDensitySection(for platform: CameraWallPlatform) -> Bool {
+        switch platform {
+        case .iPhone:
+            true
+        case .mac:
+            false
+        }
+    }
+
+    static func doneButtonPlacement(for platform: CameraWallPlatform) -> SettingsDoneButtonPlacement {
+        switch platform {
+        case .iPhone:
+            .leading
+        case .mac:
+            .trailing
+        }
+    }
+}
+
+enum SettingsDoneButtonPlacement {
+    case leading
+    case trailing
+}
+
+enum MainWindowPresentation {
+    static func shouldMaximizeOnLaunch(for platform: CameraWallPlatform) -> Bool {
+        switch platform {
+        case .iPhone:
+            false
+        case .mac:
+            true
+        }
+    }
+}
+
+enum CameraWallInteraction {
+    static func allowsDensityAdjustment(for platform: CameraWallPlatform) -> Bool {
+        switch platform {
+        case .iPhone:
+            true
+        case .mac:
+            false
+        }
     }
 }
 

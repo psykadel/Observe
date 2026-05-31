@@ -138,6 +138,15 @@ final class ObservePreferences: ObservableObject {
         }
     }
 
+    func effectiveWallDensity(for platform: CameraWallPlatform) -> WallDensity {
+        switch platform {
+        case .iPhone:
+            wallDensity
+        case .mac:
+            .auto
+        }
+    }
+
     func adjustDensity(withHorizontalSwipe translationWidth: CGFloat) {
         let minimumSwipeDistance: CGFloat = 48
         guard abs(translationWidth) >= minimumSwipeDistance else { return }

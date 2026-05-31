@@ -100,10 +100,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     func adjustDensity(with scale: CGFloat) {
+        guard CameraWallInteraction.allowsDensityAdjustment(for: .current) else { return }
+
         preferences.adjustDensity(with: scale)
     }
 
     func adjustDensity(withHorizontalSwipe translationWidth: CGFloat) {
+        guard CameraWallInteraction.allowsDensityAdjustment(for: .current) else { return }
+
         preferences.adjustDensity(withHorizontalSwipe: translationWidth)
     }
 
