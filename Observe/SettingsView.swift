@@ -75,21 +75,32 @@ struct SettingsView: View {
 
                         NumberSettingRow(
                             title: "Start Live Capture After",
-                            value: preferences.batteryWakeTriggerSeconds
+                            value: preferences.batteryWakeTriggerSeconds,
+                            helperText: NumberSettingKind.batteryWakeTrigger.helperText
                         ) {
                             editingNumberSetting = .batteryWakeTrigger
                         }
 
                         NumberSettingRow(
                             title: "Wait Before Capturing",
-                            value: preferences.batteryCaptureWarmupSeconds
+                            value: preferences.batteryCaptureWarmupSeconds,
+                            helperText: NumberSettingKind.batteryCaptureWarmup.helperText
                         ) {
                             editingNumberSetting = .batteryCaptureWarmup
                         }
 
                         NumberSettingRow(
+                            title: "Priming Window",
+                            value: preferences.restrictedStartupSnapshotPrimingSeconds,
+                            helperText: NumberSettingKind.restrictedStartupSnapshotPriming.helperText
+                        ) {
+                            editingNumberSetting = .restrictedStartupSnapshotPriming
+                        }
+
+                        NumberSettingRow(
                             title: "Show As Stale",
-                            value: preferences.batteryStaleSeconds
+                            value: preferences.batteryStaleSeconds,
+                            helperText: NumberSettingKind.batteryStale.helperText
                         ) {
                             editingNumberSetting = .batteryStale
                         }
@@ -217,6 +228,13 @@ struct SettingsView: View {
         )
     }
 
+    private var restrictedStartupSnapshotPrimingBinding: Binding<Int> {
+        Binding(
+            get: { preferences.restrictedStartupSnapshotPrimingSeconds },
+            set: { preferences.setRestrictedStartupSnapshotPrimingSeconds($0) }
+        )
+    }
+
     private func numberBinding(for setting: NumberSettingKind) -> Binding<Int> {
         switch setting {
         case .staleThreshold:
@@ -225,6 +243,8 @@ struct SettingsView: View {
             batteryWakeTriggerBinding
         case .batteryCaptureWarmup:
             batteryCaptureWarmupBinding
+        case .restrictedStartupSnapshotPriming:
+            restrictedStartupSnapshotPrimingBinding
         case .batteryStale:
             batteryStaleBinding
         }
@@ -248,6 +268,7 @@ enum NumberSettingKind: String, Identifiable {
     case staleThreshold
     case batteryWakeTrigger
     case batteryCaptureWarmup
+    case restrictedStartupSnapshotPriming
     case batteryStale
 
     var id: String { rawValue }
@@ -260,6 +281,8 @@ enum NumberSettingKind: String, Identifiable {
             "Start Live Capture After"
         case .batteryCaptureWarmup:
             "Wait Before Capturing"
+        case .restrictedStartupSnapshotPriming:
+            "Priming Window"
         case .batteryStale:
             "Show As Stale"
         }
@@ -269,6 +292,8 @@ enum NumberSettingKind: String, Identifiable {
         switch self {
         case .batteryCaptureWarmup:
             [3, 5, 8, 10, 15]
+        case .restrictedStartupSnapshotPriming:
+            [0, 5, 10, 15, 20, 30]
         case .staleThreshold, .batteryWakeTrigger:
             [15, 30, 45, 60, 90, 120]
         case .batteryStale:
@@ -280,12 +305,34 @@ enum NumberSettingKind: String, Identifiable {
         switch self {
         case .batteryCaptureWarmup:
             1
-        case .staleThreshold, .batteryWakeTrigger, .batteryStale:
+        case .staleThreshold, .batteryWakeTrigger, .restrictedStartupSnapshotPriming, .batteryStale:
             5
         }
     }
 
-    var minimumValue: Int { 1 }
+    var minimumValue: Int {
+        switch self {
+        case .restrictedStartupSnapshotPriming:
+            0
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale:
+            1
+        }
+    }
+
+    var helperText: String? {
+        switch self {
+        case .staleThreshold:
+            nil
+        case .batteryWakeTrigger:
+            "When a battery camera still gets this old, start a live capture."
+        case .batteryCaptureWarmup:
+            "After live starts, wait this long before saving the still."
+        case .restrictedStartupSnapshotPriming:
+            "At startup, wait this long before new battery captures so important wired cameras can refresh first."
+        case .batteryStale:
+            "Mark a battery still stale when it gets this old."
+        }
+    }
 }
 
 struct NumberSettingDraft: Equatable {
@@ -294,7 +341,7 @@ struct NumberSettingDraft: Equatable {
     let minimumValue: Int
 
     init(value: Int, minimumValue: Int) {
-        self.minimumValue = max(1, minimumValue)
+        self.minimumValue = max(0, minimumValue)
         let sanitizedValue = max(self.minimumValue, value)
         self.value = sanitizedValue
         self.text = "\(sanitizedValue)"
@@ -321,23 +368,33 @@ struct NumberSettingDraft: Equatable {
 private struct NumberSettingRow: View {
     let title: String
     let value: Int
+    var helperText: String?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack {
-                Text(title)
-                    .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(title)
+                        .foregroundStyle(.primary)
 
-                Spacer()
+                    Spacer()
 
-                Text("\(value) sec")
-                    .font(.body.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    Text("\(value) sec")
+                        .font(.body.monospacedDigit())
+                        .foregroundStyle(.secondary)
 
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+
+                if let helperText {
+                    Text(helperText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
             }
             .contentShape(Rectangle())
         }

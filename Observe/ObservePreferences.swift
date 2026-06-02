@@ -11,6 +11,7 @@ final class ObservePreferences: ObservableObject {
         static let batteryWakeCameraIDs = "observe.batteryWakeCameraIDs"
         static let batteryWakeTriggerSeconds = "observe.batteryWakeTriggerSeconds"
         static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
+        static let restrictedStartupSnapshotPrimingSeconds = "observe.restrictedStartupSnapshotPrimingSeconds"
         static let batteryStaleSeconds = "observe.batteryStaleSeconds"
         static let restrictedLiveCapacities = "observe.restrictedLiveCapacities"
     }
@@ -35,6 +36,7 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var batteryWakeCameraIDs: [String]
     @Published private(set) var batteryWakeTriggerSeconds: Int
     @Published private(set) var batteryCaptureWarmupSeconds: Int
+    @Published private(set) var restrictedStartupSnapshotPrimingSeconds: Int
     @Published private(set) var batteryStaleSeconds: Int
 
     private let userDefaults: UserDefaults
@@ -53,6 +55,10 @@ final class ObservePreferences: ObservableObject {
 
     var batteryCaptureWarmupThreshold: TimeInterval {
         TimeInterval(batteryCaptureWarmupSeconds)
+    }
+
+    var restrictedStartupSnapshotPrimingDuration: TimeInterval {
+        TimeInterval(restrictedStartupSnapshotPrimingSeconds)
     }
 
     var batteryStaleThreshold: TimeInterval {
@@ -91,6 +97,15 @@ final class ObservePreferences: ObservableObject {
         self.batteryCaptureWarmupSeconds = max(
             1,
             storedBatteryCaptureWarmupSeconds ?? Int(CameraSchedulingDefaults.batteryCaptureWarmup)
+        )
+        let storedRestrictedStartupSnapshotPrimingSeconds = userDefaults.object(
+            forKey: Keys.restrictedStartupSnapshotPrimingSeconds
+        ) as? Int
+        self.restrictedStartupSnapshotPrimingSeconds = max(
+            0,
+            storedRestrictedStartupSnapshotPrimingSeconds ?? Int(
+                CameraSchedulingDefaults.restrictedStartupSnapshotPrimingDuration
+            )
         )
         let storedBatteryStaleSeconds = userDefaults.object(forKey: Keys.batteryStaleSeconds) as? Int
         self.batteryStaleSeconds = max(
@@ -210,6 +225,14 @@ final class ObservePreferences: ObservableObject {
 
         batteryCaptureWarmupSeconds = sanitized
         userDefaults.set(sanitized, forKey: Keys.batteryCaptureWarmupSeconds)
+    }
+
+    func setRestrictedStartupSnapshotPrimingSeconds(_ seconds: Int) {
+        let sanitized = max(0, seconds)
+        guard restrictedStartupSnapshotPrimingSeconds != sanitized else { return }
+
+        restrictedStartupSnapshotPrimingSeconds = sanitized
+        userDefaults.set(sanitized, forKey: Keys.restrictedStartupSnapshotPrimingSeconds)
     }
 
     func setBatteryStaleSeconds(_ seconds: Int) {

@@ -22,6 +22,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
     private var liveCapacityExpansionBlockedUntil: Date?
     private var liveCapacityIncludesUnconfirmedMemory = false
+    private var restrictedStartupSnapshotPrimingStartedAt: Date?
 
     private let maxConcurrentSnapshotRequests = 3
     private let snapshotRequestTimeout = CameraSchedulingDefaults.snapshotRequestTimeout
@@ -73,6 +74,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacity = 0
             liveCapacityExpansionBlockedUntil = nil
             liveCapacityIncludesUnconfirmedMemory = false
+            restrictedStartupSnapshotPrimingStartedAt = nil
             currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             feeds.forEach { $0.resetSessionState() }
         }
@@ -139,6 +141,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacity = 0
             liveCapacityExpansionBlockedUntil = nil
             liveCapacityIncludesUnconfirmedMemory = false
+            restrictedStartupSnapshotPrimingStartedAt = nil
             return
         }
 
@@ -199,6 +202,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveCapacity = wallFeeds.count
         liveCapacityExpansionBlockedUntil = nil
         liveCapacityIncludesUnconfirmedMemory = false
+        restrictedStartupSnapshotPrimingStartedAt = nil
         startSession()
     }
 
@@ -275,6 +279,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 canProbeCapacity: canProbeCapacity
             )
         }
+        let deferNewBatteryCaptureForSnapshotPriming = shouldDeferNewBatteryCaptureForSnapshotPriming(
+            planningSnapshots,
+            at: now
+        )
 
         currentRecoveryPlan = CameraRecoveryPlanner(
             batteryWakeLeaseDuration: batteryWakeLeaseDuration,
@@ -284,6 +292,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             feeds: planningSnapshots,
             sessionMode: sessionMode,
             liveCapacity: liveBudget,
+            deferNewBatteryCaptureForSnapshotPriming: deferNewBatteryCaptureForSnapshotPriming,
             now: now
         )
 
@@ -345,6 +354,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             guard var state = feedScheduleStates[feed.id] else { continue }
 
             guard feed.isVisibleOnWall, preferences.isBatteryWakeCamera(id: feed.id) else {
+                state.batteryWakeLeaseStartedAt = nil
+                state.batteryWakeRetryAfter = nil
+                state.consecutiveBatteryWakeFailures = 0
+                feedScheduleStates[feed.id] = state
+                continue
+            }
+
+            if hasTrustedBatteryStill(feed, at: now) {
                 state.batteryWakeLeaseStartedAt = nil
                 state.batteryWakeRetryAfter = nil
                 state.consecutiveBatteryWakeFailures = 0
@@ -456,6 +473,15 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
 
         return batteryStillDate >= leaseStartedAt
+    }
+
+    private func hasTrustedBatteryStill(_ feed: CameraFeedCoordinator, at date: Date = Date()) -> Bool {
+        guard preferences.isBatteryWakeCamera(id: feed.id),
+              let batteryStillDate = feed.batteryStillDate else {
+            return false
+        }
+
+        return max(0, date.timeIntervalSince(batteryStillDate)) <= preferences.batteryWakeTriggerThreshold
     }
 
     private func queueSnapshotRefresh(for feedID: String, at date: Date = Date()) {
@@ -589,6 +615,34 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         return feed.displayedStillDate ?? state?.lastSnapshotSuccessAt
     }
 
+    private func shouldDeferNewBatteryCaptureForSnapshotPriming(
+        _ planningSnapshots: [FeedPlanningSnapshot],
+        at now: Date
+    ) -> Bool {
+        guard sessionMode == .constrained,
+              let primingStartedAt = restrictedStartupSnapshotPrimingStartedAt else {
+            return false
+        }
+
+        guard preferences.restrictedStartupSnapshotPrimingDuration > 0,
+              now.timeIntervalSince(primingStartedAt) < preferences.restrictedStartupSnapshotPrimingDuration else {
+            restrictedStartupSnapshotPrimingStartedAt = nil
+            return false
+        }
+
+        let shouldDefer = RestrictedStartupSnapshotPrimingPolicy.shouldDeferNewBatteryCapture(
+            feeds: planningSnapshots,
+            leaseDuration: batteryWakeLeaseDuration,
+            warmup: batteryCaptureWarmup,
+            liveStartTimeout: batteryWakeLiveStartTimeout,
+            now: now
+        )
+        if !shouldDefer {
+            restrictedStartupSnapshotPrimingStartedAt = nil
+        }
+        return shouldDefer
+    }
+
     private func handleConstrainedSignal(from feedID: String) {
         let now = Date()
         if keepBatteryWakeLeaseAliveAfterConstrainedSignal(for: feedID, at: now) {
@@ -620,7 +674,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 rememberedCapacity: rememberedCapacity
             )
             liveCapacityIncludesUnconfirmedMemory = (rememberedCapacity ?? 0) > max(1, currentLiveCount)
-            enterConstrainedMode()
+            enterConstrainedMode(at: now)
             return
         }
 
@@ -679,13 +733,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
     }
 
-    private func enterConstrainedMode() {
+    private func enterConstrainedMode(at now: Date) {
         guard sessionMode != .constrained else {
             refreshPresentation(focusedFeedID: focusedFeedID)
             return
         }
 
         sessionMode = .constrained
+        restrictedStartupSnapshotPrimingStartedAt = now
         refreshPresentation(focusedFeedID: focusedFeedID)
     }
 
@@ -709,6 +764,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         if visibleCount == 0 {
             liveCapacityExpansionBlockedUntil = nil
             liveCapacityIncludesUnconfirmedMemory = false
+            restrictedStartupSnapshotPrimingStartedAt = nil
         }
 
         objectWillChange.send()
@@ -787,6 +843,7 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
             if visibleCount == 0 {
                 self.liveCapacityExpansionBlockedUntil = nil
                 self.liveCapacityIncludesUnconfirmedMemory = false
+                self.restrictedStartupSnapshotPrimingStartedAt = nil
             }
 
             self.objectWillChange.send()

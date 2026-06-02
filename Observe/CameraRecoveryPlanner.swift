@@ -80,6 +80,7 @@ struct FeedPlanningSnapshot: Equatable {
         liveStartTimeout: TimeInterval
     ) -> Bool {
         guard let batteryWakeLeaseStartedAt else { return false }
+        guard !hasTrustedImage(at: now) else { return false }
         return !BatteryWakeLeaseTimeoutPolicy.hasTimedOut(
             isStreaming: isStreaming,
             liveStartedAt: liveStartedAt,
@@ -88,7 +89,7 @@ struct FeedPlanningSnapshot: Equatable {
             leaseDuration: leaseDuration,
             liveStartTimeout: liveStartTimeout,
             now: now
-        ) && !capturedTrustedStillDuringLease(at: now)
+        )
     }
 
     func needsBatteryCapture(
@@ -107,15 +108,6 @@ struct FeedPlanningSnapshot: Equatable {
             return true
         }
         return !hasTrustedImage(at: now) && isBatteryWakeRetryEligible(at: now)
-    }
-
-    private func capturedTrustedStillDuringLease(at now: Date) -> Bool {
-        guard let lastSnapshotDate,
-              let batteryWakeLeaseStartedAt else {
-            return false
-        }
-
-        return lastSnapshotDate >= batteryWakeLeaseStartedAt && hasTrustedImage(at: now)
     }
 
     private func isBatteryWakeRetryEligible(at now: Date) -> Bool {
@@ -156,6 +148,7 @@ struct CameraRecoveryPlanner {
         feeds: [FeedPlanningSnapshot],
         sessionMode: SessionMode,
         liveCapacity: Int,
+        deferNewBatteryCaptureForSnapshotPriming: Bool = false,
         now: Date
     ) -> CameraRecoveryPlan {
         let prioritizedFeeds = feeds.sorted { $0.priorityIndex < $1.priorityIndex }
@@ -171,12 +164,14 @@ struct CameraRecoveryPlanner {
             liveSelection = ConstrainedLiveSelection(
                 liveIDs: Set(prioritizedFeeds.map(\.id)),
                 batteryCaptureIDs: [],
-                batteryWaitingIDs: []
+                batteryWaitingIDs: [],
+                batteryPrimingWaitingIDs: []
             )
         case .constrained:
             liveSelection = constrainedLiveSelection(
                 feeds: prioritizedFeeds,
                 liveCapacity: liveCapacity,
+                deferNewBatteryCaptureForSnapshotPriming: deferNewBatteryCaptureForSnapshotPriming,
                 now: now
             )
         }
@@ -190,6 +185,8 @@ struct CameraRecoveryPlanner {
                 recoveryPhase = .batteryCapture
             } else if liveSelection.batteryWaitingIDs.contains(feed.id) {
                 recoveryPhase = .batteryWaiting
+            } else if liveSelection.batteryPrimingWaitingIDs.contains(feed.id) {
+                recoveryPhase = .batteryWaitingPriming
             } else {
                 recoveryPhase = .idle
             }
@@ -221,6 +218,7 @@ struct CameraRecoveryPlanner {
     private func constrainedLiveSelection(
         feeds: [FeedPlanningSnapshot],
         liveCapacity: Int,
+        deferNewBatteryCaptureForSnapshotPriming: Bool,
         now: Date
     ) -> ConstrainedLiveSelection {
         let capacity = max(0, min(liveCapacity, feeds.count))
@@ -234,7 +232,8 @@ struct CameraRecoveryPlanner {
             return ConstrainedLiveSelection(
                 liveIDs: [],
                 batteryCaptureIDs: [],
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs,
+                batteryPrimingWaitingIDs: []
             )
         }
 
@@ -269,6 +268,15 @@ struct CameraRecoveryPlanner {
         }
 
         if !batteryNeedingTrustedStillIDs.isEmpty {
+            if deferNewBatteryCaptureForSnapshotPriming {
+                return ConstrainedLiveSelection(
+                    liveIDs: Set(selectedIDs),
+                    batteryCaptureIDs: Set(batteryCaptureIDs),
+                    batteryWaitingIDs: [],
+                    batteryPrimingWaitingIDs: batteryNeedingTrustedStillIDs.subtracting(batteryCaptureIDs)
+                )
+            }
+
             for feed in orderedFeeds where selectedIDs.count < capacity {
                 guard !selectedIDs.contains(feed.id),
                       feed.needsBatteryCapture(
@@ -286,7 +294,8 @@ struct CameraRecoveryPlanner {
             return ConstrainedLiveSelection(
                 liveIDs: Set(selectedIDs),
                 batteryCaptureIDs: Set(batteryCaptureIDs),
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting(batteryCaptureIDs)
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting(batteryCaptureIDs),
+                batteryPrimingWaitingIDs: []
             )
         }
 
@@ -295,7 +304,8 @@ struct CameraRecoveryPlanner {
         return ConstrainedLiveSelection(
             liveIDs: Set(selectedIDs),
             batteryCaptureIDs: Set(batteryCaptureIDs),
-            batteryWaitingIDs: []
+            batteryWaitingIDs: [],
+            batteryPrimingWaitingIDs: []
         )
     }
 
@@ -321,4 +331,43 @@ private struct ConstrainedLiveSelection {
     let liveIDs: Set<String>
     let batteryCaptureIDs: Set<String>
     let batteryWaitingIDs: Set<String>
+    let batteryPrimingWaitingIDs: Set<String>
+}
+
+enum RestrictedStartupSnapshotPrimingPolicy {
+    static func shouldDeferNewBatteryCapture(
+        feeds: [FeedPlanningSnapshot],
+        leaseDuration: TimeInterval,
+        warmup: TimeInterval,
+        liveStartTimeout: TimeInterval,
+        now: Date
+    ) -> Bool {
+        let newBatteryCapturePriorities = feeds
+            .filter {
+                $0.needsBatteryCapture(
+                    at: now,
+                    leaseDuration: leaseDuration,
+                    warmup: warmup,
+                    liveStartTimeout: liveStartTimeout
+                )
+                && !$0.hasActiveBatteryCapture(
+                    at: now,
+                    leaseDuration: leaseDuration,
+                    warmup: warmup,
+                    liveStartTimeout: liveStartTimeout
+                )
+                && !$0.isFocused
+            }
+            .map(\.priorityIndex)
+
+        guard let highestNewBatteryCapturePriority = newBatteryCapturePriorities.min() else {
+            return false
+        }
+
+        return feeds.contains { feed in
+            !feed.isBatteryWakeCamera
+                && !feed.hasTrustedImage(at: now)
+                && feed.priorityIndex < highestNewBatteryCapturePriority
+        }
+    }
 }

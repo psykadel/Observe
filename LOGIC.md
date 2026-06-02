@@ -112,6 +112,21 @@ RESTRICTED MODE
 |   |   +-- A trusted snapshot does not stop ongoing non-battery refresh work.
 |   |   +-- Snapshot refreshes do not consume restricted live slots.
 |   |   +-- Snapshot refreshes may run in parallel with battery wake work.
+|   |   +-- Restricted-mode startup has a short snapshot-priming exception:
+|   |       |
+|   |       +-- If a higher-priority non-battery camera still lacks a
+|   |           trusted snapshot, pause new lower-priority battery wake
+|   |           starts briefly so HomeKit / the home hub can service the
+|   |           urgent still requests first.
+|   |       +-- Keep already-active battery trusted-still leases alive.
+|   |       +-- Keep the focused full-screen feed live, including a focused
+|   |           battery capture.
+|   |       +-- Leave otherwise spare live slots idle during this priming
+|   |           window instead of backfilling them with normal live feeds.
+|   |       +-- End the priming exception as soon as the higher-priority
+|   |           non-battery cameras are trusted, or after the user-controlled
+|   |           "Priming Window" expires.
+|   |       +-- "Priming Window" defaults to 10 seconds.
 |   |
 |   +-- Battery cameras that do not have trusted stills
 |       |
@@ -156,15 +171,31 @@ RESTRICTED MODE
             |       needs the slot.
             |   +-- Do not swap, rotate, reprioritize, or reclaim that slot
             |       while the trusted still is still pending.
-            |   +-- Release the slot only after success, timeout, or explicit
-            |       focus cancellation.
+            |   +-- Release the slot after the camera has any trusted battery
+            |       still, timeout, or explicit focus cancellation.
             |   +-- A battery camera that is already warm live can become trusted
             |       as soon as the trusted-still warmup after live start is satisfied.
             |   +-- While HomeKit is still trying to establish live, use a separate
             |       live-start timeout so slow connection setup does not rotate the
             |       protected slot on the shorter capture warmup clock.
             |
-            +-- 3. While any visible battery camera lacks a trusted still
+            +-- 3. During the restricted-mode startup snapshot-priming
+            |      exception
+            |   |
+            |   +-- If a higher-priority non-battery camera lacks a trusted
+            |       snapshot, do not start new lower-priority battery wake
+            |       leases yet.
+            |   +-- Preserve the focused feed and already-active battery
+            |       trusted-still captures.
+            |   +-- Leave remaining live slots idle so urgent snapshot work has
+            |       the best chance to complete quickly.
+            |   +-- Mark waiting battery cameras as "Queued (Priming)" with
+            |       a yellow indicator.
+            |   +-- Exit this exception as soon as those higher-priority
+            |       non-battery stills become trusted, or when the user-controlled
+            |       "Priming Window" expires.
+            |
+            +-- 4. While any visible battery camera lacks a trusted still
             |   |
             |   +-- Use unleased remaining live slots for battery wake candidates.
             |   +-- Choose battery wake candidates in UI sort order.
@@ -188,7 +219,7 @@ RESTRICTED MODE
             |       +-- Release / rotate the slot to the next waiting battery camera.
             |       +-- Keep the failed camera waiting under retry backoff until eligible.
             |
-            +-- 4. Once every visible camera has a trusted image
+            +-- 5. Once every visible camera has a trusted image
                 |
                 +-- Use live slots normally.
                 |
@@ -235,6 +266,8 @@ Battery capture and waiting states are the exception:
   "Live Capture (5s)".
 - A battery camera that still needs a trusted still but does not currently own
   a live capture slot shows "Queued" with a yellow indicator.
+- During the startup snapshot-priming exception, a battery camera held back
+  from starting a new capture shows "Queued (Priming)" with a yellow indicator.
 - Show the stale red border only when the displayed still has actually reached
   the configured "Show As Stale" age, or when no still is available.
 
@@ -261,14 +294,14 @@ FOR EACH VISIBLE CAMERA
     |               +-- Yes
     |               |   |
     |               |   +-- Not stale.
-    |               |   +-- Status: Live Capture or Queued.
+    |               |   +-- Status: Live Capture, Queued, or Queued (Priming).
     |               |   +-- Indicator: Yellow.
     |               |   +-- Border: None.
     |               |
     |               +-- No
     |                   |
     |                   +-- Stale.
-    |                   +-- Status: Live Capture or Queued.
+    |                   +-- Status: Live Capture, Queued, or Queued (Priming).
     |                   +-- Indicator: Yellow.
     |                   +-- Border: Stale.
     |
