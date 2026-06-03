@@ -11,6 +11,9 @@ APP START / SESSION START
 |   +-- Do not persist the active operational camera session as authoritative.
 |   +-- Rebuild the active wall from current HomeKit discovery and current
 |       per-session camera availability each time a fresh wall session starts.
+|   +-- A redundant scene-phase notification that says the already-active app
+|       is active again must not rebuild the HomeKit session or stop streams
+|       that just started.
 |
 +-- Build active visible wall set
 |   |

@@ -1033,6 +1033,13 @@ final class ObserveTests: XCTestCase {
         XCTAssertFalse(CameraWallPresentation.shouldClearSelection(scenePhase: .background, hasSelectedFeed: false))
     }
 
+    func testAlreadyActiveScenePhaseDoesNotRebuildCameraSession() {
+        XCTAssertFalse(CameraSessionActivation.shouldRebuildSession(currentlyActive: true, nextActive: true))
+        XCTAssertFalse(CameraSessionActivation.shouldRebuildSession(currentlyActive: true, nextActive: false))
+        XCTAssertFalse(CameraSessionActivation.shouldRebuildSession(currentlyActive: false, nextActive: false))
+        XCTAssertTrue(CameraSessionActivation.shouldRebuildSession(currentlyActive: false, nextActive: true))
+    }
+
     func testHomeKitOffAndNotRespondingRemoveCameraFromWallSlots() {
         XCTAssertTrue(CameraWallAvailability.isVisibleOnWall(isReachable: true, isAvailableInSession: true, isHomeKitCameraActive: true))
         XCTAssertTrue(CameraWallAvailability.isVisibleOnWall(isReachable: true, isAvailableInSession: true, isHomeKitCameraActive: nil))

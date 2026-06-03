@@ -63,9 +63,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     func setAppActive(_ active: Bool) {
+        let wasActive = isAppActive
+        guard wasActive != active else { return }
+
         isAppActive = active
 
-        if active {
+        if CameraSessionActivation.shouldRebuildSession(currentlyActive: wasActive, nextActive: active) {
             focusedFeedID = nil
             rebuildHomesAndFeeds()
         } else {

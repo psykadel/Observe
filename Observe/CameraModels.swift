@@ -271,6 +271,12 @@ enum SessionMode: String {
     }
 }
 
+enum CameraSessionActivation {
+    static func shouldRebuildSession(currentlyActive: Bool, nextActive: Bool) -> Bool {
+        !currentlyActive && nextActive
+    }
+}
+
 enum FeedDisplayState: Equatable {
     case idle
     case starting
