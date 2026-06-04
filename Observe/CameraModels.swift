@@ -277,6 +277,17 @@ enum CameraSessionActivation {
     }
 }
 
+enum LiveStartRecoveryPolicy {
+    static func shouldRestartStartingStream(
+        requestedAt: Date?,
+        timeout: TimeInterval,
+        now: Date
+    ) -> Bool {
+        guard let requestedAt, timeout > 0 else { return false }
+        return now.timeIntervalSince(requestedAt) >= timeout
+    }
+}
+
 enum FeedDisplayState: Equatable {
     case idle
     case starting

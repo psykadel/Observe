@@ -355,6 +355,28 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(plan.decisionsByID["trusted-battery"]?.recoveryPhase, .idle)
     }
 
+    func testBatteryInRetryBackoffDoesNotConsumeNormalLiveFillSlot() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "wired-live", priorityIndex: 0, isStreaming: true),
+                makeFeed(
+                    id: "backing-off-battery",
+                    priorityIndex: 1,
+                    isBatteryWakeCamera: true,
+                    batteryWakeRetryAfter: now.addingTimeInterval(5)
+                ),
+                makeFeed(id: "wired-recent", priorityIndex: 2, lastSnapshotAge: 4)
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 2,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["wired-live", "wired-recent"])
+        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.presentationMode, .snapshot)
+        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.recoveryPhase, .batteryWaiting)
+    }
+
     func testNonBatterySnapshotRefreshesPrioritizeEmptyAndStaleBeforeRecent() {
         let plan = planner.makePlan(
             feeds: [
@@ -501,6 +523,59 @@ final class ObserveTests: XCTestCase {
         )
     }
 
+    func testTimedOutLiveStartShouldRestartInsteadOfStayingStartingForever() {
+        XCTAssertFalse(
+            LiveStartRecoveryPolicy.shouldRestartStartingStream(
+                requestedAt: now.addingTimeInterval(-29),
+                timeout: 30,
+                now: now
+            )
+        )
+        XCTAssertTrue(
+            LiveStartRecoveryPolicy.shouldRestartStartingStream(
+                requestedAt: now.addingTimeInterval(-31),
+                timeout: 30,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            LiveStartRecoveryPolicy.shouldRestartStartingStream(
+                requestedAt: nil,
+                timeout: 30,
+                now: now
+            )
+        )
+    }
+
+    func testConstrainedSignalDoesNotPreserveBatteryLeaseBeforeLiveStarts() {
+        XCTAssertFalse(
+            BatteryWakeConstrainedSignalPolicy.shouldKeepLeaseAlive(
+                isBatteryCamera: true,
+                isStreaming: false,
+                liveStartedAt: nil,
+                batteryWakeLeaseStartedAt: now.addingTimeInterval(-5),
+                didCaptureTrustedStill: false,
+                warmup: 5,
+                leaseDuration: 8,
+                liveStartTimeout: 30,
+                now: now
+            )
+        )
+        XCTAssertTrue(
+            BatteryWakeConstrainedSignalPolicy.shouldKeepLeaseAlive(
+                isBatteryCamera: true,
+                isStreaming: true,
+                liveStartedAt: now.addingTimeInterval(-2),
+                batteryWakeLeaseStartedAt: now.addingTimeInterval(-5),
+                didCaptureTrustedStill: false,
+                warmup: 5,
+                leaseDuration: 8,
+                liveStartTimeout: 30,
+                now: now
+            )
+        )
+    }
+
     func testRestrictedCapacityKeepsOneSlotWhenConstrainedBeforeStreamsReportLive() {
         XCTAssertEqual(
             RestrictedLiveCapacity.enteringAfterConstrainedSignal(currentLiveCount: 0, visibleFeedCount: 4),
@@ -583,7 +658,20 @@ final class ObserveTests: XCTestCase {
         )
     }
 
-    func testRestrictedCapacityProbesOneExtraSlotWhileBatteryCaptureIsWaiting() {
+    func testBatteryCaptureDemandUsesKnownCapacityBeforeProbingExtraSlots() {
+        XCTAssertEqual(
+            RestrictedLiveCapacity.planningBudget(
+                knownCapacity: 2,
+                visibleFeedCount: 6,
+                hasBatteryCaptureDemand: true,
+                allVisibleFeedsTrusted: false,
+                canProbeCapacity: true
+            ),
+            2
+        )
+    }
+
+    func testRestrictedCapacityDoesNotProbeExtraSlotWhileBatteryCaptureIsWaiting() {
         XCTAssertEqual(
             RestrictedLiveCapacity.planningBudget(
                 knownCapacity: 1,
@@ -592,7 +680,7 @@ final class ObserveTests: XCTestCase {
                 allVisibleFeedsTrusted: false,
                 canProbeCapacity: true
             ),
-            2
+            1
         )
         XCTAssertEqual(
             RestrictedLiveCapacity.planningBudget(

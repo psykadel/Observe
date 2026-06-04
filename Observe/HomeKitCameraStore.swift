@@ -312,7 +312,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             updateBatteryWakeLease(for: feed.id, decision: decision, at: now)
 
             if decision.presentationMode == .live {
-                feed.preferLive(at: now)
+                feed.preferLive(at: now, liveStartTimeout: batteryWakeLiveStartTimeout)
                 updateBatteryCaptureTrust(for: feed.id, at: now)
             } else {
                 feed.stopLiveIfNeeded()
@@ -382,6 +382,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                    liveStartTimeout: batteryWakeLiveStartTimeout,
                    now: now
                ) {
+                feed.stopLiveIfNeeded()
                 state = recordBatteryWakeFailure(state, at: now)
             }
 
@@ -451,6 +452,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             state.consecutiveBatteryWakeFailures = 0
             state.nextEligibleSnapshotAt = date
         } else {
+            feeds.first { $0.id == feedID }?.stopLiveIfNeeded()
             state = recordBatteryWakeFailure(state, at: date)
         }
         feedScheduleStates[feedID] = state
@@ -653,12 +655,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             return
         }
 
-        if concludeBatteryWake(for: feedID, at: now) {
-            refreshPresentation(focusedFeedID: focusedFeedID)
-            return
+        let didConcludeBatteryWake = concludeBatteryWake(for: feedID, at: now)
+        if !didConcludeBatteryWake {
+            queueSnapshotRefresh(for: feedID)
         }
 
-        queueSnapshotRefresh(for: feedID)
         liveCapacityExpansionBlockedUntil = now.addingTimeInterval(
             CameraSchedulingDefaults.liveCapacityExpansionRetryDelay
         )
@@ -701,17 +702,21 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard preferences.isBatteryWakeCamera(id: feedID),
               let feed = feeds.first(where: { $0.id == feedID }),
               var state = feedScheduleStates[feedID],
-              let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt,
-              !didCaptureBatteryStill(for: feedID, since: batteryWakeLeaseStartedAt),
-              !BatteryWakeLeaseTimeoutPolicy.hasTimedOut(
-                isStreaming: feed.isStreaming,
-                liveStartedAt: feed.liveStartedAt,
-                batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
-                warmup: batteryCaptureWarmup,
-                leaseDuration: batteryWakeLeaseDuration,
-                liveStartTimeout: batteryWakeLiveStartTimeout,
-                now: now
-              ) else {
+              let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt else {
+            return false
+        }
+
+        guard BatteryWakeConstrainedSignalPolicy.shouldKeepLeaseAlive(
+            isBatteryCamera: feed.isBatteryWakeCamera,
+            isStreaming: feed.isStreaming,
+            liveStartedAt: feed.liveStartedAt,
+            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
+            didCaptureTrustedStill: didCaptureBatteryStill(for: feedID, since: batteryWakeLeaseStartedAt),
+            warmup: batteryCaptureWarmup,
+            leaseDuration: batteryWakeLeaseDuration,
+            liveStartTimeout: batteryWakeLiveStartTimeout,
+            now: now
+        ) else {
             return false
         }
 
@@ -950,6 +955,38 @@ enum BatteryWakeLeaseTimeoutPolicy {
     }
 }
 
+enum BatteryWakeConstrainedSignalPolicy {
+    static func shouldKeepLeaseAlive(
+        isBatteryCamera: Bool,
+        isStreaming: Bool,
+        liveStartedAt: Date?,
+        batteryWakeLeaseStartedAt: Date?,
+        didCaptureTrustedStill: Bool,
+        warmup: TimeInterval,
+        leaseDuration: TimeInterval,
+        liveStartTimeout: TimeInterval,
+        now: Date
+    ) -> Bool {
+        guard isBatteryCamera,
+              isStreaming,
+              liveStartedAt != nil,
+              let batteryWakeLeaseStartedAt,
+              !didCaptureTrustedStill else {
+            return false
+        }
+
+        return !BatteryWakeLeaseTimeoutPolicy.hasTimedOut(
+            isStreaming: isStreaming,
+            liveStartedAt: liveStartedAt,
+            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
+            warmup: warmup,
+            leaseDuration: leaseDuration,
+            liveStartTimeout: liveStartTimeout,
+            now: now
+        )
+    }
+}
+
 enum RestrictedLiveCapacity {
     static func enteringAfterConstrainedSignal(
         currentLiveCount: Int,
@@ -986,7 +1023,7 @@ enum RestrictedLiveCapacity {
             observedLiveCount: knownCapacity,
             visibleFeedCount: visibleFeedCount
         )
-        guard canProbeCapacity, (allVisibleFeedsTrusted || hasBatteryCaptureDemand) else {
+        guard canProbeCapacity, allVisibleFeedsTrusted else {
             return boundedKnownCapacity
         }
 

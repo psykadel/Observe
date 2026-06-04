@@ -202,7 +202,10 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         ).isStale
     }
 
-    func preferLive(at date: Date) {
+    func preferLive(
+        at date: Date,
+        liveStartTimeout: TimeInterval = CameraSchedulingDefaults.batteryWakeLiveStartTimeout
+    ) {
         guard isReachable else {
             markOffline()
             return
@@ -218,6 +221,18 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
         switch profile.streamControl?.streamState {
         case .starting:
+            if LiveStartRecoveryPolicy.shouldRestartStartingStream(
+                requestedAt: liveStartRequestedAt,
+                timeout: liveStartTimeout,
+                now: date
+            ) {
+                profile.streamControl?.stopStream()
+                liveStartRequestedAt = date
+                state = .starting
+                profile.streamControl?.startStream()
+                return
+            }
+
             state = .starting
             if liveStartRequestedAt == nil {
                 liveStartRequestedAt = date

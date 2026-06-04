@@ -205,9 +205,13 @@ RESTRICTED MODE
             |   +-- Rotate to the next waiting candidate as slots become available.
             |   +-- If battery wake work does not consume all known live capacity,
             |       fill the remaining slots with the normal UI-priority live feeds.
-            |   +-- If known restricted capacity may be too low and capacity probing
-            |       is not blocked, cautiously try one additional live slot for
-            |       eligible battery wake work.
+            |   +-- Battery cameras that still lack a trusted still are not normal
+            |       live-fill candidates while they are waiting or under retry backoff.
+            |       They may hold a live slot only as the focused feed, an active
+            |       trusted-still capture, or a newly eligible battery wake lease.
+            |   +-- Do not probe extra live capacity while any visible battery camera
+            |       still lacks a trusted still. Use the known restricted capacity for
+            |       battery wake first, then fill any leftover known slots normally.
             |   +-- Mark cameras waiting for a slot as "Queued"
             |       with a yellow indicator.
             |   +-- When a leased battery camera captures a still after the
@@ -219,6 +223,10 @@ RESTRICTED MODE
             |       |
             |       +-- If the stream became live, measure the capture timeout from
             |           live start so "Wait Before Capturing" means seconds live.
+            |       +-- If HomeKit rejects the live start before the stream becomes live,
+            |           treat it as a failed wake attempt, not as a lease to preserve.
+            |       +-- Stop the timed-out HomeKit live attempt so the next retry
+            |           starts from a clean live connection request.
             |       +-- Release / rotate the slot to the next waiting battery camera.
             |       +-- Keep the failed camera waiting under retry backoff until eligible.
             |
