@@ -39,7 +39,7 @@ struct CameraWallView: View {
             .padding(.trailing, 10)
         }
         .sheet(isPresented: $showsSettings) {
-            SettingsView(store: store, preferences: preferences)
+            settingsSheet
         }
         .fullScreenCover(item: $selectedFeed) { feed in
             CameraDetailView(feed: feed, store: store)
@@ -56,6 +56,18 @@ struct CameraWallView: View {
             platform: wallPlatform,
             hasRequestedMaximize: $hasRequestedLaunchMaximize
         )
+    }
+
+    @ViewBuilder
+    private var settingsSheet: some View {
+        switch wallPlatform {
+        case .mac:
+            SettingsView(store: store, preferences: preferences)
+                .frame(height: 600)
+                .presentationDetents([.height(600), .large])
+        case .iPhone:
+            SettingsView(store: store, preferences: preferences)
+        }
     }
 
     @ViewBuilder

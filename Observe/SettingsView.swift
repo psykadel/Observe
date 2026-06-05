@@ -193,8 +193,17 @@ struct SettingsView: View {
                     setting: setting,
                     value: numberBinding(for: setting)
                 )
-                .presentationDetents([.medium, .large])
+                .presentationDetents(numberSettingPresentationDetents)
             }
+        }
+    }
+
+    private var numberSettingPresentationDetents: Set<PresentationDetent> {
+        switch CameraWallPlatform.current {
+        case .mac:
+            return [.height(600), .large]
+        case .iPhone:
+            return [.medium, .large]
         }
     }
 
@@ -536,46 +545,41 @@ private struct NumberSettingEditor: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 20) {
-                    currentValueCard
-
-                    HStack(spacing: 12) {
-                        adjustmentButton(systemName: "minus", delta: -setting.step)
-                        adjustmentButton(systemName: "plus", delta: setting.step)
-                    }
-
-                    TextField(setting.unitName.capitalized, text: textBinding)
-                        .keyboardType(.numberPad)
-                        .multilineTextAlignment(.center)
-                        .font(.title3.monospacedDigit())
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 180)
-
-                    presetGrid
-
-                    resetButton
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 22)
-                .padding(.bottom, 30)
+        if isMac {
+            VStack(spacing: 0) {
+                macHeader
+                editorContent
             }
             .background(Color(UIColor.systemGroupedBackground))
-            .navigationTitle(setting.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        value = draft.value
-                        dismiss()
+            .frame(height: 600)
+        } else {
+            NavigationStack {
+                editorContent
+                    .navigationTitle(setting.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button {
+                                dismiss()
+                            } label: {
+                                toolbarButtonLabel("Cancel")
+                            }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button {
+                                value = draft.value
+                                dismiss()
+                            } label: {
+                                toolbarButtonLabel("Done")
+                            }
+                        }
                     }
-                }
             }
         }
+    }
+
+    private var isMac: Bool {
+        CameraWallPlatform.current == .mac
     }
 
     private var textBinding: Binding<String> {
@@ -583,6 +587,81 @@ private struct NumberSettingEditor: View {
             get: { draft.text },
             set: { draft.updateText($0) }
         )
+    }
+
+    private var editorContent: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                currentValueCard
+
+                HStack(spacing: 12) {
+                    adjustmentButton(systemName: "minus", delta: -setting.step)
+                    adjustmentButton(systemName: "plus", delta: setting.step)
+                }
+
+                TextField(setting.unitName.capitalized, text: textBinding)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.center)
+                    .font(.title3.monospacedDigit())
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 180)
+
+                presetGrid
+
+                resetButton
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, isMac ? 26 : 22)
+            .padding(.bottom, isMac ? 36 : 30)
+        }
+        .background(Color(UIColor.systemGroupedBackground))
+    }
+
+    private var macHeader: some View {
+        HStack(spacing: 16) {
+            macToolbarButton("Cancel") {
+                dismiss()
+            }
+
+            Text(setting.title)
+                .font(.headline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .frame(maxWidth: .infinity)
+
+            macToolbarButton("Done") {
+                value = draft.value
+                dismiss()
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+    }
+
+    private func macToolbarButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+                .frame(width: 92, height: 38)
+                .background(
+                    Color(UIColor.secondarySystemGroupedBackground),
+                    in: Capsule()
+                )
+                .overlay {
+                    Capsule()
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toolbarButtonLabel(_ title: String) -> some View {
+        Text(title)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 64)
     }
 
     private var currentValueCard: some View {
