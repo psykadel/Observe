@@ -401,50 +401,143 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(plan.decisionsByID["recent-high-priority"]?.snapshotPriority, .refresh)
     }
 
-    func testSnapshotQueuePreservesFailureBackoffButAllowsContinuousRefresh() {
-        let backedOffUntil = now.addingTimeInterval(3)
-
-        XCTAssertEqual(
-            SnapshotQueuePolicy.nextEligibleDate(current: backedOffUntil, requestedAt: now),
-            backedOffUntil
-        )
-        XCTAssertEqual(
-            SnapshotQueuePolicy.nextEligibleDate(current: now.addingTimeInterval(-2), requestedAt: now),
-            now
-        )
-        XCTAssertEqual(
-            SnapshotQueuePolicy.nextEligibleDate(current: .distantFuture, requestedAt: now),
-            now
-        )
-    }
-
-    func testSnapshotQueueEnforcesMinimumRefreshIntervalPerCamera() {
+    func testSnapshotQueueUsesAggressiveMinimumForUntrustedSnapshots() {
         XCTAssertEqual(
             SnapshotQueuePolicy.nextEligibleDate(
                 current: .distantFuture,
                 requestedAt: now,
                 lastRequestIssuedAt: now.addingTimeInterval(-1),
-                minimumInterval: 5
+                minimumInterval: SnapshotQueuePolicy.minimumRefreshInterval(for: .urgent)
+            ),
+            now.addingTimeInterval(1)
+        )
+        XCTAssertEqual(SnapshotQueuePolicy.minimumRefreshInterval(for: .urgent), 2)
+    }
+
+    func testSnapshotQueueKeepsSteadyStateMinimumForRecentSnapshots() {
+        XCTAssertEqual(
+            SnapshotQueuePolicy.nextEligibleDate(
+                current: .distantFuture,
+                requestedAt: now,
+                lastRequestIssuedAt: now.addingTimeInterval(-1),
+                minimumInterval: SnapshotQueuePolicy.minimumRefreshInterval(for: .refresh)
             ),
             now.addingTimeInterval(4)
         )
+        XCTAssertEqual(SnapshotQueuePolicy.minimumRefreshInterval(for: .refresh), 5)
+    }
+
+    func testSnapshotQueueRetriesFailuresWithoutAdditionalBackoff() {
         XCTAssertEqual(
             SnapshotQueuePolicy.nextEligibleDate(
-                current: now.addingTimeInterval(10),
+                current: now,
                 requestedAt: now,
                 lastRequestIssuedAt: now.addingTimeInterval(-1),
-                minimumInterval: 5
+                minimumInterval: SnapshotQueuePolicy.minimumRefreshInterval(for: .urgent)
             ),
-            now.addingTimeInterval(10)
+            now.addingTimeInterval(1)
         )
         XCTAssertEqual(
             SnapshotQueuePolicy.nextEligibleDate(
                 current: .distantFuture,
                 requestedAt: now,
                 lastRequestIssuedAt: now.addingTimeInterval(-8),
-                minimumInterval: 5
+                minimumInterval: SnapshotQueuePolicy.minimumRefreshInterval(for: .refresh)
             ),
             now
+        )
+    }
+
+    func testSnapshotRequestTimeoutDefaultsToFourSeconds() {
+        XCTAssertEqual(CameraSchedulingDefaults.snapshotRequestTimeout, 4)
+    }
+
+    func testSnapshotRequestMatchPolicyIgnoresStaleResults() {
+        XCTAssertTrue(
+            SnapshotRequestMatchPolicy.isCurrent(
+                currentRequestID: 2,
+                resultRequestID: 2,
+                isInFlight: true
+            )
+        )
+        XCTAssertFalse(
+            SnapshotRequestMatchPolicy.isCurrent(
+                currentRequestID: 2,
+                resultRequestID: 1,
+                isInFlight: true
+            )
+        )
+        XCTAssertFalse(
+            SnapshotRequestMatchPolicy.isCurrent(
+                currentRequestID: 2,
+                resultRequestID: nil,
+                isInFlight: true
+            )
+        )
+        XCTAssertFalse(
+            SnapshotRequestMatchPolicy.isCurrent(
+                currentRequestID: 2,
+                resultRequestID: 2,
+                isInFlight: false
+            )
+        )
+    }
+
+    func testSnapshotRequestMatchPolicyAcceptsLateFirstSuccessWithinStaleThreshold() {
+        XCTAssertTrue(
+            SnapshotRequestMatchPolicy.acceptsLateFirstSuccess(
+                result: .success(now.addingTimeInterval(-30)),
+                hasTrustedImage: false,
+                staleThreshold: 60,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            SnapshotRequestMatchPolicy.acceptsLateFirstSuccess(
+                result: .success(now.addingTimeInterval(-61)),
+                hasTrustedImage: false,
+                staleThreshold: 60,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            SnapshotRequestMatchPolicy.acceptsLateFirstSuccess(
+                result: .success(now.addingTimeInterval(-30)),
+                hasTrustedImage: true,
+                staleThreshold: 60,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            SnapshotRequestMatchPolicy.acceptsLateFirstSuccess(
+                result: .failure,
+                hasTrustedImage: false,
+                staleThreshold: 60,
+                now: now
+            )
+        )
+    }
+
+    func testSnapshotResultTelemetryClarifiesStaleSchedulerSuccessUpdatedImage() {
+        XCTAssertEqual(
+            SnapshotResultTelemetry.staleSchedulerResultIgnoredMessage(
+                feedID: "front",
+                requestID: 1,
+                currentRequestID: 3,
+                result: .success(now.addingTimeInterval(-4)),
+                now: now
+            ),
+            "snapshot stale scheduler result ignored front request=1 current=3 imageUpdated=true captureAge=4.0s"
+        )
+        XCTAssertEqual(
+            SnapshotResultTelemetry.staleSchedulerResultIgnoredMessage(
+                feedID: "front",
+                requestID: 1,
+                currentRequestID: 3,
+                result: .failure,
+                now: now
+            ),
+            "snapshot stale scheduler result ignored front request=1 current=3 imageUpdated=false"
         )
     }
 
@@ -963,12 +1056,14 @@ final class ObserveTests: XCTestCase {
         XCTAssertFalse(preferences.isBatteryWakeCamera(id: "battery"))
         XCTAssertEqual(preferences.batteryCaptureWarmupSeconds, 5)
         XCTAssertEqual(preferences.restrictedStartupSnapshotPrimingSeconds, 10)
+        XCTAssertEqual(preferences.maxConcurrentSnapshotRequests, 3)
 
         preferences.setBatteryWakeEnabled(true, for: "battery")
         preferences.setBatteryWakeTriggerSeconds(75)
         preferences.setBatteryCaptureWarmupSeconds(9)
         preferences.setBatteryStaleSeconds(150)
         preferences.setRestrictedStartupSnapshotPrimingSeconds(14)
+        preferences.setMaxConcurrentSnapshotRequests(4)
         XCTAssertTrue(preferences.isBatteryWakeCamera(id: "battery"))
 
         let reloaded = ObservePreferences(userDefaults: defaults)
@@ -977,6 +1072,7 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(reloaded.batteryCaptureWarmupSeconds, 9)
         XCTAssertEqual(reloaded.batteryStaleSeconds, 150)
         XCTAssertEqual(reloaded.restrictedStartupSnapshotPrimingSeconds, 14)
+        XCTAssertEqual(reloaded.maxConcurrentSnapshotRequests, 4)
 
         defaults.removePersistentDomain(forName: suiteName)
     }
@@ -990,6 +1086,21 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(NumberSettingKind.restrictedStartupSnapshotPriming.presets, [0, 5, 10, 15, 20, 30])
         XCTAssertEqual(NumberSettingKind.restrictedStartupSnapshotPriming.step, 5)
         XCTAssertEqual(NumberSettingKind.restrictedStartupSnapshotPriming.minimumValue, 0)
+    }
+
+    func testSnapshotRequestNumberSettingUsesRequestUnitsAndDefault() {
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.title, "Snapshot Requests")
+        XCTAssertEqual(
+            NumberSettingKind.maxConcurrentSnapshotRequests.helperText,
+            "How many snapshot requests can run at once."
+        )
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.presets, [1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.step, 1)
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.minimumValue, 1)
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.defaultValue, 3)
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.unitName, "requests")
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.displayValue(4), "4")
+        XCTAssertEqual(NumberSettingKind.maxConcurrentSnapshotRequests.presetLabel(4), "4")
     }
 
     func testBatteryNumberSettingsHaveShortDescriptions() {
@@ -1037,6 +1148,113 @@ final class ObserveTests: XCTestCase {
         draft.setValue(30)
         XCTAssertEqual(draft.value, 30)
         XCTAssertEqual(draft.text, "30")
+    }
+
+    func testTelemetryReportIncludesStartupPolicyEventsAndFeedState() {
+        let generatedAt = now.addingTimeInterval(20)
+        let report = CameraTelemetryReport(
+            generatedAt: generatedAt,
+            sessionStartedAt: now,
+            appVersion: "test",
+            authorizationStatus: "authorized",
+            selectedHomeName: "Home",
+            homeHubState: "Connected",
+            sessionMode: "constrained",
+            isAppActive: true,
+            focusedFeedID: nil,
+            liveCapacity: 1,
+            visibleFeedCount: 2,
+            maxConcurrentSnapshotRequests: 3,
+            snapshotRequestTimeout: 2.75,
+            untrustedSnapshotRefreshInterval: 2,
+            trustedSnapshotRefreshInterval: 5,
+            batteryCaptureWarmup: 5,
+            batteryWakeLeaseDuration: 8,
+            batteryWakeLiveStartTimeout: 30,
+            restrictedStartupSnapshotPrimingSeconds: 10,
+            liveCapacityExpansionBlockedUntil: generatedAt.addingTimeInterval(5),
+            liveCapacityIncludesUnconfirmedMemory: false,
+            restrictedStartupSnapshotPrimingStartedAt: now.addingTimeInterval(1),
+            startupMilestones: CameraStartupTelemetryMilestones(
+                enteredConstrainedModeAt: 1,
+                enteredConstrainedModeLiveCapacity: 1,
+                firstConstrainedSignalAt: 1,
+                firstConstrainedSignalFeedID: "front",
+                primingStartedAt: 1,
+                primingEndedAt: 4,
+                primingEndedReason: "trusted",
+                allVisibleFeedsTrustedAt: 12,
+                feedsByID: [
+                    "front": CameraStartupTelemetryFeedMilestones(
+                        feedID: "front",
+                        firstTrustedImageAt: 12,
+                        firstSnapshotQueuedAt: 1,
+                        firstSnapshotIssuedAt: 2,
+                        firstSnapshotSuccessAt: 3,
+                        lastSnapshotSuccessAt: 10,
+                        snapshotQueuedCount: 5,
+                        snapshotIssuedCount: 3,
+                        snapshotSuccessCount: 2,
+                        snapshotFailureCount: 1,
+                        snapshotTimeoutCount: 1,
+                        firstBatteryWakeLeaseStartedAt: nil,
+                        firstBatteryTrustedStillAt: nil,
+                        batteryWakeLeaseStartedCount: 0,
+                        batteryTrustedStillCount: 0,
+                        batteryWakeFailureCount: 0,
+                        batteryWakeTimeoutCount: 0
+                    )
+                ]
+            ),
+            feeds: [
+                CameraTelemetryFeed(
+                    priorityIndex: 0,
+                    id: "front",
+                    name: "Front",
+                    roomName: "Porch",
+                    isVisibleOnWall: true,
+                    isReachable: true,
+                    isAvailableInSession: true,
+                    isHomeKitCameraActive: true,
+                    isBatteryWakeCamera: false,
+                    isStreaming: false,
+                    isStartingLive: false,
+                    displayState: "starting",
+                    recencyTier: "empty",
+                    recoveryPhase: "idle",
+                    snapshotPriority: "urgent",
+                    presentationMode: "snapshot",
+                    displayedStillAge: nil,
+                    lastSnapshotSuccessAge: nil,
+                    snapshotInFlightAge: 1,
+                    nextEligibleSnapshotIn: 1,
+                    lastSnapshotRequestAge: 1,
+                    batteryStillAge: nil,
+                    batteryWakeLeaseAge: nil,
+                    batteryWakeRetryIn: nil,
+                    consecutiveBatteryWakeFailures: 0,
+                    liveStartedAge: nil,
+                    liveStartRequestedAge: nil,
+                    lastErrorMessage: nil
+                )
+            ],
+            events: [
+                CameraTelemetryEvent(elapsed: 0, message: "session start"),
+                CameraTelemetryEvent(elapsed: 2, message: "snapshot issued front priority=urgent")
+            ]
+        )
+
+        let text = report.text
+        XCTAssertTrue(text.contains("Observe Telemetry"))
+        XCTAssertTrue(text.contains("sessionElapsed=20.0s"))
+        XCTAssertTrue(text.contains("untrustedSnapshotRefreshInterval=2.0s"))
+        XCTAssertTrue(text.contains("allVisibleFeedsTrustedAt=12.0s"))
+        XCTAssertTrue(text.contains("primingEndedReason=trusted"))
+        XCTAssertTrue(text.contains("front | firstTrustedImageAt=12.0s"))
+        XCTAssertTrue(text.contains("snapshotTimeoutCount=1"))
+        XCTAssertTrue(text.contains("front | Front | room=Porch"))
+        XCTAssertTrue(text.contains("snapshotInFlightAge=1.0s"))
+        XCTAssertTrue(text.contains("+2.0s snapshot issued front priority=urgent"))
     }
 
     @MainActor

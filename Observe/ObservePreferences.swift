@@ -13,6 +13,7 @@ final class ObservePreferences: ObservableObject {
         static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
         static let restrictedStartupSnapshotPrimingSeconds = "observe.restrictedStartupSnapshotPrimingSeconds"
         static let batteryStaleSeconds = "observe.batteryStaleSeconds"
+        static let maxConcurrentSnapshotRequests = "observe.maxConcurrentSnapshotRequests"
         static let restrictedLiveCapacities = "observe.restrictedLiveCapacities"
     }
 
@@ -38,6 +39,7 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var batteryCaptureWarmupSeconds: Int
     @Published private(set) var restrictedStartupSnapshotPrimingSeconds: Int
     @Published private(set) var batteryStaleSeconds: Int
+    @Published private(set) var maxConcurrentSnapshotRequests: Int
 
     private let userDefaults: UserDefaults
 
@@ -47,6 +49,10 @@ final class ObservePreferences: ObservableObject {
 
     var defaultStaleVisualHighlightSeconds: Int {
         Int(CameraSchedulingDefaults.staleVisualHighlightThreshold)
+    }
+
+    var defaultMaxConcurrentSnapshotRequests: Int {
+        CameraSchedulingDefaults.maxConcurrentSnapshotRequests
     }
 
     var batteryWakeTriggerThreshold: TimeInterval {
@@ -111,6 +117,11 @@ final class ObservePreferences: ObservableObject {
         self.batteryStaleSeconds = max(
             1,
             storedBatteryStaleSeconds ?? Int(CameraSchedulingDefaults.batteryStaleThreshold)
+        )
+        let storedMaxConcurrentSnapshotRequests = userDefaults.object(forKey: Keys.maxConcurrentSnapshotRequests) as? Int
+        self.maxConcurrentSnapshotRequests = max(
+            1,
+            storedMaxConcurrentSnapshotRequests ?? CameraSchedulingDefaults.maxConcurrentSnapshotRequests
         )
     }
 
@@ -241,6 +252,14 @@ final class ObservePreferences: ObservableObject {
 
         batteryStaleSeconds = sanitized
         userDefaults.set(sanitized, forKey: Keys.batteryStaleSeconds)
+    }
+
+    func setMaxConcurrentSnapshotRequests(_ requests: Int) {
+        let sanitized = max(1, requests)
+        guard maxConcurrentSnapshotRequests != sanitized else { return }
+
+        maxConcurrentSnapshotRequests = sanitized
+        userDefaults.set(sanitized, forKey: Keys.maxConcurrentSnapshotRequests)
     }
 
     func setBatteryWakeEnabled(_ enabled: Bool, for id: String) {

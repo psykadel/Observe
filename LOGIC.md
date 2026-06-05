@@ -107,14 +107,24 @@ RESTRICTED MODE
 |   |   |
 |   |   +-- Refresh snapshots immediately and continuously.
 |   |   +-- Request the next snapshot as soon as the previous request
-|   |       succeeds, fails, the per-camera 5-second minimum refresh
-|   |       interval has elapsed, and backoff allows.
+|   |       succeeds or fails, the per-camera minimum refresh interval
+|   |       has elapsed, and a snapshot request slot is available.
+|   |       Use a 2-second minimum while the camera still lacks a
+|   |       trusted image; use the normal 5-second minimum after a recent
+|   |       trusted image exists.
 |   |   +-- Empty / stale cameras are more urgent than already-recent cameras.
 |   |   +-- Preserve UI priority order within each snapshot urgency tier.
 |   |   +-- A recent snapshot is trusted for display and stale marking.
 |   |   +-- A trusted snapshot does not stop ongoing non-battery refresh work.
+|   |   +-- If a timed-out / superseded snapshot later succeeds before the
+|   |       camera has any trusted image, accept it as the first trusted frame
+|   |       as long as the returned capture age is within the configured stale
+|   |       threshold. Old failures and late successes older than that threshold
+|   |       must still be ignored.
 |   |   +-- Snapshot refreshes do not consume restricted live slots.
 |   |   +-- Snapshot refreshes may run in parallel with battery wake work.
+|   |   +-- The maximum number of simultaneous snapshot requests is a
+|   |       user-controlled setting that defaults to 3.
 |   |   +-- Restricted-mode startup has a short snapshot-priming exception:
 |   |       |
 |   |       +-- If a higher-priority non-battery camera still lacks a

@@ -6,6 +6,8 @@ enum SnapshotRequestResult {
     case failure
 }
 
+typealias SnapshotRequestID = Int64
+
 @MainActor
 final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     let id: String
@@ -29,7 +31,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     @Published private(set) var batteryStillDate: Date?
 
     var onConstrainedSignal: ((String) -> Void)?
-    var onSnapshotResult: ((String, SnapshotRequestResult) -> Void)?
+    var onSnapshotResult: ((String, SnapshotRequestID?, SnapshotRequestResult) -> Void)?
     var onAvailabilityChanged: ((String) -> Void)?
 
     private let accessory: HMAccessory
@@ -38,6 +40,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     private var configuredStaleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold
     private var configuredBatteryTrustedStillThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold
     private var configuredBatteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup
+    private var pendingSnapshotRequestIDs: [SnapshotRequestID] = []
 
     init(accessory: HMAccessory, profile: HMCameraProfile, profileIndex: Int) {
         self.accessory = accessory
@@ -286,7 +289,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     @discardableResult
-    func requestSnapshot() -> Bool {
+    func requestSnapshot(requestID: SnapshotRequestID) -> Bool {
         if isBatteryWakeCamera {
             return false
         }
@@ -297,6 +300,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
 
         profile.snapshotControl?.takeSnapshot()
+        pendingSnapshotRequestIDs.append(requestID)
         if cameraSource == nil {
             state = .starting
         }
@@ -490,6 +494,7 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
     nonisolated func cameraSnapshotControl(_ cameraSnapshotControl: HMCameraSnapshotControl, didTake snapshot: HMCameraSnapshot?, error: (any Error)?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let requestID = self.pendingSnapshotRequestIDs.isEmpty ? nil : self.pendingSnapshotRequestIDs.removeFirst()
 
             if let snapshot {
                 self.updateCameraSource(snapshot)
@@ -502,7 +507,7 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
                     self.state = .snapshot
                 }
                 self.lastErrorMessage = nil
-                self.onSnapshotResult?(self.id, .success(snapshot.captureDate))
+                self.onSnapshotResult?(self.id, requestID, .success(snapshot.captureDate))
             } else {
                 if let error {
                     self.lastErrorMessage = error.localizedDescription
@@ -510,7 +515,7 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
                 if self.cameraSource == nil {
                     self.state = .failed("Unavailable")
                 }
-                self.onSnapshotResult?(self.id, .failure)
+                self.onSnapshotResult?(self.id, requestID, .failure)
             }
         }
     }

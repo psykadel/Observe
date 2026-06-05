@@ -5,7 +5,9 @@ enum CameraSchedulingDefaults {
     static let staleVisualHighlightThreshold: TimeInterval = 60
     static let batteryWakeTriggerThreshold: TimeInterval = 60
     static let batteryStaleThreshold: TimeInterval = 120
-    static let snapshotRequestTimeout: TimeInterval = 2.75
+    static let snapshotRequestTimeout: TimeInterval = 4
+    static let maxConcurrentSnapshotRequests = 3
+    static let untrustedSnapshotRefreshInterval: TimeInterval = 2
     static let minimumSnapshotRefreshInterval: TimeInterval = 5
     static let batteryCaptureWarmup: TimeInterval = 5
     static let batteryCaptureLeasePadding: TimeInterval = 3

@@ -1,9 +1,13 @@
 import HomeKit
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editingNumberSetting: NumberSettingKind?
+    @State private var didCopyTelemetry = false
 
     @ObservedObject var store: HomeKitCameraStore
     @ObservedObject var preferences: ObservePreferences
@@ -50,6 +54,18 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section("Snapshot Refresh") {
+                    NumberSettingRow(
+                        title: "Snapshot Requests",
+                        valueText: NumberSettingKind.maxConcurrentSnapshotRequests.displayValue(
+                            preferences.maxConcurrentSnapshotRequests
+                        ),
+                        helperText: NumberSettingKind.maxConcurrentSnapshotRequests.helperText
+                    ) {
+                        editingNumberSetting = .maxConcurrentSnapshotRequests
+                    }
+                }
+
                 Section("Stale") {
                     Text(
                         "If a camera is showing an image older than this, Observe puts a red box around it so you can quickly tell it is not recent."
@@ -59,7 +75,9 @@ struct SettingsView: View {
 
                     NumberSettingRow(
                         title: "Threshold",
-                        value: preferences.staleVisualHighlightSeconds
+                        valueText: NumberSettingKind.staleThreshold.displayValue(
+                            preferences.staleVisualHighlightSeconds
+                        )
                     ) {
                         editingNumberSetting = .staleThreshold
                     }
@@ -75,7 +93,9 @@ struct SettingsView: View {
 
                         NumberSettingRow(
                             title: "Start Live Capture After",
-                            value: preferences.batteryWakeTriggerSeconds,
+                            valueText: NumberSettingKind.batteryWakeTrigger.displayValue(
+                                preferences.batteryWakeTriggerSeconds
+                            ),
                             helperText: NumberSettingKind.batteryWakeTrigger.helperText
                         ) {
                             editingNumberSetting = .batteryWakeTrigger
@@ -83,7 +103,9 @@ struct SettingsView: View {
 
                         NumberSettingRow(
                             title: "Wait Before Capturing",
-                            value: preferences.batteryCaptureWarmupSeconds,
+                            valueText: NumberSettingKind.batteryCaptureWarmup.displayValue(
+                                preferences.batteryCaptureWarmupSeconds
+                            ),
                             helperText: NumberSettingKind.batteryCaptureWarmup.helperText
                         ) {
                             editingNumberSetting = .batteryCaptureWarmup
@@ -91,7 +113,9 @@ struct SettingsView: View {
 
                         NumberSettingRow(
                             title: "Priming Window",
-                            value: preferences.restrictedStartupSnapshotPrimingSeconds,
+                            valueText: NumberSettingKind.restrictedStartupSnapshotPriming.displayValue(
+                                preferences.restrictedStartupSnapshotPrimingSeconds
+                            ),
                             helperText: NumberSettingKind.restrictedStartupSnapshotPriming.helperText
                         ) {
                             editingNumberSetting = .restrictedStartupSnapshotPriming
@@ -99,7 +123,9 @@ struct SettingsView: View {
 
                         NumberSettingRow(
                             title: "Show As Stale",
-                            value: preferences.batteryStaleSeconds,
+                            valueText: NumberSettingKind.batteryStale.displayValue(
+                                preferences.batteryStaleSeconds
+                            ),
                             helperText: NumberSettingKind.batteryStale.helperText
                         ) {
                             editingNumberSetting = .batteryStale
@@ -141,6 +167,17 @@ struct SettingsView: View {
                         .onMove(perform: store.movePriority)
                     }
                 }
+
+                Section {
+                    Button {
+                        copyTelemetry()
+                    } label: {
+                        Label(
+                            didCopyTelemetry ? "Copied Telemetry" : "Copy Telemetry",
+                            systemImage: didCopyTelemetry ? "checkmark" : "doc.on.doc"
+                        )
+                    }
+                }
             }
             .scrollContentBackground(.hidden)
             .background(Color(UIColor.systemGroupedBackground))
@@ -156,7 +193,7 @@ struct SettingsView: View {
                     setting: setting,
                     value: numberBinding(for: setting)
                 )
-                .presentationDetents([.height(420), .medium])
+                .presentationDetents([.medium, .large])
             }
         }
     }
@@ -247,7 +284,16 @@ struct SettingsView: View {
             restrictedStartupSnapshotPrimingBinding
         case .batteryStale:
             batteryStaleBinding
+        case .maxConcurrentSnapshotRequests:
+            maxConcurrentSnapshotRequestsBinding
         }
+    }
+
+    private var maxConcurrentSnapshotRequestsBinding: Binding<Int> {
+        Binding(
+            get: { preferences.maxConcurrentSnapshotRequests },
+            set: { preferences.setMaxConcurrentSnapshotRequests($0) }
+        )
     }
 
     private var homeHubLabel: String {
@@ -262,6 +308,18 @@ struct SettingsView: View {
             "Unknown"
         }
     }
+
+    private func copyTelemetry() {
+        let report = store.telemetryReportText()
+        #if canImport(UIKit)
+        UIPasteboard.general.string = report
+        #endif
+        didCopyTelemetry = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            didCopyTelemetry = false
+        }
+    }
 }
 
 enum NumberSettingKind: String, Identifiable {
@@ -270,6 +328,7 @@ enum NumberSettingKind: String, Identifiable {
     case batteryCaptureWarmup
     case restrictedStartupSnapshotPriming
     case batteryStale
+    case maxConcurrentSnapshotRequests
 
     var id: String { rawValue }
 
@@ -285,11 +344,15 @@ enum NumberSettingKind: String, Identifiable {
             "Priming Window"
         case .batteryStale:
             "Show As Stale"
+        case .maxConcurrentSnapshotRequests:
+            "Snapshot Requests"
         }
     }
 
     var presets: [Int] {
         switch self {
+        case .maxConcurrentSnapshotRequests:
+            [1, 2, 3, 4, 5, 6]
         case .batteryCaptureWarmup:
             [3, 5, 8, 10, 15]
         case .restrictedStartupSnapshotPriming:
@@ -303,6 +366,8 @@ enum NumberSettingKind: String, Identifiable {
 
     var step: Int {
         switch self {
+        case .maxConcurrentSnapshotRequests:
+            1
         case .batteryCaptureWarmup:
             1
         case .staleThreshold, .batteryWakeTrigger, .restrictedStartupSnapshotPriming, .batteryStale:
@@ -314,9 +379,57 @@ enum NumberSettingKind: String, Identifiable {
         switch self {
         case .restrictedStartupSnapshotPriming:
             0
-        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale:
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale, .maxConcurrentSnapshotRequests:
             1
         }
+    }
+
+    var defaultValue: Int {
+        switch self {
+        case .staleThreshold:
+            Int(CameraSchedulingDefaults.staleVisualHighlightThreshold)
+        case .batteryWakeTrigger:
+            Int(CameraSchedulingDefaults.batteryWakeTriggerThreshold)
+        case .batteryCaptureWarmup:
+            Int(CameraSchedulingDefaults.batteryCaptureWarmup)
+        case .restrictedStartupSnapshotPriming:
+            Int(CameraSchedulingDefaults.restrictedStartupSnapshotPrimingDuration)
+        case .batteryStale:
+            Int(CameraSchedulingDefaults.batteryStaleThreshold)
+        case .maxConcurrentSnapshotRequests:
+            CameraSchedulingDefaults.maxConcurrentSnapshotRequests
+        }
+    }
+
+    var unitName: String {
+        switch self {
+        case .maxConcurrentSnapshotRequests:
+            "requests"
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .restrictedStartupSnapshotPriming, .batteryStale:
+            "seconds"
+        }
+    }
+
+    var shortUnit: String {
+        switch self {
+        case .maxConcurrentSnapshotRequests:
+            ""
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .restrictedStartupSnapshotPriming, .batteryStale:
+            "s"
+        }
+    }
+
+    func displayValue(_ value: Int) -> String {
+        switch self {
+        case .maxConcurrentSnapshotRequests:
+            "\(value)"
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .restrictedStartupSnapshotPriming, .batteryStale:
+            "\(value) sec"
+        }
+    }
+
+    func presetLabel(_ value: Int) -> String {
+        "\(value)\(shortUnit)"
     }
 
     var helperText: String? {
@@ -331,6 +444,8 @@ enum NumberSettingKind: String, Identifiable {
             "At startup, wait this long before new battery captures so important wired cameras can refresh first."
         case .batteryStale:
             "Mark a battery still stale when it gets this old."
+        case .maxConcurrentSnapshotRequests:
+            "How many snapshot requests can run at once."
         }
     }
 }
@@ -367,7 +482,7 @@ struct NumberSettingDraft: Equatable {
 
 private struct NumberSettingRow: View {
     let title: String
-    let value: Int
+    let valueText: String
     var helperText: String?
     let action: () -> Void
 
@@ -380,7 +495,7 @@ private struct NumberSettingRow: View {
 
                     Spacer()
 
-                    Text("\(value) sec")
+                    Text(valueText)
                         .font(.body.monospacedDigit())
                         .foregroundStyle(.secondary)
 
@@ -422,35 +537,31 @@ private struct NumberSettingEditor: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 22) {
-                VStack(spacing: 4) {
-                    Text("\(draft.value)")
-                        .font(.system(size: 64, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                    Text("seconds")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+            ScrollView {
+                VStack(spacing: 20) {
+                    currentValueCard
+
+                    HStack(spacing: 12) {
+                        adjustmentButton(systemName: "minus", delta: -setting.step)
+                        adjustmentButton(systemName: "plus", delta: setting.step)
+                    }
+
+                    TextField(setting.unitName.capitalized, text: textBinding)
+                        .keyboardType(.numberPad)
+                        .multilineTextAlignment(.center)
+                        .font(.title3.monospacedDigit())
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 180)
+
+                    presetGrid
+
+                    resetButton
                 }
-                .frame(maxWidth: .infinity)
-
-                HStack(spacing: 18) {
-                    adjustmentButton(systemName: "minus", delta: -setting.step)
-                    adjustmentButton(systemName: "plus", delta: setting.step)
-                }
-
-                TextField("Seconds", text: textBinding)
-                    .keyboardType(.numberPad)
-                    .multilineTextAlignment(.center)
-                    .font(.title2.monospacedDigit())
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 180)
-
-                presetGrid
-
-                Spacer(minLength: 0)
+                .padding(.horizontal, 24)
+                .padding(.top, 22)
+                .padding(.bottom, 30)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 18)
+            .background(Color(UIColor.systemGroupedBackground))
             .navigationTitle(setting.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -474,13 +585,30 @@ private struct NumberSettingEditor: View {
         )
     }
 
+    private var currentValueCard: some View {
+        VStack(spacing: 4) {
+            Text(setting.displayValue(draft.value))
+                .font(.system(.largeTitle, design: .rounded).weight(.semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(setting.unitName)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 18)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private var presetGrid: some View {
         LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
             spacing: 10
         ) {
             ForEach(setting.presets, id: \.self) { preset in
-                Button("\(preset)s") {
+                Button(setting.presetLabel(preset)) {
                     draft.setValue(preset)
                 }
                 .buttonStyle(.bordered)
@@ -489,15 +617,34 @@ private struct NumberSettingEditor: View {
         }
     }
 
+    private var resetButton: some View {
+        Button {
+            draft.setValue(setting.defaultValue)
+        } label: {
+            HStack {
+                Label("Reset to Default", systemImage: "arrow.counterclockwise")
+                Spacer()
+                Text(setting.displayValue(setting.defaultValue))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+    }
+
     private func adjustmentButton(systemName: String, delta: Int) -> some View {
         Button {
             draft.adjust(by: delta)
         } label: {
             Image(systemName: systemName)
-                .font(.title2.weight(.semibold))
-                .frame(width: 82, height: 48)
+                .font(.title3.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
         }
-        .buttonStyle(.borderedProminent)
+        .buttonStyle(.bordered)
+        .tint(.accentColor)
         .accessibilityLabel(delta < 0 ? "Decrease" : "Increase")
     }
 }
