@@ -475,6 +475,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveStartedAt: feed.liveStartedAt,
             batteryStillDate: feed.batteryStillDate,
             batteryWakeLeaseStartedAt: state.batteryWakeLeaseStartedAt,
+            allowsUnleasedCapture: sessionMode == .constrained,
             warmup: batteryCaptureWarmup,
             now: now
         ) else {
@@ -1617,10 +1618,12 @@ enum BatteryTrustedStillCapturePolicy {
         liveStartedAt: Date?,
         batteryStillDate: Date?,
         batteryWakeLeaseStartedAt: Date?,
+        allowsUnleasedCapture: Bool,
         warmup: TimeInterval,
         now: Date
     ) -> Bool {
         guard isBatteryCamera, isStreaming, let liveStartedAt else { return false }
+        guard allowsUnleasedCapture || batteryWakeLeaseStartedAt != nil else { return false }
 
         guard now.timeIntervalSince(liveStartedAt) >= warmup else { return false }
 

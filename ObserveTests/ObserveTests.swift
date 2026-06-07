@@ -551,6 +551,7 @@ final class ObserveTests: XCTestCase {
                 liveStartedAt: liveStartedAt,
                 batteryStillDate: nil,
                 batteryWakeLeaseStartedAt: nil,
+                allowsUnleasedCapture: true,
                 warmup: 5,
                 now: now
             )
@@ -562,6 +563,19 @@ final class ObserveTests: XCTestCase {
                 liveStartedAt: liveStartedAt,
                 batteryStillDate: nil,
                 batteryWakeLeaseStartedAt: liveStartedAt,
+                allowsUnleasedCapture: false,
+                warmup: 5,
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            BatteryTrustedStillCapturePolicy.shouldCapture(
+                isBatteryCamera: true,
+                isStreaming: true,
+                liveStartedAt: liveStartedAt,
+                batteryStillDate: nil,
+                batteryWakeLeaseStartedAt: nil,
+                allowsUnleasedCapture: false,
                 warmup: 5,
                 now: now
             )
@@ -573,6 +587,7 @@ final class ObserveTests: XCTestCase {
                 liveStartedAt: now.addingTimeInterval(-2),
                 batteryStillDate: nil,
                 batteryWakeLeaseStartedAt: nil,
+                allowsUnleasedCapture: true,
                 warmup: 5,
                 now: now
             )
@@ -584,6 +599,7 @@ final class ObserveTests: XCTestCase {
                 liveStartedAt: liveStartedAt,
                 batteryStillDate: now.addingTimeInterval(-1),
                 batteryWakeLeaseStartedAt: nil,
+                allowsUnleasedCapture: true,
                 warmup: 5,
                 now: now
             )
@@ -598,6 +614,7 @@ final class ObserveTests: XCTestCase {
                 liveStartedAt: now.addingTimeInterval(-2),
                 batteryStillDate: nil,
                 batteryWakeLeaseStartedAt: now.addingTimeInterval(-10),
+                allowsUnleasedCapture: false,
                 warmup: 5,
                 now: now
             )
@@ -610,6 +627,7 @@ final class ObserveTests: XCTestCase {
                 liveStartedAt: now.addingTimeInterval(-6),
                 batteryStillDate: nil,
                 batteryWakeLeaseStartedAt: now.addingTimeInterval(-10),
+                allowsUnleasedCapture: false,
                 warmup: 5,
                 now: now
             )

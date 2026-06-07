@@ -145,9 +145,12 @@ RESTRICTED MODE
 |       |
 |       +-- Must receive a live slot long enough to wake.
 |       +-- Must capture an Observe-captured still.
-|       +-- Any warm live battery stream may produce the Observe-captured still,
-|           whether it began during optimistic startup, focused live viewing,
+|       +-- In restricted mode, any warm live battery stream may produce the
+|           Observe-captured still, whether it began during focused live viewing
 |           or a restricted live wake lease.
+|       +-- Outside restricted mode, a battery camera that already has an
+|           active live feed does not start a separate live capture session;
+|           the live feed is already sufficient.
 |       +-- After the Observe-captured still is received, the camera becomes trusted.
 |       +-- If a live wake lease times out without a trusted still:
 |           |
