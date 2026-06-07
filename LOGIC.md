@@ -8,6 +8,7 @@ APP START / SESSION START
 |   |
 |   +-- Keep user choices such as selected home, camera order, wall layout,
 |       stale thresholds, and battery-camera settings across app opens.
+|   +-- Keep whether battery cameras are currently enabled across app opens.
 |   +-- Do not persist the active operational camera session as authoritative.
 |   +-- Rebuild the active wall from current HomeKit discovery and current
 |       per-session camera availability each time a fresh wall session starts.
@@ -24,6 +25,11 @@ APP START / SESSION START
 |       camera operating mode state, must not occupy wall layout slots.
 |   +-- Cameras whose HomeKit accessory is not reachable / not responding must
 |       not occupy wall layout slots.
+|   +-- Battery cameras must not occupy wall layout slots while the user-level
+|       battery camera visibility toggle is off.
+|   +-- A battery camera hidden by the user-level toggle must not receive
+|       snapshot requests, live feed requests, live captures, refreshes,
+|       battery wake leases, or other camera work while hidden.
 |   +-- Do not remove cameras from the wall for restricted-mode pressure,
 |       transient stream failures, snapshot failures, network errors, or
 |       HomeKit communication errors while the accessory is still reachable.

@@ -1048,6 +1048,8 @@ final class ObserveTests: XCTestCase {
     func testMainWindowLaunchesMaximizedOnlyOnMac() {
         XCTAssertFalse(MainWindowPresentation.shouldMaximizeOnLaunch(for: .iPhone))
         XCTAssertTrue(MainWindowPresentation.shouldMaximizeOnLaunch(for: .mac))
+        XCTAssertNil(MainWindowPresentation.minimumSize(for: .iPhone))
+        XCTAssertEqual(MainWindowPresentation.minimumSize(for: .mac), CGSize(width: 120, height: 48))
     }
 
     func testCameraNameVisibilityControlsWallNameDisplay() {
@@ -1058,6 +1060,43 @@ final class ObserveTests: XCTestCase {
         XCTAssertFalse(CameraNameVisibility.hide.showsName(isOneColumnLayout: false))
         XCTAssertFalse(CameraNameVisibility.hide.showsName(isOneColumnLayout: true))
         XCTAssertEqual(CameraNameVisibility.allCases.map(\.title), ["Show", "1 Column Only", "Hide"])
+    }
+
+    func testBatteryCameraVisibilityPolicyHidesOnlyBatteryCamerasWhenDisabled() {
+        XCTAssertTrue(
+            BatteryCameraVisibilityPolicy.isVisible(
+                isHomeKitVisible: true,
+                isBatteryCamera: true,
+                batteryCameraVisibilityEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            BatteryCameraVisibilityPolicy.isVisible(
+                isHomeKitVisible: true,
+                isBatteryCamera: true,
+                batteryCameraVisibilityEnabled: false
+            )
+        )
+        XCTAssertTrue(
+            BatteryCameraVisibilityPolicy.isVisible(
+                isHomeKitVisible: true,
+                isBatteryCamera: false,
+                batteryCameraVisibilityEnabled: false
+            )
+        )
+        XCTAssertFalse(
+            BatteryCameraVisibilityPolicy.isVisible(
+                isHomeKitVisible: false,
+                isBatteryCamera: false,
+                batteryCameraVisibilityEnabled: true
+            )
+        )
+    }
+
+    func testBatteryCameraVisibilityToggleRequiresSettingAndBatteryCameras() {
+        XCTAssertTrue(BatteryCameraVisibilityPolicy.showsToggle(showsSetting: true, hasBatteryCameras: true))
+        XCTAssertFalse(BatteryCameraVisibilityPolicy.showsToggle(showsSetting: false, hasBatteryCameras: true))
+        XCTAssertFalse(BatteryCameraVisibilityPolicy.showsToggle(showsSetting: true, hasBatteryCameras: false))
     }
 
     @MainActor
@@ -1072,11 +1111,15 @@ final class ObserveTests: XCTestCase {
 
         let preferences = ObservePreferences(userDefaults: defaults)
         XCTAssertFalse(preferences.isBatteryWakeCamera(id: "battery"))
+        XCTAssertTrue(preferences.isBatteryCameraVisibilityEnabled)
+        XCTAssertTrue(preferences.showsBatteryCameraVisibilityToggle)
         XCTAssertEqual(preferences.batteryCaptureWarmupSeconds, 5)
         XCTAssertEqual(preferences.restrictedStartupSnapshotPrimingSeconds, 10)
         XCTAssertEqual(preferences.maxConcurrentSnapshotRequests, 3)
 
         preferences.setBatteryWakeEnabled(true, for: "battery")
+        preferences.setBatteryCameraVisibilityEnabled(false)
+        preferences.showsBatteryCameraVisibilityToggle = false
         preferences.setBatteryWakeTriggerSeconds(75)
         preferences.setBatteryCaptureWarmupSeconds(9)
         preferences.setBatteryStaleSeconds(150)
@@ -1086,6 +1129,8 @@ final class ObserveTests: XCTestCase {
 
         let reloaded = ObservePreferences(userDefaults: defaults)
         XCTAssertTrue(reloaded.isBatteryWakeCamera(id: "battery"))
+        XCTAssertFalse(reloaded.isBatteryCameraVisibilityEnabled)
+        XCTAssertFalse(reloaded.showsBatteryCameraVisibilityToggle)
         XCTAssertEqual(reloaded.batteryWakeTriggerSeconds, 75)
         XCTAssertEqual(reloaded.batteryCaptureWarmupSeconds, 9)
         XCTAssertEqual(reloaded.batteryStaleSeconds, 150)
@@ -1589,8 +1634,24 @@ final class ObserveTests: XCTestCase {
 
         XCTAssertEqual(layout.tiles.map(\.id), cameras.map(\.id))
         XCTAssertEqual(layout.contentSize, availableSize)
-        XCTAssertTrue(layout.tiles.allSatisfy { $0.frame.width >= CameraWallMacAutoLayout.minimumTileWidth })
         assertMacTiles(layout.tiles, fitIn: availableSize, message: "small window")
+    }
+
+    func testMacAutoWallLayoutFitsEveryTileInTinyResizableWindows() {
+        let cameras = makeAutoLayoutCameras(count: 4)
+        let sizes = [
+            CGSize(width: 160, height: 48),
+            CGSize(width: 220, height: 90),
+            CGSize(width: 96, height: 320)
+        ]
+
+        for size in sizes {
+            let layout = CameraWallMacAutoLayout(availableSize: size, spacing: 8).layout(for: cameras)
+
+            XCTAssertEqual(layout.tiles.map(\.id), cameras.map(\.id), "\(size)")
+            XCTAssertEqual(layout.contentSize, size, "\(size)")
+            assertMacTiles(layout.tiles, fitIn: size, message: "\(size)")
+        }
     }
 
     func testMacAutoWallLayoutFitsEveryTileInAwkwardResizableWindows() {
@@ -1694,7 +1755,8 @@ final class ObserveTests: XCTestCase {
         assertAutoTiles(tiles, fitIn: contentSize, message: message, file: file, line: line)
         XCTAssertFalse(tiles.isEmpty, message, file: file, line: line)
         for tile in tiles {
-            XCTAssertGreaterThanOrEqual(tile.frame.width, CameraWallMacAutoLayout.minimumTileWidth, message, file: file, line: line)
+            XCTAssertTrue(tile.frame.width.isFinite, message, file: file, line: line)
+            XCTAssertTrue(tile.frame.height.isFinite, message, file: file, line: line)
         }
     }
 

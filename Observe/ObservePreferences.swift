@@ -9,6 +9,8 @@ final class ObservePreferences: ObservableObject {
         static let remotePriority = "observe.remotePriority"
         static let staleVisualHighlightSeconds = "observe.staleVisualHighlightSeconds"
         static let batteryWakeCameraIDs = "observe.batteryWakeCameraIDs"
+        static let batteryCameraVisibilityEnabled = "observe.batteryCameraVisibilityEnabled"
+        static let batteryCameraVisibilityToggleShown = "observe.batteryCameraVisibilityToggleShown"
         static let batteryWakeTriggerSeconds = "observe.batteryWakeTriggerSeconds"
         static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
         static let restrictedStartupSnapshotPrimingSeconds = "observe.restrictedStartupSnapshotPrimingSeconds"
@@ -35,6 +37,10 @@ final class ObservePreferences: ObservableObject {
 
     @Published private(set) var staleVisualHighlightSeconds: Int
     @Published private(set) var batteryWakeCameraIDs: [String]
+    @Published private(set) var isBatteryCameraVisibilityEnabled: Bool
+    @Published var showsBatteryCameraVisibilityToggle: Bool {
+        didSet { userDefaults.set(showsBatteryCameraVisibilityToggle, forKey: Keys.batteryCameraVisibilityToggleShown) }
+    }
     @Published private(set) var batteryWakeTriggerSeconds: Int
     @Published private(set) var batteryCaptureWarmupSeconds: Int
     @Published private(set) var restrictedStartupSnapshotPrimingSeconds: Int
@@ -89,6 +95,12 @@ final class ObservePreferences: ObservableObject {
         self.cameraNameVisibility = CameraNameVisibility(rawValue: storedCameraNameVisibility) ?? .show
         self.remotePriorityIDs = userDefaults.stringArray(forKey: Keys.remotePriority) ?? []
         self.batteryWakeCameraIDs = userDefaults.stringArray(forKey: Keys.batteryWakeCameraIDs) ?? []
+        self.isBatteryCameraVisibilityEnabled = userDefaults.object(
+            forKey: Keys.batteryCameraVisibilityEnabled
+        ) as? Bool ?? true
+        self.showsBatteryCameraVisibilityToggle = userDefaults.object(
+            forKey: Keys.batteryCameraVisibilityToggleShown
+        ) as? Bool ?? true
         let storedStaleSeconds = userDefaults.object(forKey: Keys.staleVisualHighlightSeconds) as? Int
         self.staleVisualHighlightSeconds = max(
             1,
@@ -220,6 +232,13 @@ final class ObservePreferences: ObservableObject {
 
     func isBatteryWakeCamera(id: String) -> Bool {
         batteryWakeCameraIDs.contains(id)
+    }
+
+    func setBatteryCameraVisibilityEnabled(_ enabled: Bool) {
+        guard isBatteryCameraVisibilityEnabled != enabled else { return }
+
+        isBatteryCameraVisibilityEnabled = enabled
+        userDefaults.set(enabled, forKey: Keys.batteryCameraVisibilityEnabled)
     }
 
     func setBatteryWakeTriggerSeconds(_ seconds: Int) {

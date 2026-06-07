@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import HomeKit
 
 enum CameraSchedulingDefaults {
@@ -114,6 +115,15 @@ enum MainWindowPresentation {
             true
         }
     }
+
+    static func minimumSize(for platform: CameraWallPlatform) -> CGSize? {
+        switch platform {
+        case .iPhone:
+            nil
+        case .mac:
+            CGSize(width: 120, height: 48)
+        }
+    }
 }
 
 enum CameraWallInteraction {
@@ -124,6 +134,20 @@ enum CameraWallInteraction {
         case .mac:
             false
         }
+    }
+}
+
+enum BatteryCameraVisibilityPolicy {
+    static func isVisible(
+        isHomeKitVisible: Bool,
+        isBatteryCamera: Bool,
+        batteryCameraVisibilityEnabled: Bool
+    ) -> Bool {
+        isHomeKitVisible && (!isBatteryCamera || batteryCameraVisibilityEnabled)
+    }
+
+    static func showsToggle(showsSetting: Bool, hasBatteryCameras: Bool) -> Bool {
+        showsSetting && hasBatteryCameras
     }
 }
 

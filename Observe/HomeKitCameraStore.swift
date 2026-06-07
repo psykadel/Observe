@@ -67,7 +67,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     var wallFeeds: [CameraFeedCoordinator] {
-        priorityOrderedFeeds.filter(\.isVisibleOnWall)
+        priorityOrderedFeeds.filter { isVisibleOnWall($0) }
+    }
+
+    var hasBatteryWakeCameras: Bool {
+        feeds.contains { preferences.isBatteryWakeCamera(id: $0.id) }
     }
 
     func setAppActive(_ active: Bool) {
@@ -110,6 +114,19 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     func clearFocus() {
         focusedFeedID = nil
         refreshPresentation(focusedFeedID: nil)
+    }
+
+    func setBatteryCameraVisibilityEnabled(_ enabled: Bool) {
+        guard preferences.isBatteryCameraVisibilityEnabled != enabled else { return }
+
+        preferences.setBatteryCameraVisibilityEnabled(enabled)
+        if enabled {
+            liveCapacity = max(liveCapacity, min(1, wallFeeds.count))
+        } else {
+            reconcileHiddenBatteryCameraWork()
+        }
+        objectWillChange.send()
+        refreshPresentation(focusedFeedID: focusedFeedID)
     }
 
     func adjustDensity(with scale: CGFloat) {
@@ -347,7 +364,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         cancelBatteryWakeLeasesSupersededByFocus(at: now)
 
         for feed in feeds {
-            guard feed.isVisibleOnWall else {
+            guard isVisibleOnWall(feed) else {
                 feed.stopLiveIfNeeded()
                 continue
             }
@@ -398,10 +415,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func reconcileFeedScheduleStates(at now: Date, focusedFeedID: String?) {
+        reconcileHiddenBatteryCameraWork()
+
         for feed in feeds {
             guard var state = feedScheduleStates[feed.id] else { continue }
 
-            guard feed.isVisibleOnWall, preferences.isBatteryWakeCamera(id: feed.id) else {
+            guard isVisibleOnWall(feed), preferences.isBatteryWakeCamera(id: feed.id) else {
                 state.batteryWakeLeaseStartedAt = nil
                 state.batteryWakeRetryAfter = nil
                 state.consecutiveBatteryWakeFailures = 0
@@ -568,6 +587,43 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
     }
 
+    private func isVisibleOnWall(_ feed: CameraFeedCoordinator) -> Bool {
+        BatteryCameraVisibilityPolicy.isVisible(
+            isHomeKitVisible: feed.isVisibleOnWall,
+            isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id),
+            batteryCameraVisibilityEnabled: preferences.isBatteryCameraVisibilityEnabled
+        )
+    }
+
+    private func reconcileHiddenBatteryCameraWork() {
+        guard !preferences.isBatteryCameraVisibilityEnabled else { return }
+
+        for feed in feeds where preferences.isBatteryWakeCamera(id: feed.id) {
+            feed.stopLiveIfNeeded()
+
+            if focusedFeedID == feed.id {
+                focusedFeedID = nil
+            }
+
+            guard var state = feedScheduleStates[feed.id] else { continue }
+            state.snapshotInFlight = false
+            state.snapshotRequestStartedAt = nil
+            state.snapshotRequestID = nil
+            state.batteryWakeLeaseStartedAt = nil
+            state.batteryWakeRetryAfter = nil
+            state.consecutiveBatteryWakeFailures = 0
+            state.nextEligibleSnapshotAt = .distantFuture
+            feedScheduleStates[feed.id] = state
+        }
+
+        liveCapacity = min(liveCapacity, wallFeeds.count)
+        if wallFeeds.isEmpty {
+            liveCapacityExpansionBlockedUntil = nil
+            liveCapacityIncludesUnconfirmedMemory = false
+            restrictedStartupSnapshotPrimingStartedAt = nil
+        }
+    }
+
     private func serviceSnapshotQueue() {
         guard isAppActive else { return }
         let feedLookup = Dictionary(uniqueKeysWithValues: wallFeeds.map { ($0.id, $0) })
@@ -666,6 +722,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         result: SnapshotRequestResult,
         at now: Date
     ) -> Bool {
+        guard wallFeeds.contains(where: { $0.id == feedID }) else {
+            return false
+        }
+
         guard SnapshotRequestMatchPolicy.acceptsLateFirstSuccess(
             result: result,
             hasTrustedImage: hasTrustedImage(feedID: feedID, at: now),
@@ -805,6 +865,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
     private func handleConstrainedSignal(from feedID: String) {
         let now = Date()
+        if let feed = feeds.first(where: { $0.id == feedID }), !isVisibleOnWall(feed) {
+            reconcileHiddenBatteryCameraWork()
+            refreshPresentation(focusedFeedID: focusedFeedID)
+            return
+        }
+
         telemetryStartupMilestones.recordConstrainedSignal(feedID: feedID, at: elapsedSinceSession(now))
         recordTelemetry("constrained signal \(feedID) mode=\(sessionMode) liveCapacity=\(liveCapacity)")
         if keepBatteryWakeLeaseAliveAfterConstrainedSignal(for: feedID, at: now) {

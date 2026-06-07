@@ -26,14 +26,42 @@ struct CameraWallView: View {
                 .padding(.bottom, 6)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Button {
-                showsSettings = true
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(12)
-                    .background(.ultraThinMaterial, in: Circle())
+            HStack(spacing: 8) {
+                if showsBatteryCameraToggle {
+                    Button {
+                        store.setBatteryCameraVisibilityEnabled(!preferences.isBatteryCameraVisibilityEnabled)
+                    } label: {
+                        Image(systemName: preferences.isBatteryCameraVisibilityEnabled ? "video.fill" : "video.slash.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(preferences.isBatteryCameraVisibilityEnabled ? .white : .white.opacity(0.58))
+                            .padding(12)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .overlay(alignment: .bottomTrailing) {
+                                Image(systemName: preferences.isBatteryCameraVisibilityEnabled ? "battery.100percent" : "battery.0percent")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(preferences.isBatteryCameraVisibilityEnabled ? .green : .yellow)
+                                    .padding(2)
+                                    .background(.black.opacity(0.7), in: Circle())
+                            }
+                    }
+                    .accessibilityLabel(
+                        preferences.isBatteryCameraVisibilityEnabled
+                            ? "Hide Battery Cameras"
+                            : "Show Battery Cameras"
+                    )
+                    .accessibilityValue(preferences.isBatteryCameraVisibilityEnabled ? "Enabled" : "Disabled")
+                }
+
+                Button {
+                    showsSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(12)
+                        .background(.ultraThinMaterial, in: Circle())
+                }
+                .accessibilityLabel("Settings")
             }
             .padding(.top, 8)
             .padding(.trailing, 10)
@@ -86,7 +114,7 @@ struct CameraWallView: View {
             } else if store.wallFeeds.isEmpty {
                 placeholder(
                     title: "No Active Cameras",
-                    subtitle: "Observe hides cameras only when HomeKit reports them as off."
+                    subtitle: noActiveCamerasSubtitle
                 )
             } else {
                 cameraWall
@@ -161,6 +189,21 @@ struct CameraWallView: View {
             .gesture(densityGesture)
             .simultaneousGesture(wallSwipeGesture)
         }
+    }
+
+    private var showsBatteryCameraToggle: Bool {
+        BatteryCameraVisibilityPolicy.showsToggle(
+            showsSetting: preferences.showsBatteryCameraVisibilityToggle,
+            hasBatteryCameras: store.hasBatteryWakeCameras
+        )
+    }
+
+    private var noActiveCamerasSubtitle: String {
+        if !preferences.isBatteryCameraVisibilityEnabled && store.hasBatteryWakeCameras {
+            return "Battery cameras are hidden by the battery camera toggle."
+        }
+
+        return "Observe hides cameras only when HomeKit reports them as off."
     }
 
     @ViewBuilder
@@ -338,6 +381,7 @@ private struct MainWindowLaunchMaximizeModifier: ViewModifier {
         if MainWindowPresentation.shouldMaximizeOnLaunch(for: platform) {
             content.background(
                 MainWindowAccessor { windowScene in
+                    windowScene.configureObserveMinimumSize(for: platform)
                     guard !hasRequestedMaximize else { return }
                     hasRequestedMaximize = true
                     windowScene.maximizeForObserveLaunch()
@@ -376,6 +420,12 @@ private struct MainWindowAccessor: UIViewRepresentable {
 }
 
 private extension UIWindowScene {
+    func configureObserveMinimumSize(for platform: CameraWallPlatform) {
+        guard let minimumSize = MainWindowPresentation.minimumSize(for: platform) else { return }
+
+        sizeRestrictions?.minimumSize = minimumSize
+    }
+
     func maximizeForObserveLaunch() {
         let displayFrame = screen.applicationFrame
         guard displayFrame.width > 0, displayFrame.height > 0 else { return }
@@ -634,7 +684,7 @@ struct CameraWallMacAutoLayout {
         let contentSize: CGSize
     }
 
-    static let minimumTileWidth: CGFloat = 120
+    static let minimumTileWidth: CGFloat = 24
     static let preferredTileWidth: CGFloat = 220
 
     let availableSize: CGSize

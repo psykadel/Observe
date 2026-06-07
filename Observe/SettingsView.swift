@@ -91,6 +91,11 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
+                        Toggle(
+                            "Enable Battery Camera Toggle Button",
+                            isOn: batteryCameraVisibilityToggleBinding
+                        )
+
                         NumberSettingRow(
                             title: "Start Live Capture After",
                             valueText: NumberSettingKind.batteryWakeTrigger.displayValue(
@@ -250,6 +255,13 @@ struct SettingsView: View {
         Binding(
             get: { preferences.isBatteryWakeCamera(id: feedID) },
             set: { preferences.setBatteryWakeEnabled($0, for: feedID) }
+        )
+    }
+
+    private var batteryCameraVisibilityToggleBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.showsBatteryCameraVisibilityToggle },
+            set: { preferences.showsBatteryCameraVisibilityToggle = $0 }
         )
     }
 
