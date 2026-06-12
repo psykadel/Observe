@@ -129,6 +129,19 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         refreshPresentation(focusedFeedID: focusedFeedID)
     }
 
+    func setBatteryCameraVisibilityToggleShown(_ shown: Bool) {
+        let wasEnabled = preferences.isBatteryCameraVisibilityEnabled
+        preferences.setBatteryCameraVisibilityToggleShown(shown)
+        guard !shown, !wasEnabled else {
+            objectWillChange.send()
+            return
+        }
+
+        liveCapacity = max(liveCapacity, min(1, wallFeeds.count))
+        objectWillChange.send()
+        refreshPresentation(focusedFeedID: focusedFeedID)
+    }
+
     func adjustDensity(with scale: CGFloat) {
         guard CameraWallInteraction.allowsDensityAdjustment(for: .current) else { return }
 
@@ -229,6 +242,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 }
                 feed.refreshHomeKitCameraActiveState()
                 feed.readHomeKitCameraActiveState()
+                feed.readBatteryPercentage()
                 discoveredFeeds.append(feed)
             }
         }
@@ -591,7 +605,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         BatteryCameraVisibilityPolicy.isVisible(
             isHomeKitVisible: feed.isVisibleOnWall,
             isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id),
-            batteryCameraVisibilityEnabled: preferences.isBatteryCameraVisibilityEnabled
+            batteryCameraVisibilityEnabled: preferences.isBatteryCameraVisibilityEnabled,
+            showsBatteryCameraVisibilityToggle: preferences.showsBatteryCameraVisibilityToggle
         )
     }
 
@@ -1149,6 +1164,7 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
             guard let self else { return }
             self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach {
                 $0.refreshHomeKitCameraActiveStateIfNeeded(for: characteristic)
+                $0.refreshBatteryPercentageIfNeeded(for: characteristic)
             }
             self.refreshPresentation(focusedFeedID: self.focusedFeedID)
         }

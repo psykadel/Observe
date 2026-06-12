@@ -7,6 +7,7 @@ struct CameraTileView: View {
     let staleVisualThreshold: TimeInterval
     let isBatteryCamera: Bool
     var showsName = true
+    var showsBatteryPercentage = false
     var surfaceMode: CameraSurfaceMode = .wall
 
     private let tileAspectRatio: CGFloat = 16 / 9
@@ -16,6 +17,12 @@ struct CameraTileView: View {
             let status = feed.status(at: context.date)
             let showsStaleBorder = feed.isVisuallyStale(at: context.date, threshold: staleVisualThreshold)
             let showsPlaceholder = feed.cameraSource == nil
+            let batteryPercentageLabel = BatteryPercentageOverlayPolicy.label(for: feed.batteryPercentage)
+            let showsBatteryPercentageOverlay = BatteryPercentageOverlayPolicy.showsOverlay(
+                showsBatteryPercentages: showsBatteryPercentage,
+                isBatteryCamera: isBatteryCamera,
+                batteryPercentage: feed.batteryPercentage
+            )
 
             ZStack(alignment: .bottomLeading) {
                 CameraSurfaceView(
@@ -60,8 +67,30 @@ struct CameraTileView: View {
                         lineWidth: showsStaleBorder ? 2 : 1
                     )
             }
+            .overlay(alignment: .topTrailing) {
+                if showsBatteryPercentageOverlay, let batteryPercentageLabel {
+                    batteryPercentageOverlay(label: batteryPercentageLabel)
+                        .padding(10)
+                }
+            }
             .aspectRatio(fixedHeight == nil ? tileAspectRatio : nil, contentMode: .fit)
         }
+    }
+
+    private func batteryPercentageOverlay(label: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "battery.100percent")
+                .font(.system(size: 10, weight: .semibold))
+
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(.white.opacity(0.78))
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(.black.opacity(0.44), in: Capsule())
+        .accessibilityLabel("Battery \(label)")
     }
 
     private func statusLine(status: CameraStatusSnapshot) -> some View {

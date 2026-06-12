@@ -26,7 +26,10 @@ APP START / SESSION START
 |   +-- Cameras whose HomeKit accessory is not reachable / not responding must
 |       not occupy wall layout slots.
 |   +-- Battery cameras must not occupy wall layout slots while the user-level
-|       battery camera visibility toggle is off.
+|       battery camera visibility toggle is shown and off.
+|   +-- If the battery camera visibility toggle button setting is off, force
+|       the user-level battery camera visibility state on so battery cameras
+|       remain visible and reachable while the control is hidden.
 |   +-- A battery camera hidden by the user-level toggle must not receive
 |       snapshot requests, live feed requests, live captures, refreshes,
 |       battery wake leases, or other camera work while hidden.

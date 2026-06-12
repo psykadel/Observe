@@ -29,6 +29,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     @Published private(set) var recoveryPhase: FeedRecoveryPhase = .idle
     @Published private(set) var isBatteryWakeCamera = false
     @Published private(set) var batteryStillDate: Date?
+    @Published private(set) var batteryPercentage: Int?
 
     var onConstrainedSignal: ((String) -> Void)?
     var onSnapshotResult: ((String, SnapshotRequestID?, SnapshotRequestResult) -> Void)?
@@ -103,6 +104,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         roomName = accessory.room?.name
         isReachable = accessory.isReachable
         refreshHomeKitCameraActiveState()
+        refreshBatteryPercentage()
     }
 
     func refreshSessionAvailabilityFromAccessory() {
@@ -132,6 +134,22 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
     }
 
+    func readBatteryPercentage() {
+        batteryPercentageCharacteristics.forEach { characteristic in
+            if characteristic.properties.contains(HMCharacteristicPropertySupportsEventNotification),
+               !characteristic.isNotificationEnabled {
+                characteristic.enableNotification(true) { _ in }
+            }
+
+            characteristic.readValue { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshBatteryPercentage()
+                }
+            }
+        }
+        refreshBatteryPercentage()
+    }
+
     func refreshHomeKitCameraActiveStateIfNeeded(for characteristic: HMCharacteristic) {
         let serviceType = characteristic.service?.serviceType ?? ""
         guard CameraWallAvailability.isCameraAvailabilityCharacteristic(
@@ -142,6 +160,12 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
 
         refreshHomeKitCameraActiveState()
+    }
+
+    func refreshBatteryPercentageIfNeeded(for characteristic: HMCharacteristic) {
+        guard characteristic.characteristicType == HMCharacteristicTypeBatteryLevel else { return }
+
+        batteryPercentage = BatteryPercentageOverlayPolicy.normalizedPercentage(from: characteristic.value)
     }
 
     func setBatteryWakeEnabled(_ enabled: Bool) {
@@ -337,6 +361,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         recencyTier = .empty
         recoveryPhase = .idle
         batteryStillDate = nil
+        refreshBatteryPercentage()
         state = .idle
     }
 
@@ -367,6 +392,18 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
                 value: characteristic.value
             )
         }
+    }
+
+    private var batteryPercentageCharacteristics: [HMCharacteristic] {
+        cameraAvailabilityServices
+            .flatMap(\.characteristics)
+            .filter { $0.characteristicType == HMCharacteristicTypeBatteryLevel }
+    }
+
+    private func refreshBatteryPercentage() {
+        batteryPercentage = batteryPercentageCharacteristics
+            .compactMap { BatteryPercentageOverlayPolicy.normalizedPercentage(from: $0.value) }
+            .first
     }
 
     private func updateHomeKitCameraActiveState(from snapshots: [CameraWallAvailability.CharacteristicSnapshot]) {

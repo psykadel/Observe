@@ -96,6 +96,11 @@ struct SettingsView: View {
                             isOn: batteryCameraVisibilityToggleBinding
                         )
 
+                        Toggle(
+                            "Show Battery Percentages",
+                            isOn: batteryPercentageBinding
+                        )
+
                         NumberSettingRow(
                             title: "Start Live Capture After",
                             valueText: NumberSettingKind.batteryWakeTrigger.displayValue(
@@ -261,7 +266,14 @@ struct SettingsView: View {
     private var batteryCameraVisibilityToggleBinding: Binding<Bool> {
         Binding(
             get: { preferences.showsBatteryCameraVisibilityToggle },
-            set: { preferences.showsBatteryCameraVisibilityToggle = $0 }
+            set: { store.setBatteryCameraVisibilityToggleShown($0) }
+        )
+    }
+
+    private var batteryPercentageBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.showsBatteryPercentages },
+            set: { preferences.setBatteryPercentagesShown($0) }
         )
     }
 

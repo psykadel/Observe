@@ -1067,28 +1067,43 @@ final class ObserveTests: XCTestCase {
             BatteryCameraVisibilityPolicy.isVisible(
                 isHomeKitVisible: true,
                 isBatteryCamera: true,
-                batteryCameraVisibilityEnabled: true
+                batteryCameraVisibilityEnabled: true,
+                showsBatteryCameraVisibilityToggle: true
             )
         )
         XCTAssertFalse(
             BatteryCameraVisibilityPolicy.isVisible(
                 isHomeKitVisible: true,
                 isBatteryCamera: true,
-                batteryCameraVisibilityEnabled: false
+                batteryCameraVisibilityEnabled: false,
+                showsBatteryCameraVisibilityToggle: true
             )
         )
         XCTAssertTrue(
             BatteryCameraVisibilityPolicy.isVisible(
                 isHomeKitVisible: true,
                 isBatteryCamera: false,
-                batteryCameraVisibilityEnabled: false
+                batteryCameraVisibilityEnabled: false,
+                showsBatteryCameraVisibilityToggle: true
             )
         )
         XCTAssertFalse(
             BatteryCameraVisibilityPolicy.isVisible(
                 isHomeKitVisible: false,
                 isBatteryCamera: false,
-                batteryCameraVisibilityEnabled: true
+                batteryCameraVisibilityEnabled: true,
+                showsBatteryCameraVisibilityToggle: true
+            )
+        )
+    }
+
+    func testBatteryCameraVisibilityPolicyForcesBatteryVisibleWhenToggleHidden() {
+        XCTAssertTrue(
+            BatteryCameraVisibilityPolicy.isVisible(
+                isHomeKitVisible: true,
+                isBatteryCamera: true,
+                batteryCameraVisibilityEnabled: false,
+                showsBatteryCameraVisibilityToggle: false
             )
         )
     }
@@ -1097,6 +1112,46 @@ final class ObserveTests: XCTestCase {
         XCTAssertTrue(BatteryCameraVisibilityPolicy.showsToggle(showsSetting: true, hasBatteryCameras: true))
         XCTAssertFalse(BatteryCameraVisibilityPolicy.showsToggle(showsSetting: false, hasBatteryCameras: true))
         XCTAssertFalse(BatteryCameraVisibilityPolicy.showsToggle(showsSetting: true, hasBatteryCameras: false))
+    }
+
+    func testBatteryPercentageOverlayRequiresSettingBatteryCameraAndData() {
+        XCTAssertTrue(
+            BatteryPercentageOverlayPolicy.showsOverlay(
+                showsBatteryPercentages: true,
+                isBatteryCamera: true,
+                batteryPercentage: 72
+            )
+        )
+        XCTAssertFalse(
+            BatteryPercentageOverlayPolicy.showsOverlay(
+                showsBatteryPercentages: false,
+                isBatteryCamera: true,
+                batteryPercentage: 72
+            )
+        )
+        XCTAssertFalse(
+            BatteryPercentageOverlayPolicy.showsOverlay(
+                showsBatteryPercentages: true,
+                isBatteryCamera: false,
+                batteryPercentage: 72
+            )
+        )
+        XCTAssertFalse(
+            BatteryPercentageOverlayPolicy.showsOverlay(
+                showsBatteryPercentages: true,
+                isBatteryCamera: true,
+                batteryPercentage: nil
+            )
+        )
+    }
+
+    func testBatteryPercentageOverlaySanitizesAndFormatsValues() {
+        XCTAssertEqual(BatteryPercentageOverlayPolicy.normalizedPercentage(from: NSNumber(value: 71.6)), 72)
+        XCTAssertEqual(BatteryPercentageOverlayPolicy.normalizedPercentage(from: NSNumber(value: -8)), 0)
+        XCTAssertEqual(BatteryPercentageOverlayPolicy.normalizedPercentage(from: NSNumber(value: 140)), 100)
+        XCTAssertNil(BatteryPercentageOverlayPolicy.normalizedPercentage(from: "82"))
+        XCTAssertEqual(BatteryPercentageOverlayPolicy.label(for: 72), "72%")
+        XCTAssertNil(BatteryPercentageOverlayPolicy.label(for: nil))
     }
 
     @MainActor
@@ -1113,13 +1168,15 @@ final class ObserveTests: XCTestCase {
         XCTAssertFalse(preferences.isBatteryWakeCamera(id: "battery"))
         XCTAssertTrue(preferences.isBatteryCameraVisibilityEnabled)
         XCTAssertTrue(preferences.showsBatteryCameraVisibilityToggle)
+        XCTAssertFalse(preferences.showsBatteryPercentages)
         XCTAssertEqual(preferences.batteryCaptureWarmupSeconds, 5)
         XCTAssertEqual(preferences.restrictedStartupSnapshotPrimingSeconds, 10)
         XCTAssertEqual(preferences.maxConcurrentSnapshotRequests, 3)
 
         preferences.setBatteryWakeEnabled(true, for: "battery")
         preferences.setBatteryCameraVisibilityEnabled(false)
-        preferences.showsBatteryCameraVisibilityToggle = false
+        preferences.setBatteryCameraVisibilityToggleShown(false)
+        preferences.setBatteryPercentagesShown(true)
         preferences.setBatteryWakeTriggerSeconds(75)
         preferences.setBatteryCaptureWarmupSeconds(9)
         preferences.setBatteryStaleSeconds(150)
@@ -1129,8 +1186,9 @@ final class ObserveTests: XCTestCase {
 
         let reloaded = ObservePreferences(userDefaults: defaults)
         XCTAssertTrue(reloaded.isBatteryWakeCamera(id: "battery"))
-        XCTAssertFalse(reloaded.isBatteryCameraVisibilityEnabled)
+        XCTAssertTrue(reloaded.isBatteryCameraVisibilityEnabled)
         XCTAssertFalse(reloaded.showsBatteryCameraVisibilityToggle)
+        XCTAssertTrue(reloaded.showsBatteryPercentages)
         XCTAssertEqual(reloaded.batteryWakeTriggerSeconds, 75)
         XCTAssertEqual(reloaded.batteryCaptureWarmupSeconds, 9)
         XCTAssertEqual(reloaded.batteryStaleSeconds, 150)

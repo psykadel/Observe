@@ -36,13 +36,6 @@ struct CameraWallView: View {
                             .foregroundStyle(preferences.isBatteryCameraVisibilityEnabled ? .white : .white.opacity(0.58))
                             .padding(12)
                             .background(.ultraThinMaterial, in: Circle())
-                            .overlay(alignment: .bottomTrailing) {
-                                Image(systemName: preferences.isBatteryCameraVisibilityEnabled ? "battery.100percent" : "battery.0percent")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundStyle(preferences.isBatteryCameraVisibilityEnabled ? .green : .yellow)
-                                    .padding(2)
-                                    .background(.black.opacity(0.7), in: Circle())
-                            }
                     }
                     .accessibilityLabel(
                         preferences.isBatteryCameraVisibilityEnabled
@@ -172,7 +165,8 @@ struct CameraWallView: View {
                                         ? preferences.batteryStaleThreshold
                                         : preferences.staleVisualHighlightThreshold,
                                     isBatteryCamera: preferences.isBatteryWakeCamera(id: feed.id),
-                                    showsName: showsNames
+                                    showsName: showsNames,
+                                    showsBatteryPercentage: preferences.showsBatteryPercentages
                                 )
                             }
                             .buttonStyle(.plain)
@@ -199,7 +193,9 @@ struct CameraWallView: View {
     }
 
     private var noActiveCamerasSubtitle: String {
-        if !preferences.isBatteryCameraVisibilityEnabled && store.hasBatteryWakeCameras {
+        if preferences.showsBatteryCameraVisibilityToggle,
+           !preferences.isBatteryCameraVisibilityEnabled,
+           store.hasBatteryWakeCameras {
             return "Battery cameras are hidden by the battery camera toggle."
         }
 
@@ -245,6 +241,7 @@ struct CameraWallView: View {
                                 showsName: preferences.cameraNameVisibility.showsName(
                                     isOneColumnLayout: oneColumnTileIDs.contains(tile.id)
                                 ),
+                                showsBatteryPercentage: preferences.showsBatteryPercentages,
                                 surfaceMode: .wallFit
                             )
                         }
@@ -289,6 +286,7 @@ struct CameraWallView: View {
                                 showsName: preferences.cameraNameVisibility.showsName(
                                     isOneColumnLayout: oneColumnTileIDs.contains(tile.id)
                                 ),
+                                showsBatteryPercentage: preferences.showsBatteryPercentages,
                                 surfaceMode: .wallFit
                             )
                         }

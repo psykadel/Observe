@@ -141,13 +141,38 @@ enum BatteryCameraVisibilityPolicy {
     static func isVisible(
         isHomeKitVisible: Bool,
         isBatteryCamera: Bool,
-        batteryCameraVisibilityEnabled: Bool
+        batteryCameraVisibilityEnabled: Bool,
+        showsBatteryCameraVisibilityToggle: Bool
     ) -> Bool {
-        isHomeKitVisible && (!isBatteryCamera || batteryCameraVisibilityEnabled)
+        let isBatteryCameraVisible = batteryCameraVisibilityEnabled || !showsBatteryCameraVisibilityToggle
+        return isHomeKitVisible && (!isBatteryCamera || isBatteryCameraVisible)
     }
 
     static func showsToggle(showsSetting: Bool, hasBatteryCameras: Bool) -> Bool {
         showsSetting && hasBatteryCameras
+    }
+}
+
+enum BatteryPercentageOverlayPolicy {
+    static func showsOverlay(
+        showsBatteryPercentages: Bool,
+        isBatteryCamera: Bool,
+        batteryPercentage: Int?
+    ) -> Bool {
+        showsBatteryPercentages && isBatteryCamera && batteryPercentage != nil
+    }
+
+    static func normalizedPercentage(from value: Any?) -> Int? {
+        guard let number = value as? NSNumber else { return nil }
+
+        let rounded = Int(number.doubleValue.rounded())
+        return min(100, max(0, rounded))
+    }
+
+    static func label(for batteryPercentage: Int?) -> String? {
+        guard let batteryPercentage else { return nil }
+
+        return "\(min(100, max(0, batteryPercentage)))%"
     }
 }
 

@@ -11,6 +11,7 @@ final class ObservePreferences: ObservableObject {
         static let batteryWakeCameraIDs = "observe.batteryWakeCameraIDs"
         static let batteryCameraVisibilityEnabled = "observe.batteryCameraVisibilityEnabled"
         static let batteryCameraVisibilityToggleShown = "observe.batteryCameraVisibilityToggleShown"
+        static let batteryPercentagesShown = "observe.batteryPercentagesShown"
         static let batteryWakeTriggerSeconds = "observe.batteryWakeTriggerSeconds"
         static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
         static let restrictedStartupSnapshotPrimingSeconds = "observe.restrictedStartupSnapshotPrimingSeconds"
@@ -38,9 +39,8 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var staleVisualHighlightSeconds: Int
     @Published private(set) var batteryWakeCameraIDs: [String]
     @Published private(set) var isBatteryCameraVisibilityEnabled: Bool
-    @Published var showsBatteryCameraVisibilityToggle: Bool {
-        didSet { userDefaults.set(showsBatteryCameraVisibilityToggle, forKey: Keys.batteryCameraVisibilityToggleShown) }
-    }
+    @Published private(set) var showsBatteryCameraVisibilityToggle: Bool
+    @Published private(set) var showsBatteryPercentages: Bool
     @Published private(set) var batteryWakeTriggerSeconds: Int
     @Published private(set) var batteryCaptureWarmupSeconds: Int
     @Published private(set) var restrictedStartupSnapshotPrimingSeconds: Int
@@ -95,12 +95,22 @@ final class ObservePreferences: ObservableObject {
         self.cameraNameVisibility = CameraNameVisibility(rawValue: storedCameraNameVisibility) ?? .show
         self.remotePriorityIDs = userDefaults.stringArray(forKey: Keys.remotePriority) ?? []
         self.batteryWakeCameraIDs = userDefaults.stringArray(forKey: Keys.batteryWakeCameraIDs) ?? []
-        self.isBatteryCameraVisibilityEnabled = userDefaults.object(
+        let storedBatteryCameraVisibilityEnabled = userDefaults.object(
             forKey: Keys.batteryCameraVisibilityEnabled
         ) as? Bool ?? true
-        self.showsBatteryCameraVisibilityToggle = userDefaults.object(
+        let storedBatteryCameraVisibilityToggleShown = userDefaults.object(
             forKey: Keys.batteryCameraVisibilityToggleShown
         ) as? Bool ?? true
+        if !storedBatteryCameraVisibilityToggleShown, !storedBatteryCameraVisibilityEnabled {
+            self.isBatteryCameraVisibilityEnabled = true
+            userDefaults.set(true, forKey: Keys.batteryCameraVisibilityEnabled)
+        } else {
+            self.isBatteryCameraVisibilityEnabled = storedBatteryCameraVisibilityEnabled
+        }
+        self.showsBatteryCameraVisibilityToggle = storedBatteryCameraVisibilityToggleShown
+        self.showsBatteryPercentages = userDefaults.object(
+            forKey: Keys.batteryPercentagesShown
+        ) as? Bool ?? false
         let storedStaleSeconds = userDefaults.object(forKey: Keys.staleVisualHighlightSeconds) as? Int
         self.staleVisualHighlightSeconds = max(
             1,
@@ -239,6 +249,28 @@ final class ObservePreferences: ObservableObject {
 
         isBatteryCameraVisibilityEnabled = enabled
         userDefaults.set(enabled, forKey: Keys.batteryCameraVisibilityEnabled)
+    }
+
+    func setBatteryCameraVisibilityToggleShown(_ shown: Bool) {
+        guard showsBatteryCameraVisibilityToggle != shown else {
+            if !shown {
+                setBatteryCameraVisibilityEnabled(true)
+            }
+            return
+        }
+
+        showsBatteryCameraVisibilityToggle = shown
+        userDefaults.set(shown, forKey: Keys.batteryCameraVisibilityToggleShown)
+        if !shown {
+            setBatteryCameraVisibilityEnabled(true)
+        }
+    }
+
+    func setBatteryPercentagesShown(_ shown: Bool) {
+        guard showsBatteryPercentages != shown else { return }
+
+        showsBatteryPercentages = shown
+        userDefaults.set(shown, forKey: Keys.batteryPercentagesShown)
     }
 
     func setBatteryWakeTriggerSeconds(_ seconds: Int) {
