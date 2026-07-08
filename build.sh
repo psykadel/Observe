@@ -44,24 +44,6 @@ verify_homekit_signature() {
     fi
 }
 
-ask_yes_no() {
-    local prompt="$1"
-
-    if [[ ! -t 0 ]]; then
-        return 1
-    fi
-
-    local answer
-    while true; do
-        read -r -p "$prompt [y/n] " answer
-        case "$answer" in
-            y|Y|yes|YES|Yes) return 0 ;;
-            n|N|no|NO|No) return 1 ;;
-            *) echo "Please answer y or n." ;;
-        esac
-    done
-}
-
 echo "Building $APP_NAME for macOS..."
 mkdir -p "$ARTIFACTS_DIR"
 
@@ -108,17 +90,9 @@ echo "- DMG: $(artifact_link "$DMG_ARTIFACT")"
 echo "- Build products: $(artifact_link "$DERIVED_DATA_DIR/Build/Products")"
 echo
 
-if ask_yes_no "Copy $APP_NAME.app to /Applications and overwrite any existing copy?"; then
-    echo "Copying to /Applications..."
-    if [[ -d "$APPLICATIONS_APP" ]]; then
-        rm -rf "$APPLICATIONS_APP"
-    fi
-    cp -R "$APP_ARTIFACT" "$APPLICATIONS_APP"
-    echo "Installed app: $(artifact_link "$APPLICATIONS_APP")"
-
-    if ask_yes_no "Run $APP_NAME.app from /Applications now?"; then
-        open "$APPLICATIONS_APP"
-    fi
-else
-    echo "Skipped copying to /Applications."
+echo "Copying to /Applications..."
+if [[ -d "$APPLICATIONS_APP" ]]; then
+    rm -rf "$APPLICATIONS_APP"
 fi
+cp -R "$APP_ARTIFACT" "$APPLICATIONS_APP"
+echo "Installed app: $(artifact_link "$APPLICATIONS_APP")"
