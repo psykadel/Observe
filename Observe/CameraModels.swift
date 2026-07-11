@@ -14,7 +14,6 @@ enum CameraSchedulingDefaults {
     static let batteryCaptureLeasePadding: TimeInterval = 3
     static let batteryWakeLeaseDuration: TimeInterval = 8
     static let batteryWakeLiveStartTimeout: TimeInterval = 30
-    static let restrictedStartupSnapshotPrimingDuration: TimeInterval = 10
     static let liveCapacityExpansionRetryDelay: TimeInterval = 10
 }
 
@@ -376,7 +375,6 @@ enum FeedRecoveryPhase: Equatable {
     case idle
     case batteryCapture
     case batteryWaiting
-    case batteryWaitingPriming
 }
 
 enum CameraStatusIndicator: Equatable {
@@ -442,10 +440,10 @@ enum CameraDisplayClassifier {
                     ),
                     isStale: isStreaming ? false : isBatteryStillVisuallyStale
                 )
-            case .batteryWaiting, .batteryWaitingPriming:
+            case .batteryWaiting:
                 return CameraDisplayClassification(
                     status: CameraStatusSnapshot(
-                        label: recoveryPhase == .batteryWaitingPriming ? "Queued (Priming)" : "Queued",
+                        label: "Queued",
                         recencyTier: recencyTier(
                             displayedStillDate: displayedStillDate,
                             threshold: staleThreshold,

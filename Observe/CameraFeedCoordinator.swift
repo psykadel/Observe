@@ -1,9 +1,37 @@
 import Foundation
 import HomeKit
 
+struct CameraTransportError: Equatable {
+    let domain: String
+    let code: Int
+    let message: String
+
+    init?(_ error: (any Error)?) {
+        guard let error else { return nil }
+        let nsError = error as NSError
+        domain = nsError.domain
+        code = nsError.code
+        message = nsError.localizedDescription
+    }
+}
+
 enum SnapshotRequestResult {
     case success(Date)
-    case failure
+    case failure(CameraTransportError?)
+}
+
+enum CameraLiveTransportEvent: Equatable {
+    case startRequested(at: Date, restarted: Bool)
+    case started(at: Date)
+    case stopped(at: Date, error: CameraTransportError?)
+}
+
+enum CameraStreamStopErrorPolicy {
+    static func shouldReport(domain: String, code: Int, stopWasRequested: Bool) -> Bool {
+        !(stopWasRequested
+            && domain == HMErrorDomain
+            && code == HMError.Code.operationCancelled.rawValue)
+    }
 }
 
 typealias SnapshotRequestID = Int64
@@ -33,6 +61,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     var onConstrainedSignal: ((String) -> Void)?
     var onSnapshotResult: ((String, SnapshotRequestID?, SnapshotRequestResult) -> Void)?
+    var onLiveTransportEvent: ((String, CameraLiveTransportEvent) -> Void)?
     var onAvailabilityChanged: ((String) -> Void)?
 
     private let accessory: HMAccessory
@@ -41,7 +70,8 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     private var configuredStaleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold
     private var configuredBatteryTrustedStillThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold
     private var configuredBatteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup
-    private var pendingSnapshotRequestIDs: [SnapshotRequestID] = []
+    private var pendingSnapshotRequestID: SnapshotRequestID?
+    private var requestedStreamStop = false
 
     init(accessory: HMAccessory, profile: HMCameraProfile, profileIndex: Int) {
         self.accessory = accessory
@@ -253,9 +283,11 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
                 timeout: liveStartTimeout,
                 now: date
             ) {
+                requestedStreamStop = true
                 profile.streamControl?.stopStream()
                 liveStartRequestedAt = date
                 state = .starting
+                onLiveTransportEvent?(id, .startRequested(at: date, restarted: true))
                 profile.streamControl?.startStream()
                 return
             }
@@ -277,6 +309,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             }
             state = .starting
             liveStartRequestedAt = date
+            onLiveTransportEvent?(id, .startRequested(at: date, restarted: false))
             profile.streamControl?.startStream()
         }
     }
@@ -323,8 +356,13 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             return false
         }
 
-        profile.snapshotControl?.takeSnapshot()
-        pendingSnapshotRequestIDs.append(requestID)
+        guard let snapshotControl = profile.snapshotControl,
+              pendingSnapshotRequestID == nil else {
+            return false
+        }
+
+        pendingSnapshotRequestID = requestID
+        snapshotControl.takeSnapshot()
         if cameraSource == nil {
             state = .starting
         }
@@ -334,6 +372,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     func stopLiveIfNeeded() {
         switch profile.streamControl?.streamState {
         case .starting, .streaming:
+            requestedStreamStop = true
             profile.streamControl?.stopStream()
         default:
             break
@@ -489,6 +528,7 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             self.markLiveStartedIfNeeded(at: now)
             self.recencyTier = .live
             self.recoveryPhase = .idle
+            self.onLiveTransportEvent?(self.id, .started(at: now))
         }
     }
 
@@ -497,8 +537,18 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             guard let self else { return }
             self.liveStartRequestedAt = nil
             self.liveStartedAt = nil
+            let stopWasRequested = self.requestedStreamStop
+            self.requestedStreamStop = false
+            let transportError = CameraTransportError(error)
+            let shouldReportError = transportError.map {
+                CameraStreamStopErrorPolicy.shouldReport(
+                    domain: $0.domain,
+                    code: $0.code,
+                    stopWasRequested: stopWasRequested
+                )
+            } ?? false
 
-            if let error = error as NSError? {
+            if shouldReportError, let error = error as NSError? {
                 self.lastErrorMessage = error.localizedDescription
 
                 if let code = HMError.Code(rawValue: error.code) {
@@ -519,6 +569,11 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
                 }
             }
 
+            self.onLiveTransportEvent?(
+                self.id,
+                .stopped(at: Date(), error: shouldReportError ? transportError : nil)
+            )
+
             self.presentSnapshotIfAvailable()
             if self.cameraSource == nil, self.state != .offline {
                 self.state = .failed("Unavailable")
@@ -531,7 +586,8 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
     nonisolated func cameraSnapshotControl(_ cameraSnapshotControl: HMCameraSnapshotControl, didTake snapshot: HMCameraSnapshot?, error: (any Error)?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let requestID = self.pendingSnapshotRequestIDs.isEmpty ? nil : self.pendingSnapshotRequestIDs.removeFirst()
+            let requestID = self.pendingSnapshotRequestID
+            self.pendingSnapshotRequestID = nil
 
             if let snapshot {
                 self.updateCameraSource(snapshot)
@@ -552,7 +608,7 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
                 if self.cameraSource == nil {
                     self.state = .failed("Unavailable")
                 }
-                self.onSnapshotResult?(self.id, requestID, .failure)
+                self.onSnapshotResult?(self.id, requestID, .failure(CameraTransportError(error)))
             }
         }
     }

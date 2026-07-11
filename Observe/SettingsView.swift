@@ -54,18 +54,6 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section("Snapshot Refresh") {
-                    NumberSettingRow(
-                        title: "Snapshot Requests",
-                        valueText: NumberSettingKind.maxConcurrentSnapshotRequests.displayValue(
-                            preferences.maxConcurrentSnapshotRequests
-                        ),
-                        helperText: NumberSettingKind.maxConcurrentSnapshotRequests.helperText
-                    ) {
-                        editingNumberSetting = .maxConcurrentSnapshotRequests
-                    }
-                }
-
                 Section("Stale") {
                     Text(
                         "If a camera is showing an image older than this, Observe puts a red box around it so you can quickly tell it is not recent."
@@ -119,16 +107,6 @@ struct SettingsView: View {
                             helperText: NumberSettingKind.batteryCaptureWarmup.helperText
                         ) {
                             editingNumberSetting = .batteryCaptureWarmup
-                        }
-
-                        NumberSettingRow(
-                            title: "Priming Window",
-                            valueText: NumberSettingKind.restrictedStartupSnapshotPriming.displayValue(
-                                preferences.restrictedStartupSnapshotPrimingSeconds
-                            ),
-                            helperText: NumberSettingKind.restrictedStartupSnapshotPriming.helperText
-                        ) {
-                            editingNumberSetting = .restrictedStartupSnapshotPriming
                         }
 
                         NumberSettingRow(
@@ -298,13 +276,6 @@ struct SettingsView: View {
         )
     }
 
-    private var restrictedStartupSnapshotPrimingBinding: Binding<Int> {
-        Binding(
-            get: { preferences.restrictedStartupSnapshotPrimingSeconds },
-            set: { preferences.setRestrictedStartupSnapshotPrimingSeconds($0) }
-        )
-    }
-
     private func numberBinding(for setting: NumberSettingKind) -> Binding<Int> {
         switch setting {
         case .staleThreshold:
@@ -313,20 +284,9 @@ struct SettingsView: View {
             batteryWakeTriggerBinding
         case .batteryCaptureWarmup:
             batteryCaptureWarmupBinding
-        case .restrictedStartupSnapshotPriming:
-            restrictedStartupSnapshotPrimingBinding
         case .batteryStale:
             batteryStaleBinding
-        case .maxConcurrentSnapshotRequests:
-            maxConcurrentSnapshotRequestsBinding
         }
-    }
-
-    private var maxConcurrentSnapshotRequestsBinding: Binding<Int> {
-        Binding(
-            get: { preferences.maxConcurrentSnapshotRequests },
-            set: { preferences.setMaxConcurrentSnapshotRequests($0) }
-        )
     }
 
     private var homeHubLabel: String {
@@ -355,13 +315,11 @@ struct SettingsView: View {
     }
 }
 
-enum NumberSettingKind: String, Identifiable {
+enum NumberSettingKind: String, CaseIterable, Identifiable {
     case staleThreshold
     case batteryWakeTrigger
     case batteryCaptureWarmup
-    case restrictedStartupSnapshotPriming
     case batteryStale
-    case maxConcurrentSnapshotRequests
 
     var id: String { rawValue }
 
@@ -373,23 +331,15 @@ enum NumberSettingKind: String, Identifiable {
             "Start Live Capture After"
         case .batteryCaptureWarmup:
             "Wait Before Capturing"
-        case .restrictedStartupSnapshotPriming:
-            "Priming Window"
         case .batteryStale:
             "Show As Stale"
-        case .maxConcurrentSnapshotRequests:
-            "Snapshot Requests"
         }
     }
 
     var presets: [Int] {
         switch self {
-        case .maxConcurrentSnapshotRequests:
-            [1, 2, 3, 4, 5, 6]
         case .batteryCaptureWarmup:
             [3, 5, 8, 10, 15]
-        case .restrictedStartupSnapshotPriming:
-            [0, 5, 10, 15, 20, 30]
         case .staleThreshold, .batteryWakeTrigger:
             [15, 30, 45, 60, 90, 120]
         case .batteryStale:
@@ -399,20 +349,16 @@ enum NumberSettingKind: String, Identifiable {
 
     var step: Int {
         switch self {
-        case .maxConcurrentSnapshotRequests:
-            1
         case .batteryCaptureWarmup:
             1
-        case .staleThreshold, .batteryWakeTrigger, .restrictedStartupSnapshotPriming, .batteryStale:
+        case .staleThreshold, .batteryWakeTrigger, .batteryStale:
             5
         }
     }
 
     var minimumValue: Int {
         switch self {
-        case .restrictedStartupSnapshotPriming:
-            0
-        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale, .maxConcurrentSnapshotRequests:
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale:
             1
         }
     }
@@ -425,38 +371,28 @@ enum NumberSettingKind: String, Identifiable {
             Int(CameraSchedulingDefaults.batteryWakeTriggerThreshold)
         case .batteryCaptureWarmup:
             Int(CameraSchedulingDefaults.batteryCaptureWarmup)
-        case .restrictedStartupSnapshotPriming:
-            Int(CameraSchedulingDefaults.restrictedStartupSnapshotPrimingDuration)
         case .batteryStale:
             Int(CameraSchedulingDefaults.batteryStaleThreshold)
-        case .maxConcurrentSnapshotRequests:
-            CameraSchedulingDefaults.maxConcurrentSnapshotRequests
         }
     }
 
     var unitName: String {
         switch self {
-        case .maxConcurrentSnapshotRequests:
-            "requests"
-        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .restrictedStartupSnapshotPriming, .batteryStale:
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale:
             "seconds"
         }
     }
 
     var shortUnit: String {
         switch self {
-        case .maxConcurrentSnapshotRequests:
-            ""
-        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .restrictedStartupSnapshotPriming, .batteryStale:
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale:
             "s"
         }
     }
 
     func displayValue(_ value: Int) -> String {
         switch self {
-        case .maxConcurrentSnapshotRequests:
-            "\(value)"
-        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .restrictedStartupSnapshotPriming, .batteryStale:
+        case .staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale:
             "\(value) sec"
         }
     }
@@ -473,12 +409,8 @@ enum NumberSettingKind: String, Identifiable {
             "When a battery camera still gets this old, start a live capture."
         case .batteryCaptureWarmup:
             "After live starts, wait this long before saving the still."
-        case .restrictedStartupSnapshotPriming:
-            "At startup, wait this long before new battery captures so important wired cameras can refresh first."
         case .batteryStale:
             "Mark a battery still stale when it gets this old."
-        case .maxConcurrentSnapshotRequests:
-            "How many snapshot requests can run at once."
         }
     }
 }

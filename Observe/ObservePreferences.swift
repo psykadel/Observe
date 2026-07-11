@@ -14,9 +14,7 @@ final class ObservePreferences: ObservableObject {
         static let batteryPercentagesShown = "observe.batteryPercentagesShown"
         static let batteryWakeTriggerSeconds = "observe.batteryWakeTriggerSeconds"
         static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
-        static let restrictedStartupSnapshotPrimingSeconds = "observe.restrictedStartupSnapshotPrimingSeconds"
         static let batteryStaleSeconds = "observe.batteryStaleSeconds"
-        static let maxConcurrentSnapshotRequests = "observe.maxConcurrentSnapshotRequests"
         static let restrictedLiveCapacities = "observe.restrictedLiveCapacities"
     }
 
@@ -43,9 +41,7 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var showsBatteryPercentages: Bool
     @Published private(set) var batteryWakeTriggerSeconds: Int
     @Published private(set) var batteryCaptureWarmupSeconds: Int
-    @Published private(set) var restrictedStartupSnapshotPrimingSeconds: Int
     @Published private(set) var batteryStaleSeconds: Int
-    @Published private(set) var maxConcurrentSnapshotRequests: Int
 
     private let userDefaults: UserDefaults
 
@@ -57,20 +53,12 @@ final class ObservePreferences: ObservableObject {
         Int(CameraSchedulingDefaults.staleVisualHighlightThreshold)
     }
 
-    var defaultMaxConcurrentSnapshotRequests: Int {
-        CameraSchedulingDefaults.maxConcurrentSnapshotRequests
-    }
-
     var batteryWakeTriggerThreshold: TimeInterval {
         TimeInterval(batteryWakeTriggerSeconds)
     }
 
     var batteryCaptureWarmupThreshold: TimeInterval {
         TimeInterval(batteryCaptureWarmupSeconds)
-    }
-
-    var restrictedStartupSnapshotPrimingDuration: TimeInterval {
-        TimeInterval(restrictedStartupSnapshotPrimingSeconds)
     }
 
     var batteryStaleThreshold: TimeInterval {
@@ -126,24 +114,10 @@ final class ObservePreferences: ObservableObject {
             1,
             storedBatteryCaptureWarmupSeconds ?? Int(CameraSchedulingDefaults.batteryCaptureWarmup)
         )
-        let storedRestrictedStartupSnapshotPrimingSeconds = userDefaults.object(
-            forKey: Keys.restrictedStartupSnapshotPrimingSeconds
-        ) as? Int
-        self.restrictedStartupSnapshotPrimingSeconds = max(
-            0,
-            storedRestrictedStartupSnapshotPrimingSeconds ?? Int(
-                CameraSchedulingDefaults.restrictedStartupSnapshotPrimingDuration
-            )
-        )
         let storedBatteryStaleSeconds = userDefaults.object(forKey: Keys.batteryStaleSeconds) as? Int
         self.batteryStaleSeconds = max(
             1,
             storedBatteryStaleSeconds ?? Int(CameraSchedulingDefaults.batteryStaleThreshold)
-        )
-        let storedMaxConcurrentSnapshotRequests = userDefaults.object(forKey: Keys.maxConcurrentSnapshotRequests) as? Int
-        self.maxConcurrentSnapshotRequests = max(
-            1,
-            storedMaxConcurrentSnapshotRequests ?? CameraSchedulingDefaults.maxConcurrentSnapshotRequests
         )
     }
 
@@ -289,28 +263,12 @@ final class ObservePreferences: ObservableObject {
         userDefaults.set(sanitized, forKey: Keys.batteryCaptureWarmupSeconds)
     }
 
-    func setRestrictedStartupSnapshotPrimingSeconds(_ seconds: Int) {
-        let sanitized = max(0, seconds)
-        guard restrictedStartupSnapshotPrimingSeconds != sanitized else { return }
-
-        restrictedStartupSnapshotPrimingSeconds = sanitized
-        userDefaults.set(sanitized, forKey: Keys.restrictedStartupSnapshotPrimingSeconds)
-    }
-
     func setBatteryStaleSeconds(_ seconds: Int) {
         let sanitized = max(1, seconds)
         guard batteryStaleSeconds != sanitized else { return }
 
         batteryStaleSeconds = sanitized
         userDefaults.set(sanitized, forKey: Keys.batteryStaleSeconds)
-    }
-
-    func setMaxConcurrentSnapshotRequests(_ requests: Int) {
-        let sanitized = max(1, requests)
-        guard maxConcurrentSnapshotRequests != sanitized else { return }
-
-        maxConcurrentSnapshotRequests = sanitized
-        userDefaults.set(sanitized, forKey: Keys.maxConcurrentSnapshotRequests)
     }
 
     func setBatteryWakeEnabled(_ enabled: Bool, for id: String) {
