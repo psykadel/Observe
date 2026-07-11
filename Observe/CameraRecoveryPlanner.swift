@@ -8,7 +8,7 @@ enum PlannedPresentationMode: Equatable {
 enum StartupLivePolicy: Equatable {
     case normal
     case firstImage(allowWiredFallback: Bool)
-    case postCoverageRamp(liveIDs: Set<String>)
+    case capacityRamp(liveIDs: Set<String>)
 }
 
 enum StartupCoverageResolution: Equatable {
@@ -210,45 +210,110 @@ enum SnapshotQueueAdmissionPolicy {
     }
 }
 
-enum StartupFastLocalLivePolicy {
-    static func shouldActivate(
-        liveStartedAtElapsed: TimeInterval,
-        threshold: TimeInterval
-    ) -> Bool {
-        liveStartedAtElapsed >= 0 && liveStartedAtElapsed < threshold
-    }
+enum StartupLiveRampMode: String, Equatable {
+    case probing
+    case conservative
+    case fast
+    case stopped
+    case completed
 }
 
-enum PostCoverageLiveRampPolicy {
-    static func nextSelection(
-        feeds: [FeedPlanningSnapshot],
-        selectedIDs: Set<String>
-    ) -> Set<String> {
-        let prioritizedFeeds = feeds.sorted { $0.priorityIndex < $1.priorityIndex }
-        let eligibleFeeds = prioritizedFeeds
-        let eligibleIDs = Set(eligibleFeeds.map(\.id))
-        var selection = selectedIDs.intersection(eligibleIDs)
-        if let focused = eligibleFeeds.first(where: \.isFocused) {
-            selection.insert(focused.id)
-        }
+struct StartupLiveRampState: Equatable {
+    private(set) var mode: StartupLiveRampMode = .probing
+    private(set) var selectedIDs: Set<String>
+    private(set) var confirmedIDs: Set<String> = []
+    private(set) var retryAfterByID: [String: Date] = [:]
 
-        guard selection.allSatisfy({ id in
-            feeds.first(where: { $0.id == id })?.isStreaming == true
-        }) else {
-            return selection
-        }
-
-        if let nextFeed = eligibleFeeds.first(where: { !selection.contains($0.id) }) {
-            selection.insert(nextFeed.id)
-        }
-        return selection
+    init(initialSelectedIDs: Set<String> = []) {
+        selectedIDs = initialSelectedIDs
     }
 
-    static func isComplete(feeds: [FeedPlanningSnapshot], selectedIDs: Set<String>) -> Bool {
-        let eligibleIDs = Set(feeds.map(\.id))
-        return selectedIDs == eligibleIDs && selectedIDs.allSatisfy { id in
-            feeds.first(where: { $0.id == id })?.isStreaming == true
+    var maxPendingCount: Int {
+        switch mode {
+        case .fast:
+            2
+        case .probing, .conservative:
+            1
+        case .stopped, .completed:
+            0
         }
+    }
+
+    var pendingIDs: Set<String> {
+        selectedIDs.subtracting(confirmedIDs)
+    }
+
+    mutating func recordLiveStarted(
+        feedID: String,
+        elapsed: TimeInterval,
+        fastThreshold: TimeInterval
+    ) {
+        selectedIDs.insert(feedID)
+        confirmedIDs.insert(feedID)
+        retryAfterByID.removeValue(forKey: feedID)
+
+        if mode == .probing {
+            mode = elapsed >= 0 && elapsed < fastThreshold ? .fast : .conservative
+        }
+    }
+
+    mutating func recordLiveStopped(
+        feedID: String,
+        at date: Date,
+        isCapacitySignal: Bool,
+        retryDelay: TimeInterval
+    ) {
+        selectedIDs.remove(feedID)
+        confirmedIDs.remove(feedID)
+
+        if isCapacitySignal {
+            mode = .stopped
+            selectedIDs = confirmedIDs
+            retryAfterByID.removeAll()
+        } else {
+            retryAfterByID[feedID] = date.addingTimeInterval(max(0, retryDelay))
+        }
+    }
+
+    @discardableResult
+    mutating func reconcile(
+        priorityIDs: [String],
+        streamingIDs: Set<String>,
+        focusedID: String?,
+        now: Date
+    ) -> Set<String> {
+        let eligibleIDs = Set(priorityIDs)
+        selectedIDs.formIntersection(eligibleIDs)
+        confirmedIDs.formIntersection(streamingIDs.intersection(eligibleIDs))
+        retryAfterByID = retryAfterByID.filter { eligibleIDs.contains($0.key) }
+
+        guard mode != .stopped else {
+            selectedIDs = streamingIDs.intersection(eligibleIDs)
+            confirmedIDs = selectedIDs
+            return selectedIDs
+        }
+
+        if let focusedID,
+           eligibleIDs.contains(focusedID),
+           !selectedIDs.contains(focusedID) {
+            if pendingIDs.count >= maxPendingCount,
+               let preemptedID = priorityIDs.reversed().first(where: { pendingIDs.contains($0) }) {
+                selectedIDs.remove(preemptedID)
+            }
+            selectedIDs.insert(focusedID)
+        }
+
+        for id in priorityIDs where pendingIDs.count < maxPendingCount {
+            guard !selectedIDs.contains(id) else { continue }
+            guard retryAfterByID[id].map({ $0 <= now }) ?? true else { continue }
+            selectedIDs.insert(id)
+        }
+
+        if confirmedIDs == eligibleIDs {
+            mode = .completed
+            selectedIDs = eligibleIDs
+        }
+        return selectedIDs
     }
 }
 
@@ -404,7 +469,7 @@ struct CameraRecoveryPlanner {
                 allowWiredFallback: allowWiredFallback,
                 now: now
             )
-        case .postCoverageRamp(let liveIDs):
+        case .capacityRamp(let liveIDs):
             let batteryCaptureIDs = Set(prioritizedFeeds.filter {
                 liveIDs.contains($0.id)
                     && $0.isBatteryWakeCamera

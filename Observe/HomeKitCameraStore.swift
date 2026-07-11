@@ -23,8 +23,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var liveCapacityExpansionBlockedUntil: Date?
     private var liveCapacityIncludesUnconfirmedMemory = false
     private var startupCoverageActive = true
-    private var postCoverageRampLiveIDs: Set<String>?
-    private var startupFastLocalLiveActive = false
+    private var startupLiveRampState: StartupLiveRampState?
     private var telemetrySessionStartedAt = Date()
     private var telemetryEvents: [CameraTelemetryEvent] = []
     private var telemetryStartupMilestones = CameraStartupTelemetryMilestones()
@@ -93,8 +92,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacityExpansionBlockedUntil = nil
             liveCapacityIncludesUnconfirmedMemory = false
             startupCoverageActive = true
-            postCoverageRampLiveIDs = nil
-            startupFastLocalLiveActive = false
+            startupLiveRampState = nil
             currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             feeds.forEach { $0.resetSessionState() }
         }
@@ -186,9 +184,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             batteryWakeLeaseDuration: batteryWakeLeaseDuration,
             batteryWakeLiveStartTimeout: batteryWakeLiveStartTimeout,
             startupCoverageActive: startupCoverageActive,
-            postCoverageRampLiveIDs: postCoverageRampLiveIDs?.sorted() ?? [],
-            startupFastLocalLiveActive: startupFastLocalLiveActive,
-            startupFastLocalLiveThreshold: startupFastLocalLiveThreshold,
+            startupLiveRampMode: startupLiveRampState?.mode.rawValue ?? "inactive",
+            startupLiveRampSelectedIDs: startupLiveRampState?.selectedIDs.sorted() ?? [],
+            startupLiveRampPendingIDs: startupLiveRampState?.pendingIDs.sorted() ?? [],
+            startupLiveRampMaxPendingCount: startupLiveRampState?.maxPendingCount ?? 0,
+            startupLiveRampFastThreshold: startupFastLocalLiveThreshold,
             activeSnapshotRequests: snapshotCapacity.activeCount,
             outstandingSnapshotRequests: snapshotCapacity.outstandingCount,
             liveCapacityExpansionBlockedUntil: liveCapacityExpansionBlockedUntil,
@@ -230,8 +230,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacityExpansionBlockedUntil = nil
             liveCapacityIncludesUnconfirmedMemory = false
             startupCoverageActive = true
-            postCoverageRampLiveIDs = nil
-            startupFastLocalLiveActive = false
+            startupLiveRampState = nil
             return
         }
 
@@ -244,12 +243,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             let profiles = accessory.cameraProfiles ?? []
             for (index, profile) in profiles.enumerated() {
                 let feed = CameraFeedCoordinator(accessory: accessory, profile: profile, profileIndex: index)
-                feed.onConstrainedSignal = { [weak self] feedID in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.acceptsCallback(generation: callbackGeneration) else { return }
-                        self.handleConstrainedSignal(from: feedID)
-                    }
-                }
                 feed.onSnapshotResult = { [weak self] feedID, requestID, result in
                     Task { @MainActor [weak self] in
                         guard let self, self.acceptsCallback(generation: callbackGeneration) else { return }
@@ -301,8 +294,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveCapacityExpansionBlockedUntil = nil
         liveCapacityIncludesUnconfirmedMemory = false
         startupCoverageActive = true
-        postCoverageRampLiveIDs = nil
-        startupFastLocalLiveActive = false
+        startupLiveRampState = nil
         startSession()
     }
 
@@ -316,8 +308,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         telemetryStartupMilestones = CameraStartupTelemetryMilestones()
         nextSnapshotRequestID = 1
         startupCoverageActive = true
-        postCoverageRampLiveIDs = nil
-        startupFastLocalLiveActive = false
+        startupLiveRampState = nil
         recordTelemetry("session start feeds=\(feeds.count) visible=\(wallFeeds.count) liveCapacity=\(liveCapacity)")
         refreshPresentation(focusedFeedID: focusedFeedID)
 
@@ -359,7 +350,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let planningSnapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
         updateTrustedImageMilestones(from: planningSnapshots, at: now)
         updateStartupCoverage(from: planningSnapshots, at: now)
-        advancePostCoverageRamp(from: planningSnapshots)
+        updateStartupLiveRamp(from: planningSnapshots, at: now)
         let currentLiveCount = wallFeeds.filter(\.isStreaming).count
         let liveBudget: Int
         switch sessionMode {
@@ -367,7 +358,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveBudget = planningSnapshots.count
         case .constrained:
             if currentLiveCount > 0 {
-                recordRememberedRestrictedLiveCapacity(currentLiveCount, visibleFeedCount: planningSnapshots.count)
+                recordRememberedRestrictedLiveCapacity(currentLiveCount)
             }
             if liveCapacityIncludesUnconfirmedMemory, currentLiveCount >= liveCapacity {
                 liveCapacityIncludesUnconfirmedMemory = false
@@ -405,14 +396,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             $0.snapshotWorkState.isActive
         }
         let startupLivePolicy: StartupLivePolicy
-        if startupFastLocalLiveActive, sessionMode == .optimistic {
-            startupLivePolicy = .normal
+        if sessionMode == .optimistic,
+           let startupLiveRampState,
+           startupLiveRampState.mode != .completed {
+            startupLivePolicy = .capacityRamp(liveIDs: startupLiveRampState.selectedIDs)
         } else if startupCoverageActive {
             startupLivePolicy = .firstImage(
                 allowWiredFallback: allWiredSnapshotPathsAttempted && !hasActiveSnapshotRequest
             )
-        } else if sessionMode == .optimistic, let postCoverageRampLiveIDs {
-            startupLivePolicy = .postCoverageRamp(liveIDs: postCoverageRampLiveIDs)
         } else {
             startupLivePolicy = .normal
         }
@@ -661,7 +652,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         ) else {
             return
         }
-        if (startupCoverageActive || postCoverageRampLiveIDs != nil),
+        if (startupCoverageActive || (startupLiveRampState.map { $0.mode != .completed } ?? false)),
            state.startupState.resolution == .trusted {
             return
         }
@@ -719,8 +710,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacityExpansionBlockedUntil = nil
             liveCapacityIncludesUnconfirmedMemory = false
             startupCoverageActive = true
-            postCoverageRampLiveIDs = nil
-            startupFastLocalLiveActive = false
+            startupLiveRampState = nil
         }
     }
 
@@ -1015,8 +1005,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         telemetryStartupMilestones.recordConstrainedSignal(feedID: feedID, at: elapsedSinceSession(now))
         recordTelemetry("constrained signal \(feedID) mode=\(sessionMode) liveCapacity=\(liveCapacity)")
-        postCoverageRampLiveIDs = nil
-        startupFastLocalLiveActive = false
+        startupLiveRampState = nil
         if keepBatteryWakeLeaseAliveAfterConstrainedSignal(for: feedID, at: now) {
             refreshPresentation(focusedFeedID: focusedFeedID)
             return
@@ -1035,14 +1024,26 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             $0.id != feedID && $0.isStreaming
         }.count
         let visibleFeedCount = wallFeeds.count
+        let visibleCameraIDs = wallFeeds.map(\.id)
+        let rememberedCapacity = currentLiveCount == 0
+            ? preferences.rememberedRestrictedLiveCapacity(
+                homeID: selectedHome?.uniqueIdentifier.uuidString,
+                visibleCameraIDs: visibleCameraIDs
+            )
+            : nil
+        preferences.recordRestrictedLiveCapacityAfterRejection(
+            currentLiveCount,
+            homeID: selectedHome?.uniqueIdentifier.uuidString,
+            visibleCameraIDs: visibleCameraIDs
+        )
 
         if sessionMode == .optimistic {
-            liveCapacity = RestrictedLiveCapacity.afterConstrainedSignal(
-                previousCapacity: liveCapacity,
+            liveCapacity = RestrictedLiveCapacity.enteringAfterConstrainedSignal(
                 currentLiveCount: currentLiveCount,
-                visibleFeedCount: visibleFeedCount
+                visibleFeedCount: visibleFeedCount,
+                rememberedCapacity: rememberedCapacity
             )
-            liveCapacityIncludesUnconfirmedMemory = false
+            liveCapacityIncludesUnconfirmedMemory = rememberedCapacity != nil && currentLiveCount == 0
             enterConstrainedMode(at: now)
             return
         }
@@ -1140,19 +1141,18 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacityExpansionBlockedUntil = nil
             liveCapacityIncludesUnconfirmedMemory = false
             startupCoverageActive = true
-            postCoverageRampLiveIDs = nil
-            startupFastLocalLiveActive = false
+            startupLiveRampState = nil
         }
 
         objectWillChange.send()
         refreshPresentation(focusedFeedID: focusedFeedID)
     }
 
-    private func recordRememberedRestrictedLiveCapacity(_ capacity: Int, visibleFeedCount: Int) {
-        preferences.recordRestrictedLiveCapacity(
+    private func recordRememberedRestrictedLiveCapacity(_ capacity: Int) {
+        preferences.recordConfirmedRestrictedLiveCapacity(
             capacity,
             homeID: selectedHome?.uniqueIdentifier.uuidString,
-            visibleCameraCount: visibleFeedCount
+            visibleCameraIDs: wallFeeds.map(\.id)
         )
     }
 
@@ -1176,7 +1176,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard startupCoverageActive else { return }
         guard !planningSnapshots.isEmpty else {
             startupCoverageActive = false
-            postCoverageRampLiveIDs = nil
+            startupLiveRampState = nil
             return
         }
 
@@ -1200,15 +1200,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard isComplete else { return }
 
         startupCoverageActive = false
-        if sessionMode == .optimistic, !startupFastLocalLiveActive {
-            let workingLiveIDs = Set(planningSnapshots.filter(\.isStreaming).map(\.id))
-            postCoverageRampLiveIDs = PostCoverageLiveRampPolicy.nextSelection(
-                feeds: planningSnapshots,
-                selectedIDs: workingLiveIDs
-            )
-        } else {
-            postCoverageRampLiveIDs = nil
-        }
         telemetryStartupMilestones.recordStartupCoverageEnded(
             unresolvedFeedIDs: unresolvedIDs,
             at: elapsedSinceSession(now)
@@ -1216,29 +1207,32 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         recordTelemetry(
             "startup coverage ended unresolved=\(unresolvedIDs.isEmpty ? "none" : unresolvedIDs.joined(separator: ","))"
         )
-        if let postCoverageRampLiveIDs {
-            recordTelemetry(
-                "post-coverage ramp started live=\(postCoverageRampLiveIDs.sorted().joined(separator: ","))"
-            )
-        }
     }
 
-    private func advancePostCoverageRamp(from planningSnapshots: [FeedPlanningSnapshot]) {
-        guard sessionMode == .optimistic, let selectedIDs = postCoverageRampLiveIDs else { return }
+    private func updateStartupLiveRamp(
+        from planningSnapshots: [FeedPlanningSnapshot],
+        at now: Date
+    ) {
+        guard sessionMode == .optimistic, var ramp = startupLiveRampState else { return }
 
-        let nextIDs = PostCoverageLiveRampPolicy.nextSelection(
-            feeds: planningSnapshots,
-            selectedIDs: selectedIDs
+        let previousMode = ramp.mode
+        let previousIDs = ramp.selectedIDs
+        let selectedIDs = ramp.reconcile(
+            priorityIDs: planningSnapshots.sorted { $0.priorityIndex < $1.priorityIndex }.map(\.id),
+            streamingIDs: Set(planningSnapshots.filter(\.isStreaming).map(\.id)),
+            focusedID: focusedFeedID,
+            now: now
         )
-        if nextIDs != selectedIDs {
-            recordTelemetry("post-coverage ramp advanced live=\(nextIDs.sorted().joined(separator: ","))")
-        }
+        startupLiveRampState = ramp
 
-        if PostCoverageLiveRampPolicy.isComplete(feeds: planningSnapshots, selectedIDs: nextIDs) {
-            postCoverageRampLiveIDs = nil
-            recordTelemetry("post-coverage ramp completed live=\(nextIDs.sorted().joined(separator: ","))")
-        } else {
-            postCoverageRampLiveIDs = nextIDs
+        if ramp.mode != previousMode || selectedIDs != previousIDs {
+            recordTelemetry(
+                "startup live ramp mode=\(ramp.mode.rawValue) pendingLimit=\(ramp.maxPendingCount) live=\(selectedIDs.sorted().joined(separator: ","))"
+            )
+        }
+        if ramp.mode == .completed, previousMode != .completed {
+            telemetryStartupMilestones.recordAllVisibleFeedsLive(at: elapsedSinceSession(now))
+            recordTelemetry("startup live ramp completed")
         }
     }
 
@@ -1248,7 +1242,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         at now: Date
     ) {
         guard startupCoverageActive,
-              !startupFastLocalLiveActive,
               feedID != focusedFeedID,
               !preferences.isBatteryWakeCamera(id: feedID),
               decision.presentationMode == .live,
@@ -1271,36 +1264,70 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             )
         case .started(let startedAt):
             let startedAtElapsed = elapsedSinceSession(startedAt)
-            if startupCoverageActive,
-               sessionMode == .optimistic,
-               !startupFastLocalLiveActive,
-               StartupFastLocalLivePolicy.shouldActivate(
-                   liveStartedAtElapsed: startedAtElapsed,
-                   threshold: startupFastLocalLiveThreshold
-               ) {
-                startupFastLocalLiveActive = true
-                recordTelemetry("fast local live activated by \(feedID)", at: startedAt)
+            if sessionMode == .optimistic {
+                var ramp = startupLiveRampState ?? StartupLiveRampState(
+                    initialSelectedIDs: Set(currentRecoveryPlan.decisionsByID.compactMap { id, decision in
+                        decision.presentationMode == .live ? id : nil
+                    })
+                )
+                let previousMode = ramp.mode
+                ramp.recordLiveStarted(
+                    feedID: feedID,
+                    elapsed: startedAtElapsed,
+                    fastThreshold: startupFastLocalLiveThreshold
+                )
+                startupLiveRampState = ramp
+                if previousMode == .probing {
+                    recordTelemetry(
+                        "startup live ramp classified mode=\(ramp.mode.rawValue) by=\(feedID) elapsed=\(formatSeconds(startedAtElapsed))",
+                        at: startedAt
+                    )
+                }
             }
             if var state = feedScheduleStates[feedID], startupCoverageActive {
                 applyStartupEvent(.liveStarted, feedID: feedID, state: &state)
                 feedScheduleStates[feedID] = state
             }
             recordTelemetry("live started \(feedID)", at: startedAt)
-        case .stopped(let stoppedAt, let error):
-            if var state = feedScheduleStates[feedID], startupCoverageActive {
+        case .stopped(let stoppedAt, let reason):
+            if reason.shouldFailStartupPath,
+               var state = feedScheduleStates[feedID],
+               startupCoverageActive {
                 let isBatteryCamera = preferences.isBatteryWakeCamera(id: feedID)
-                if startupFastLocalLiveActive || state.startupState.liveAttempted || isBatteryCamera {
+                if startupLiveRampState != nil || state.startupState.liveAttempted || isBatteryCamera {
                     applyStartupEvent(.liveFailed, feedID: feedID, state: &state)
                 }
                 feedScheduleStates[feedID] = state
             }
+            if reason.shouldFailStartupPath, var ramp = startupLiveRampState {
+                ramp.recordLiveStopped(
+                    feedID: feedID,
+                    at: stoppedAt,
+                    isCapacitySignal: reason.isCapacityConstrained,
+                    retryDelay: CameraSchedulingDefaults.liveCapacityExpansionRetryDelay
+                )
+                startupLiveRampState = ramp
+            }
             recordTelemetry(
-                "live stopped \(feedID) error=\(transportErrorLabel(error))",
+                "live stopped \(feedID) reason=\(liveStopReasonLabel(reason)) error=\(transportErrorLabel(reason.error))",
                 at: stoppedAt
             )
+            if case .capacityConstrained = reason {
+                handleConstrainedSignal(from: feedID)
+                return
+            }
         }
 
         refreshPresentation(focusedFeedID: focusedFeedID)
+    }
+
+    private func liveStopReasonLabel(_ reason: CameraLiveStopReason) -> String {
+        switch reason {
+        case .requested: "requested"
+        case .capacityConstrained: "capacityConstrained"
+        case .failure: "failure"
+        case .ended: "ended"
+        }
     }
 
     private func effectiveMaxConcurrentSnapshotRequests(at now: Date) -> Int {
@@ -1470,8 +1497,7 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
                 self.liveCapacityExpansionBlockedUntil = nil
                 self.liveCapacityIncludesUnconfirmedMemory = false
                 self.startupCoverageActive = true
-                self.postCoverageRampLiveIDs = nil
-                self.startupFastLocalLiveActive = false
+                self.startupLiveRampState = nil
             }
 
             self.objectWillChange.send()
@@ -1516,6 +1542,7 @@ struct CameraStartupTelemetryMilestones: Equatable {
     var firstConstrainedSignalAt: TimeInterval?
     var firstConstrainedSignalFeedID: String?
     var allVisibleFeedsTrustedAt: TimeInterval?
+    var allVisibleFeedsLiveAt: TimeInterval?
     var startupCoverageEndedAt: TimeInterval?
     var startupCoverageResult: String?
     var unresolvedFeedIDs: [String] = []
@@ -1540,6 +1567,12 @@ struct CameraStartupTelemetryMilestones: Equatable {
     mutating func recordAllVisibleFeedsTrusted(at elapsed: TimeInterval) {
         if allVisibleFeedsTrustedAt == nil {
             allVisibleFeedsTrustedAt = elapsed
+        }
+    }
+
+    mutating func recordAllVisibleFeedsLive(at elapsed: TimeInterval) {
+        if allVisibleFeedsLiveAt == nil {
+            allVisibleFeedsLiveAt = elapsed
         }
     }
 
@@ -1770,9 +1803,11 @@ struct CameraTelemetryReport: Equatable {
     let batteryWakeLeaseDuration: TimeInterval
     let batteryWakeLiveStartTimeout: TimeInterval
     let startupCoverageActive: Bool
-    let postCoverageRampLiveIDs: [String]
-    let startupFastLocalLiveActive: Bool
-    let startupFastLocalLiveThreshold: TimeInterval
+    let startupLiveRampMode: String
+    let startupLiveRampSelectedIDs: [String]
+    let startupLiveRampPendingIDs: [String]
+    let startupLiveRampMaxPendingCount: Int
+    let startupLiveRampFastThreshold: TimeInterval
     let activeSnapshotRequests: Int
     let outstandingSnapshotRequests: Int
     let liveCapacityExpansionBlockedUntil: Date?
@@ -1804,9 +1839,11 @@ struct CameraTelemetryReport: Equatable {
         lines.append("batteryWakeLeaseDuration=\(formatSeconds(batteryWakeLeaseDuration))")
         lines.append("batteryWakeLiveStartTimeout=\(formatSeconds(batteryWakeLiveStartTimeout))")
         lines.append("startupCoverageActive=\(startupCoverageActive)")
-        lines.append("postCoverageRampLiveIDs=\(postCoverageRampLiveIDs.isEmpty ? "none" : postCoverageRampLiveIDs.joined(separator: ","))")
-        lines.append("startupFastLocalLiveActive=\(startupFastLocalLiveActive)")
-        lines.append("startupFastLocalLiveThreshold=\(formatSeconds(startupFastLocalLiveThreshold))")
+        lines.append("startupLiveRampMode=\(startupLiveRampMode)")
+        lines.append("startupLiveRampSelectedIDs=\(startupLiveRampSelectedIDs.isEmpty ? "none" : startupLiveRampSelectedIDs.joined(separator: ","))")
+        lines.append("startupLiveRampPendingIDs=\(startupLiveRampPendingIDs.isEmpty ? "none" : startupLiveRampPendingIDs.joined(separator: ","))")
+        lines.append("startupLiveRampMaxPendingCount=\(startupLiveRampMaxPendingCount)")
+        lines.append("startupLiveRampFastThreshold=\(formatSeconds(startupLiveRampFastThreshold))")
         lines.append("activeSnapshotRequests=\(activeSnapshotRequests)")
         lines.append("outstandingSnapshotRequests=\(outstandingSnapshotRequests)")
         lines.append("liveCapacityExpansionBlockedFor=\(dateDelta(liveCapacityExpansionBlockedUntil, from: generatedAt))")
@@ -1818,6 +1855,7 @@ struct CameraTelemetryReport: Equatable {
         lines.append("firstConstrainedSignalAt=\(optionalSeconds(startupMilestones.firstConstrainedSignalAt))")
         lines.append("firstConstrainedSignalFeedID=\(startupMilestones.firstConstrainedSignalFeedID ?? "nil")")
         lines.append("allVisibleFeedsTrustedAt=\(optionalSeconds(startupMilestones.allVisibleFeedsTrustedAt))")
+        lines.append("allVisibleFeedsLiveAt=\(optionalSeconds(startupMilestones.allVisibleFeedsLiveAt))")
         lines.append("startupCoverageEndedAt=\(optionalSeconds(startupMilestones.startupCoverageEndedAt))")
         lines.append("startupCoverageResult=\(startupMilestones.startupCoverageResult ?? "nil")")
         lines.append("unresolvedFeedIDs=\(startupMilestones.unresolvedFeedIDs.isEmpty ? "none" : startupMilestones.unresolvedFeedIDs.joined(separator: ","))")

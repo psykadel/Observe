@@ -15,8 +15,17 @@ struct CameraTileView: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let status = feed.status(at: context.date)
-            let showsStaleBorder = feed.isVisuallyStale(at: context.date, threshold: staleVisualThreshold)
-            let showsPlaceholder = feed.cameraSource == nil
+            let initialPresentation = InitialCameraTilePolicy.presentation(
+                hasFreshImageThisSession: feed.hasFreshImageThisSession,
+                displayedStillDate: feed.cameraSource == nil ? nil : feed.displayedStillDate,
+                staleThreshold: staleVisualThreshold,
+                now: context.date
+            )
+            let showsLaunchPlaceholder = initialPresentation == .launchPlaceholder
+            let displayedCameraSource = showsLaunchPlaceholder ? nil : feed.cameraSource
+            let showsStaleBorder = showsLaunchPlaceholder
+                || feed.isVisuallyStale(at: context.date, threshold: staleVisualThreshold)
+            let showsPlaceholder = displayedCameraSource == nil
             let batteryPercentageLabel = BatteryPercentageOverlayPolicy.label(for: feed.batteryPercentage)
             let showsBatteryPercentageOverlay = BatteryPercentageOverlayPolicy.showsOverlay(
                 showsBatteryPercentages: showsBatteryPercentage,
@@ -26,13 +35,13 @@ struct CameraTileView: View {
 
             ZStack(alignment: .bottomLeading) {
                 CameraSurfaceView(
-                    cameraSource: feed.cameraSource,
+                    cameraSource: displayedCameraSource,
                     aspectRatio: feed.displayAspectRatio,
                     mode: surfaceMode
                 )
                 .overlay {
                     if showsPlaceholder {
-                        placeholder(status: status)
+                        placeholder()
                     }
                 }
 
@@ -50,7 +59,9 @@ struct CameraTileView: View {
                             .lineLimit(1)
                     }
 
-                    statusLine(status: status)
+                    if !showsLaunchPlaceholder {
+                        statusLine(status: status)
+                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
@@ -119,7 +130,7 @@ struct CameraTileView: View {
         }
     }
 
-    private func placeholder(status: CameraStatusSnapshot) -> some View {
+    private func placeholder() -> some View {
         ZStack {
             Color.black
 

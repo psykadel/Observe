@@ -402,6 +402,26 @@ struct CameraDisplayClassification: Equatable {
     let isStale: Bool
 }
 
+enum InitialCameraTilePresentation: Equatable {
+    case launchPlaceholder
+    case normal
+}
+
+enum InitialCameraTilePolicy {
+    static func presentation(
+        hasFreshImageThisSession: Bool,
+        displayedStillDate: Date?,
+        staleThreshold: TimeInterval,
+        now: Date
+    ) -> InitialCameraTilePresentation {
+        guard !hasFreshImageThisSession else { return .normal }
+        guard let displayedStillDate else { return .launchPlaceholder }
+
+        let age = max(0, now.timeIntervalSince(displayedStillDate))
+        return age <= staleThreshold ? .normal : .launchPlaceholder
+    }
+}
+
 enum CameraDisplayClassifier {
     static func classify(
         isStreaming: Bool,

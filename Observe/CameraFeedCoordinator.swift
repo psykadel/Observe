@@ -23,18 +23,102 @@ enum SnapshotRequestResult {
 enum CameraLiveTransportEvent: Equatable {
     case startRequested(at: Date, restarted: Bool)
     case started(at: Date)
-    case stopped(at: Date, error: CameraTransportError?)
+    case stopped(at: Date, reason: CameraLiveStopReason)
+}
+
+enum CameraLiveStopReason: Equatable {
+    case requested
+    case capacityConstrained(CameraTransportError)
+    case failure(CameraTransportError)
+    case ended
+
+    var error: CameraTransportError? {
+        switch self {
+        case .capacityConstrained(let error), .failure(let error): error
+        case .requested, .ended: nil
+        }
+    }
+
+    var shouldFailStartupPath: Bool {
+        self != .requested
+    }
+
+    var isCapacityConstrained: Bool {
+        if case .capacityConstrained = self { return true }
+        return false
+    }
+}
+
+enum CameraLiveStopReasonPolicy {
+    private static let capacityCodes: Set<HMError.Code> = [
+        .accessoryIsBusy,
+        .operationTimedOut,
+        .maximumObjectLimitReached,
+        .noHomeHub,
+        .noCompatibleHomeHub,
+        .networkUnavailable,
+        .communicationFailure,
+        .accessoryCommunicationFailure,
+        .timedOutWaitingForAccessory
+    ]
+
+    static func classify(
+        error: CameraTransportError?,
+        stopWasRequested: Bool
+    ) -> CameraLiveStopReason {
+        guard let error else { return stopWasRequested ? .requested : .ended }
+
+        if stopWasRequested,
+           error.domain == HMErrorDomain,
+           error.code == HMError.Code.operationCancelled.rawValue {
+            return .requested
+        }
+
+        if error.domain == HMErrorDomain,
+           let code = HMError.Code(rawValue: error.code),
+           capacityCodes.contains(code) {
+            return .capacityConstrained(error)
+        }
+
+        return .failure(error)
+    }
 }
 
 enum CameraStreamStopErrorPolicy {
     static func shouldReport(domain: String, code: Int, stopWasRequested: Bool) -> Bool {
-        !(stopWasRequested
-            && domain == HMErrorDomain
-            && code == HMError.Code.operationCancelled.rawValue)
+        let error = CameraTransportError(
+            NSError(domain: domain, code: code)
+        )
+        return CameraLiveStopReasonPolicy.classify(
+            error: error,
+            stopWasRequested: stopWasRequested
+        ).error != nil
     }
 }
 
 typealias SnapshotRequestID = Int64
+
+enum CameraSessionImageEvent: Equatable {
+    case reset
+    case cachedSnapshotPresented
+    case freshSnapshotReceived
+    case liveStreamReceived
+}
+
+struct CameraSessionImageFreshness: Equatable {
+    private(set) var hasFreshImage = false
+
+    mutating func apply(_ event: CameraSessionImageEvent) {
+        switch event {
+        case .reset:
+            hasFreshImage = false
+        case .cachedSnapshotPresented:
+            break
+        case .freshSnapshotReceived, .liveStreamReceived:
+            hasFreshImage = true
+        }
+    }
+}
 
 @MainActor
 final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
@@ -58,8 +142,8 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     @Published private(set) var isBatteryWakeCamera = false
     @Published private(set) var batteryStillDate: Date?
     @Published private(set) var batteryPercentage: Int?
+    @Published private var sessionImageFreshness = CameraSessionImageFreshness()
 
-    var onConstrainedSignal: ((String) -> Void)?
     var onSnapshotResult: ((String, SnapshotRequestID?, SnapshotRequestResult) -> Void)?
     var onLiveTransportEvent: ((String, CameraLiveTransportEvent) -> Void)?
     var onAvailabilityChanged: ((String) -> Void)?
@@ -93,6 +177,10 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     var isStartingLive: Bool {
         state == .starting || profile.streamControl?.streamState == .starting
+    }
+
+    var hasFreshImageThisSession: Bool {
+        sessionImageFreshness.hasFreshImage
     }
 
     var displayAspectRatio: CGFloat {
@@ -220,6 +308,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     func markBatteryStillCaptured(at date: Date) {
         guard isBatteryWakeCamera else { return }
         batteryStillDate = date
+        sessionImageFreshness.apply(.freshSnapshotReceived)
         recencyTier = .recentSnapshot
 
         if !isStreaming && state != .offline {
@@ -270,6 +359,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
         if let stream = profile.streamControl?.cameraStream {
             updateCameraSource(stream)
+            sessionImageFreshness.apply(.liveStreamReceived)
             state = .live
             liveStartRequestedAt = nil
             markLiveStartedIfNeeded(at: date)
@@ -298,6 +388,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             }
         case .streaming:
             updateCameraSource(profile.streamControl?.cameraStream)
+            sessionImageFreshness.apply(.liveStreamReceived)
             state = .live
             liveStartRequestedAt = nil
             markLiveStartedIfNeeded(at: date)
@@ -330,6 +421,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
         if let snapshot = profile.snapshotControl?.mostRecentSnapshot {
             updateCameraSource(snapshot)
+            sessionImageFreshness.apply(.cachedSnapshotPresented)
             lastSnapshotDate = snapshot.captureDate
             recencyTier = currentRecencyTier(at: Date())
             if recencyTier == .recentSnapshot {
@@ -400,6 +492,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         recencyTier = .empty
         recoveryPhase = .idle
         batteryStillDate = nil
+        sessionImageFreshness.apply(.reset)
         refreshBatteryPercentage()
         state = .idle
     }
@@ -522,6 +615,7 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             guard let self else { return }
             let now = Date()
             self.updateCameraSource(cameraStreamControl.cameraStream)
+            self.sessionImageFreshness.apply(.liveStreamReceived)
             self.state = .live
             self.lastErrorMessage = nil
             self.liveStartRequestedAt = nil
@@ -540,38 +634,18 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             let stopWasRequested = self.requestedStreamStop
             self.requestedStreamStop = false
             let transportError = CameraTransportError(error)
-            let shouldReportError = transportError.map {
-                CameraStreamStopErrorPolicy.shouldReport(
-                    domain: $0.domain,
-                    code: $0.code,
-                    stopWasRequested: stopWasRequested
-                )
-            } ?? false
+            let reason = CameraLiveStopReasonPolicy.classify(
+                error: transportError,
+                stopWasRequested: stopWasRequested
+            )
 
-            if shouldReportError, let error = error as NSError? {
-                self.lastErrorMessage = error.localizedDescription
-
-                if let code = HMError.Code(rawValue: error.code) {
-                    switch code {
-                    case .accessoryIsBusy,
-                         .operationTimedOut,
-                         .maximumObjectLimitReached,
-                         .noHomeHub,
-                         .noCompatibleHomeHub,
-                         .networkUnavailable,
-                         .communicationFailure,
-                         .accessoryCommunicationFailure,
-                         .timedOutWaitingForAccessory:
-                        self.onConstrainedSignal?(self.id)
-                    default:
-                        break
-                    }
-                }
+            if let error = reason.error {
+                self.lastErrorMessage = error.message
             }
 
             self.onLiveTransportEvent?(
                 self.id,
-                .stopped(at: Date(), error: shouldReportError ? transportError : nil)
+                .stopped(at: Date(), reason: reason)
             )
 
             self.presentSnapshotIfAvailable()
@@ -593,6 +667,9 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
                 self.updateCameraSource(snapshot)
                 self.lastSnapshotDate = snapshot.captureDate
                 self.recencyTier = self.currentRecencyTier(at: Date())
+                if self.recencyTier == .recentSnapshot {
+                    self.sessionImageFreshness.apply(.freshSnapshotReceived)
+                }
                 if self.recencyTier == .recentSnapshot {
                     self.recoveryPhase = .idle
                 }
@@ -620,6 +697,9 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
                 self.updateCameraSource(snapshot)
                 self.lastSnapshotDate = snapshot.captureDate
                 self.recencyTier = self.currentRecencyTier(at: Date())
+                if self.recencyTier == .recentSnapshot {
+                    self.sessionImageFreshness.apply(.freshSnapshotReceived)
+                }
                 if self.recencyTier == .recentSnapshot {
                     self.recoveryPhase = .idle
                 }

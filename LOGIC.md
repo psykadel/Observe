@@ -72,14 +72,21 @@ APP START / SESSION START
     +-- Use that battery stream as the initial live transport probe. If no
     |   battery camera needs capture, immediately start one UI-priority wired
     |   live probe alongside the capped snapshot lane.
-    +-- If the initial probe becomes live within 3 seconds of session start,
-    |   classify this launch as fast local transport and immediately request
-    |   live video for every visible camera. Continue trusted-image accounting
-    |   and battery trusted-still capture in the background.
-    +-- A live start at or after 3 seconds does not activate the local fast path;
-    |   retain the remote-safe serialized startup behavior.
-    +-- Any constrained signal overrides the local fast-path classification and
-    |   enters Restricted Mode using only streams that survived the rejection.
+    +-- When the initial probe becomes live, start one bounded live-capacity ramp
+    |   that continues alongside trusted-image accounting and battery capture:
+    |   |
+    |   +-- If the first live success arrives before 3 seconds, allow at most 2
+    |   |   additional live starts to be pending at once.
+    |   +-- If it arrives at or after 3 seconds, allow at most 1 additional live
+    |   |   start to be pending at once. This is the remote-safe path.
+    |   +-- Each confirmed live success immediately admits the next camera in UI
+    |   |   priority order without waiting for startup coverage to end.
+    |   +-- A focused camera preempts the lowest-priority pending probe without
+    |   |   exceeding the ramp width.
+    |   +-- An ordinary camera failure cools that camera down and admits the next
+    |   |   eligible camera; do not let one bad camera block the whole wall.
+    |   +-- A classified capacity rejection stops all new ramp admissions and
+    |       enters Restricted Mode using only streams that survived the rejection.
     +-- Do not start ordinary non-battery live streams until every visible
     |   non-battery camera has had its startup snapshot path attempted and no
     |   non-overdue snapshot request remains active.
@@ -98,12 +105,12 @@ APP START / SESSION START
     +-- End startup coverage only after every visible camera is resolved.
     +-- Continue ordinary background recovery for unresolved cameras afterward.
     |
-    +-- After startup coverage, probe normal live capacity deterministically
+    +-- Continue or complete the same live-capacity ramp after startup coverage
         |
         +-- Preserve every visible stream that is already working, including a
         |   battery stream used for startup trusted-still capture.
-        +-- Admit exactly one additional live stream in UI priority
-        |   order and wait for it to report active before admitting another.
+        +-- Preserve the ramp width already classified from the first live result;
+        |   never switch to an unbounded request for every camera.
         +-- Defer routine snapshot refreshes for startup-trusted cameras until
         |   this capacity ramp succeeds or HomeKit reports a constrained signal.
         +-- If every admitted stream succeeds, keep every visible camera live.
@@ -115,9 +122,13 @@ APP START / SESSION START
         |   a camera failure or user-visible camera error.
         +-- If no live stream has successfully reported active yet, keep one
         |   restricted live slot available for battery capture or live fallback.
-        +-- Learn restricted live capacity only from streams that actually survive
-            the rejected request. Current failure evidence overrides any older
-            remembered capacity; retry one extra slot only after the probe cooldown.
+        +-- Persist restricted live capacity by the selected home ID plus the exact,
+        |   order-independent set of visible camera IDs. A same-sized but different
+        |   camera set must not reuse that result.
+        +-- Learn capacity only from streams that actually survive the rejected
+            request. Current failure evidence lowers or clears older memory; an
+            unconfirmed remembered value may be used only as a provisional hint,
+            and retry one extra slot only after the probe cooldown.
 
 ---
 
@@ -327,6 +338,28 @@ RESTRICTED MODE
                     +-- Remaining slots go to the highest-priority visible cameras.
                     +-- Battery and non-battery cameras are treated the same here.
                     +-- Cameras without live slots remain on their trusted still image.
+
+---
+
+# Initial Camera Tile Presentation
+
+This is a wall-tile-only visual rule for the beginning of a new app camera
+session. It does not change camera scheduling, trust, refresh, reconnect, or
+detail-view behavior.
+
+- If HomeKit already provides a cached snapshot whose age is within that
+  camera's existing visual stale threshold, display it immediately using the
+  ordinary status and border logic below.
+- Otherwise, until the camera receives a fresh snapshot or current live stream
+  in this session:
+  - Hide any stale cached image.
+  - Show the existing black camera placeholder and camera icon.
+  - Draw the red stale border.
+  - Hide the entire status row: no indicator dot, status label, or age suffix.
+  - Keep the camera name and optional battery-percentage overlay.
+- After a fresh image or live stream arrives, use the ordinary camera display
+  logic below for every subsequent loading, stale, reconnect, capture, queued,
+  live, and error state.
 
 ---
 

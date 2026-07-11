@@ -188,8 +188,8 @@ final class ObservePreferences: ObservableObject {
         setStaleVisualHighlightSeconds(defaultStaleVisualHighlightSeconds)
     }
 
-    func rememberedRestrictedLiveCapacity(homeID: String?, visibleCameraCount: Int) -> Int? {
-        guard let key = restrictedLiveCapacityKey(homeID: homeID, visibleCameraCount: visibleCameraCount) else {
+    func rememberedRestrictedLiveCapacity(homeID: String?, visibleCameraIDs: [String]) -> Int? {
+        guard let key = restrictedLiveCapacityKey(homeID: homeID, visibleCameraIDs: visibleCameraIDs) else {
             return nil
         }
 
@@ -197,20 +197,43 @@ final class ObservePreferences: ObservableObject {
             return nil
         }
 
-        return min(stored, visibleCameraCount)
+        return min(stored, Set(visibleCameraIDs).count)
     }
 
-    func recordRestrictedLiveCapacity(_ capacity: Int, homeID: String?, visibleCameraCount: Int) {
-        guard let key = restrictedLiveCapacityKey(homeID: homeID, visibleCameraCount: visibleCameraCount),
+    func recordConfirmedRestrictedLiveCapacity(
+        _ capacity: Int,
+        homeID: String?,
+        visibleCameraIDs: [String]
+    ) {
+        guard let key = restrictedLiveCapacityKey(homeID: homeID, visibleCameraIDs: visibleCameraIDs),
               capacity > 0 else {
             return
         }
 
-        let boundedCapacity = min(capacity, visibleCameraCount)
+        let boundedCapacity = min(capacity, Set(visibleCameraIDs).count)
         var capacities = restrictedLiveCapacities()
         guard boundedCapacity > (capacities[key] ?? 0) else { return }
 
         capacities[key] = boundedCapacity
+        userDefaults.set(capacities, forKey: Keys.restrictedLiveCapacities)
+    }
+
+    func recordRestrictedLiveCapacityAfterRejection(
+        _ survivingCapacity: Int,
+        homeID: String?,
+        visibleCameraIDs: [String]
+    ) {
+        guard let key = restrictedLiveCapacityKey(homeID: homeID, visibleCameraIDs: visibleCameraIDs) else {
+            return
+        }
+
+        var capacities = restrictedLiveCapacities()
+        let boundedCapacity = min(max(0, survivingCapacity), Set(visibleCameraIDs).count)
+        if boundedCapacity == 0 {
+            capacities.removeValue(forKey: key)
+        } else {
+            capacities[key] = boundedCapacity
+        }
         userDefaults.set(capacities, forKey: Keys.restrictedLiveCapacities)
     }
 
@@ -300,8 +323,15 @@ final class ObservePreferences: ObservableObject {
         }
     }
 
-    private func restrictedLiveCapacityKey(homeID: String?, visibleCameraCount: Int) -> String? {
-        guard let homeID, !homeID.isEmpty, visibleCameraCount > 0 else { return nil }
-        return "\(homeID)#\(visibleCameraCount)"
+    private func restrictedLiveCapacityKey(homeID: String?, visibleCameraIDs: [String]) -> String? {
+        guard let homeID, !homeID.isEmpty else { return nil }
+        let cameraIDs = Array(Set(visibleCameraIDs)).sorted()
+        guard !cameraIDs.isEmpty else { return nil }
+
+        let homeComponent = "\(homeID.utf8.count):\(homeID)"
+        let cameraComponent = cameraIDs
+            .map { "\($0.utf8.count):\($0)" }
+            .joined(separator: "|")
+        return "v2#\(homeComponent)#\(cameraComponent)"
     }
 }
