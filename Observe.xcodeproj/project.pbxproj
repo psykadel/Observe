@@ -20,6 +20,7 @@
 		A1000015000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000B /* Assets.xcassets */; };
 		A1000015000000000000000C /* CameraRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000E /* CameraRecoveryPlanner.swift */; };
 		A1000015000000000000000D /* ObserveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000F /* ObserveTests.swift */; };
+		A1000015000000000000000E /* CameraLiveAdmissionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000011 /* CameraLiveAdmissionController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -49,6 +50,7 @@
 		A1000001000000000000000E /* CameraRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRecoveryPlanner.swift; sourceTree = "<group>"; };
 		A1000001000000000000000F /* ObserveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObserveTests.swift; sourceTree = "<group>"; };
 		A10000010000000000000010 /* ObserveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ObserveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000010000000000000011 /* CameraLiveAdmissionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraLiveAdmissionController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -91,6 +93,7 @@
 				A10000010000000000000008 /* CameraFeedCoordinator.swift */,
 				A10000010000000000000009 /* HomeKitCameraStore.swift */,
 				A1000001000000000000000E /* CameraRecoveryPlanner.swift */,
+				A10000010000000000000011 /* CameraLiveAdmissionController.swift */,
 				A1000001000000000000000A /* SettingsView.swift */,
 				A1000001000000000000000B /* Assets.xcassets */,
 				A1000001000000000000000C /* Observe.entitlements */,
@@ -216,6 +219,7 @@
 				A10000150000000000000008 /* CameraFeedCoordinator.swift in Sources */,
 				A10000150000000000000009 /* HomeKitCameraStore.swift in Sources */,
 				A1000015000000000000000C /* CameraRecoveryPlanner.swift in Sources */,
+				A1000015000000000000000E /* CameraLiveAdmissionController.swift in Sources */,
 				A1000015000000000000000A /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

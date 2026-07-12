@@ -24,30 +24,7 @@ enum CameraLiveTransportEvent: Equatable {
     case startRequested(at: Date, restarted: Bool)
     case started(at: Date, callbackLatency: TimeInterval?)
     case stopRequested(at: Date)
-    case stopped(at: Date, reason: CameraLiveStopReason, callbackLatency: TimeInterval?)
-}
-
-enum CameraLiveStopReason: Equatable {
-    case requested
-    case capacityConstrained(CameraTransportError)
-    case failure(CameraTransportError)
-    case ended
-
-    var error: CameraTransportError? {
-        switch self {
-        case .capacityConstrained(let error), .failure(let error): error
-        case .requested, .ended: nil
-        }
-    }
-
-    var shouldFailStartupPath: Bool {
-        self != .requested
-    }
-
-    var isCapacityConstrained: Bool {
-        if case .capacityConstrained = self { return true }
-        return false
-    }
+    case stopped(at: Date, disposition: CameraLiveFailureDisposition, callbackLatency: TimeInterval?)
 }
 
 enum CameraLiveTransportActivityPolicy {
@@ -60,38 +37,62 @@ enum CameraLiveTransportActivityPolicy {
     }
 }
 
-enum CameraLiveStopReasonPolicy {
-    private static let capacityCodes: Set<HMError.Code> = [
-        .accessoryIsBusy,
-        .operationTimedOut,
-        .maximumObjectLimitReached,
-        .noHomeHub,
-        .noCompatibleHomeHub,
-        .networkUnavailable,
-        .communicationFailure,
-        .accessoryCommunicationFailure,
-        .timedOutWaitingForAccessory
-    ]
+enum CameraLiveFailureDisposition: Equatable {
+    case requestedStop
+    case softContention(CameraTransportError)
+    case hardCapacity(CameraTransportError)
+    case infrastructureUnavailable(CameraTransportError)
+    case retryableTransport(CameraTransportError)
+    case cameraFailure(CameraTransportError)
+    case ended
 
+    var error: CameraTransportError? {
+        switch self {
+        case .softContention(let error),
+             .hardCapacity(let error),
+             .infrastructureUnavailable(let error),
+             .retryableTransport(let error),
+             .cameraFailure(let error):
+            error
+        case .requestedStop, .ended:
+            nil
+        }
+    }
+}
+
+enum CameraLiveFailureDispositionPolicy {
     static func classify(
         error: CameraTransportError?,
         stopWasRequested: Bool
-    ) -> CameraLiveStopReason {
-        guard let error else { return stopWasRequested ? .requested : .ended }
+    ) -> CameraLiveFailureDisposition {
+        guard let error else { return stopWasRequested ? .requestedStop : .ended }
 
         if stopWasRequested,
            error.domain == HMErrorDomain,
            error.code == HMError.Code.operationCancelled.rawValue {
-            return .requested
+            return .requestedStop
         }
 
-        if error.domain == HMErrorDomain,
-           let code = HMError.Code(rawValue: error.code),
-           capacityCodes.contains(code) {
-            return .capacityConstrained(error)
+        guard error.domain == HMErrorDomain,
+              let code = HMError.Code(rawValue: error.code) else {
+            return .cameraFailure(error)
         }
 
-        return .failure(error)
+        switch code {
+        case .accessoryIsBusy, .operationInProgress:
+            return .softContention(error)
+        case .maximumObjectLimitReached:
+            return .hardCapacity(error)
+        case .networkUnavailable, .noHomeHub, .noCompatibleHomeHub:
+            return .infrastructureUnavailable(error)
+        case .operationTimedOut,
+             .communicationFailure,
+             .accessoryCommunicationFailure,
+             .timedOutWaitingForAccessory:
+            return .retryableTransport(error)
+        default:
+            return .cameraFailure(error)
+        }
     }
 }
 
@@ -100,7 +101,7 @@ enum CameraStreamStopErrorPolicy {
         let error = CameraTransportError(
             NSError(domain: domain, code: code)
         )
-        return CameraLiveStopReasonPolicy.classify(
+        return CameraLiveFailureDispositionPolicy.classify(
             error: error,
             stopWasRequested: stopWasRequested
         ).error != nil
@@ -201,6 +202,19 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             startIsPending: liveStartRequestedAt != nil,
             stopIsPending: liveStopRequestedAt != nil || requestedStreamStop
         )
+    }
+
+    var liveTransportPhase: LiveTransportPhase {
+        if liveStopRequestedAt != nil || requestedStreamStop {
+            return .stopping
+        }
+        if liveStartRequestedAt != nil || isStartingLive {
+            return .starting
+        }
+        if isStreaming {
+            return .streaming
+        }
+        return .idle
     }
 
     var hasFreshImageThisSession: Bool {
@@ -676,23 +690,32 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             let stopWasRequested = self.requestedStreamStop
             self.requestedStreamStop = false
             let transportError = CameraTransportError(error)
-            let reason = CameraLiveStopReasonPolicy.classify(
+            let disposition = CameraLiveFailureDispositionPolicy.classify(
                 error: transportError,
                 stopWasRequested: stopWasRequested
             )
 
-            if let error = reason.error {
+            if case .retryableTransport(let error) = disposition {
                 self.lastErrorMessage = error.message
+            } else if case .cameraFailure(let error) = disposition {
+                self.lastErrorMessage = error.message
+            } else {
+                self.lastErrorMessage = nil
             }
 
             self.onLiveTransportEvent?(
                 self.id,
-                .stopped(at: stoppedAt, reason: reason, callbackLatency: callbackLatency)
+                .stopped(at: stoppedAt, disposition: disposition, callbackLatency: callbackLatency)
             )
 
             self.presentSnapshotIfAvailable()
             if self.cameraSource == nil, self.state != .offline {
-                self.state = .failed("Unavailable")
+                switch disposition {
+                case .retryableTransport, .cameraFailure, .ended:
+                    self.state = .failed("Unavailable")
+                case .requestedStop, .softContention, .hardCapacity, .infrastructureUnavailable:
+                    self.state = .idle
+                }
             }
         }
     }

@@ -15,7 +15,7 @@ enum StartupLivePolicy: Equatable {
 enum StartupCoverageResolution: Equatable {
     case pending
     case trusted
-    case unresolved
+    case recovering
 }
 
 enum StartupCameraPathState: Equatable {
@@ -64,7 +64,7 @@ struct StartupCameraState: Equatable {
     var snapshotFailed: Bool { snapshotPath == .failed }
     var liveAttempted: Bool { livePath.wasAttempted }
     var liveFallbackStartedAt: Date? {
-        resolution == .pending ? livePath.startedAt : nil
+        resolution != .trusted ? livePath.startedAt : nil
     }
 
     mutating func apply(_ event: StartupCameraEvent, isBatteryCamera: Bool) {
@@ -72,7 +72,7 @@ struct StartupCameraState: Equatable {
         case .reset:
             self = StartupCameraState()
         case .snapshotRequested(let startedAt):
-            guard resolution == .pending else { return }
+            guard resolution != .trusted else { return }
             snapshotPath = .inFlight(startedAt: startedAt)
         case .snapshotSucceeded:
             snapshotPath = .succeeded
@@ -82,7 +82,7 @@ struct StartupCameraState: Equatable {
             snapshotPath = .failed
             resolveFailureIfNeeded(isBatteryCamera: isBatteryCamera)
         case .liveRequested(let startedAt):
-            guard resolution == .pending else { return }
+            guard resolution != .trusted else { return }
             livePath = .inFlight(startedAt: startedAt)
         case .liveStarted:
             livePath = .succeeded
@@ -104,10 +104,10 @@ struct StartupCameraState: Equatable {
     private mutating func resolveFailureIfNeeded(isBatteryCamera: Bool) {
         if isBatteryCamera {
             if livePath == .failed {
-                resolution = .unresolved
+                resolution = .recovering
             }
         } else if snapshotPath == .failed, livePath == .failed {
-            resolution = .unresolved
+            resolution = .recovering
         }
     }
 }
@@ -757,7 +757,7 @@ struct CameraRecoveryPlanner {
                 .filter {
                     $0.isBatteryWakeCamera
                         && !$0.hasTrustedImage(at: now)
-                        && $0.startupState.resolution != .unresolved
+                        && $0.startupState.resolution != .trusted
                 }
                 .map(\.id)
         )
@@ -777,7 +777,7 @@ struct CameraRecoveryPlanner {
         }
 
         if let activeBattery = feeds.first(where: {
-            $0.startupState.resolution != .unresolved
+            $0.startupState.resolution != .trusted
                 && $0.hasActiveBatteryCapture(
                     at: now,
                     leaseDuration: batteryWakeLeaseDuration,
@@ -794,7 +794,7 @@ struct CameraRecoveryPlanner {
 
         if let activeWiredFallback = feeds.first(where: {
             !$0.isBatteryWakeCamera
-                && $0.startupState.resolution != .unresolved
+                && $0.startupState.resolution != .trusted
                 && $0.startupState.liveFallbackStartedAt != nil
                 && !$0.hasTrustedImage(at: now)
         }) {
@@ -806,7 +806,7 @@ struct CameraRecoveryPlanner {
         }
 
         if let battery = feeds.first(where: {
-            $0.startupState.resolution != .unresolved
+            $0.startupState.resolution != .trusted
                 && $0.needsBatteryCapture(
                 at: now,
                 leaseDuration: batteryWakeLeaseDuration,
@@ -837,18 +837,22 @@ struct CameraRecoveryPlanner {
             )
         }
 
-        if allowWiredFallback,
-           let wiredFallback = feeds.first(where: {
-               !$0.isBatteryWakeCamera
-                   && !$0.hasTrustedImage(at: now)
-                   && $0.startupState.snapshotAttempted
-                   && $0.startupState.resolution != .unresolved
-           }) {
-            return ConstrainedLiveSelection(
-                liveIDs: [wiredFallback.id],
-                batteryCaptureIDs: [],
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs
-            )
+        if allowWiredFallback {
+            let wiredFallbackCandidates = feeds.filter {
+                !$0.isBatteryWakeCamera
+                    && !$0.hasTrustedImage(at: now)
+                    && $0.startupState.snapshotAttempted
+                    && $0.startupState.resolution != .trusted
+            }
+            if let wiredFallback = wiredFallbackCandidates.first(where: {
+                $0.startupState.resolution == .pending
+            }) ?? wiredFallbackCandidates.first {
+                return ConstrainedLiveSelection(
+                    liveIDs: [wiredFallback.id],
+                    batteryCaptureIDs: [],
+                    batteryWaitingIDs: batteryNeedingTrustedStillIDs
+                )
+            }
         }
 
         return ConstrainedLiveSelection(

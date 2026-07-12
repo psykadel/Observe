@@ -332,6 +332,6 @@ final class ObservePreferences: ObservableObject {
         let cameraComponent = cameraIDs
             .map { "\($0.utf8.count):\($0)" }
             .joined(separator: "|")
-        return "v2#\(homeComponent)#\(cameraComponent)"
+        return "v3#\(homeComponent)#\(cameraComponent)"
     }
 }

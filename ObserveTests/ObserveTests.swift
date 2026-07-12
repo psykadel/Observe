@@ -436,7 +436,7 @@ final class ObserveTests: XCTestCase {
         startupState.apply(.liveRequested(at: now), isBatteryCamera: false)
         startupState.apply(.liveFailed, isBatteryCamera: false)
 
-        XCTAssertEqual(startupState.resolution, .unresolved)
+        XCTAssertEqual(startupState.resolution, .recovering)
         XCTAssertEqual(
             StartupSnapshotRecoveryPolicy.retryEligibleDate(
                 startupCoverageActive: true,
@@ -787,21 +787,257 @@ final class ObserveTests: XCTestCase {
             NSError(domain: "Camera", code: 7)
         ))
 
-        let requested = CameraLiveStopReasonPolicy.classify(error: cancelled, stopWasRequested: true)
-        XCTAssertEqual(requested, .requested)
-        XCTAssertFalse(requested.shouldFailStartupPath)
+        let requested = CameraLiveFailureDispositionPolicy.classify(error: cancelled, stopWasRequested: true)
+        XCTAssertEqual(requested, .requestedStop)
         XCTAssertEqual(
-            CameraLiveStopReasonPolicy.classify(error: capacity, stopWasRequested: false),
-            .capacityConstrained(capacity)
+            CameraLiveFailureDispositionPolicy.classify(error: capacity, stopWasRequested: false),
+            .hardCapacity(capacity)
         )
         XCTAssertEqual(
-            CameraLiveStopReasonPolicy.classify(error: cameraFailure, stopWasRequested: false),
-            .failure(cameraFailure)
+            CameraLiveFailureDispositionPolicy.classify(error: cameraFailure, stopWasRequested: false),
+            .cameraFailure(cameraFailure)
         )
         XCTAssertEqual(
-            CameraLiveStopReasonPolicy.classify(error: nil, stopWasRequested: false),
+            CameraLiveFailureDispositionPolicy.classify(error: nil, stopWasRequested: false),
             .ended
         )
+    }
+
+    func testLiveFailureDispositionUsesEvidenceInsteadOfTreatingEveryTransportErrorAsCapacity() throws {
+        let busy = try XCTUnwrap(CameraTransportError(
+            NSError(domain: HMErrorDomain, code: HMError.Code.accessoryIsBusy.rawValue)
+        ))
+        let hardLimit = try XCTUnwrap(CameraTransportError(
+            NSError(domain: HMErrorDomain, code: HMError.Code.maximumObjectLimitReached.rawValue)
+        ))
+        let communication = try XCTUnwrap(CameraTransportError(
+            NSError(domain: HMErrorDomain, code: HMError.Code.communicationFailure.rawValue)
+        ))
+        let network = try XCTUnwrap(CameraTransportError(
+            NSError(domain: HMErrorDomain, code: HMError.Code.networkUnavailable.rawValue)
+        ))
+        let camera = try XCTUnwrap(CameraTransportError(
+            NSError(domain: "Camera", code: 7)
+        ))
+
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: busy, stopWasRequested: false), .softContention(busy))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: hardLimit, stopWasRequested: false), .hardCapacity(hardLimit))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: communication, stopWasRequested: false), .retryableTransport(communication))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: network, stopWasRequested: false), .infrastructureUnavailable(network))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: camera, stopWasRequested: false), .cameraFailure(camera))
+    }
+
+    func testConstrainedAdmissionSerializesColdStarts() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
+        let intents = [
+            LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
+            LiveIntent(id: "back", role: .steadyState, priorityIndex: 1)
+        ]
+
+        let first = controller.reconcile(
+            intents: intents,
+            transports: ["front": .idle, "back": .idle],
+            preserveActiveDuringCoverage: false,
+            now: now
+        )
+        XCTAssertEqual(first.startIDs, ["front"])
+        XCTAssertEqual(first.queuedStartIDs, ["back"])
+
+        let second = controller.reconcile(
+            intents: intents,
+            transports: ["front": .streaming, "back": .idle],
+            preserveActiveDuringCoverage: false,
+            now: now.addingTimeInterval(2)
+        )
+        XCTAssertEqual(second.startIDs, ["back"])
+    }
+
+    func testAdmissionPreservesWorkingStreamWhileRecoveryUsesFreeSlot() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 1),
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
+                LiveIntent(id: "garage", role: .steadyState, priorityIndex: 2)
+            ],
+            transports: [
+                "front": .idle,
+                "back": .idle,
+                "garage": .streaming
+            ],
+            preserveActiveDuringCoverage: true,
+            now: now
+        )
+
+        XCTAssertEqual(decision.targetIDs, ["back", "garage"])
+        XCTAssertTrue(decision.stopIDs.isEmpty)
+        XCTAssertEqual(decision.startIDs, ["back"])
+    }
+
+    func testSoftContentionCreatesTemporaryCeilingFromSurvivingStreams() {
+        var controller = LiveAdmissionController(mode: .adaptive(maxPendingStarts: 1), sustainableCapacity: 5)
+        let result = controller.recordSoftContention(
+            feedID: "back",
+            survivingStreamCount: 2,
+            at: now
+        )
+
+        XCTAssertEqual(controller.mode, .constrained)
+        XCTAssertEqual(controller.sustainableCapacity, 5)
+        XCTAssertEqual(result.sessionCeiling, 2)
+        XCTAssertEqual(result.attempt, 1)
+        XCTAssertFalse(result.shouldYieldCamera)
+
+        let blocked = controller.reconcile(
+            intents: [
+                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 1),
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0, isDesired: false),
+                LiveIntent(id: "battery", role: .steadyState, priorityIndex: 4, isDesired: false)
+            ],
+            transports: ["back": .idle, "front": .streaming, "battery": .streaming],
+            preserveActiveDuringCoverage: true,
+            now: now.addingTimeInterval(0.5)
+        )
+        XCTAssertTrue(blocked.startIDs.isEmpty)
+        XCTAssertEqual(blocked.targetIDs, ["front", "battery"])
+        XCTAssertTrue(blocked.stopIDs.isEmpty)
+
+        let retry = controller.reconcile(
+            intents: [
+                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 1),
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0, isDesired: false),
+                LiveIntent(id: "battery", role: .steadyState, priorityIndex: 4, isDesired: false)
+            ],
+            transports: ["back": .idle, "front": .streaming, "battery": .streaming],
+            preserveActiveDuringCoverage: true,
+            now: now.addingTimeInterval(1)
+        )
+        XCTAssertEqual(retry.targetIDs, ["back", "front"])
+        XCTAssertEqual(retry.stopIDs, ["battery"])
+        XCTAssertTrue(retry.startIDs.isEmpty)
+    }
+
+    func testRepeatedSoftContentionYieldsCameraWithoutShrinkingInitialCeiling() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 5)
+        _ = controller.recordSoftContention(
+            feedID: "back",
+            survivingStreamCount: 2,
+            at: now
+        )
+        let repeated = controller.recordSoftContention(
+            feedID: "back",
+            survivingStreamCount: 1,
+            at: now.addingTimeInterval(2)
+        )
+
+        XCTAssertEqual(repeated.sessionCeiling, 2)
+        XCTAssertEqual(repeated.attempt, 2)
+        XCTAssertTrue(repeated.shouldYieldCamera)
+    }
+
+    func testSoftContentionCeilingAllowsOneExplicitCapacityProbeAfterPlannerCooldown() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 5)
+        _ = controller.recordSoftContention(
+            feedID: "initial-probe",
+            survivingStreamCount: 2,
+            at: now
+        )
+
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
+                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
+                LiveIntent(id: "mailbox", role: .capacityProbe, priorityIndex: 2)
+            ],
+            transports: [
+                "front": .streaming,
+                "back": .streaming,
+                "mailbox": .idle
+            ],
+            preserveActiveDuringCoverage: false,
+            plannerCapacity: 3,
+            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
+        )
+
+        XCTAssertEqual(decision.targetIDs, ["front", "back", "mailbox"])
+        XCTAssertEqual(decision.startIDs, ["mailbox"])
+        XCTAssertTrue(decision.stopIDs.isEmpty)
+        XCTAssertEqual(controller.lastPlannerCapacity, 3)
+        XCTAssertEqual(controller.lastEffectiveCapacity, 3)
+        XCTAssertEqual(controller.lastCapacityLimitReason, "softContentionProbe")
+        XCTAssertEqual(controller.activeCapacityProbeFeedID, "mailbox")
+
+        controller.recordSuccess(feedID: "mailbox")
+        let nextProbe = controller.reconcile(
+            intents: [
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
+                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
+                LiveIntent(id: "mailbox", role: .steadyState, priorityIndex: 2),
+                LiveIntent(id: "garage", role: .capacityProbe, priorityIndex: 3)
+            ],
+            transports: [
+                "front": .streaming,
+                "back": .streaming,
+                "mailbox": .streaming,
+                "garage": .idle
+            ],
+            preserveActiveDuringCoverage: false,
+            plannerCapacity: 4,
+            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay + 1)
+        )
+
+        XCTAssertEqual(nextProbe.startIDs, ["garage"])
+    }
+
+    func testSoftContentionCeilingDoesNotAdmitOrdinaryWorkAboveCeiling() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 5)
+        _ = controller.recordSoftContention(
+            feedID: "initial-probe",
+            survivingStreamCount: 2,
+            at: now
+        )
+
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
+                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
+                LiveIntent(id: "mailbox", role: .steadyState, priorityIndex: 2)
+            ],
+            transports: [
+                "front": .streaming,
+                "back": .streaming,
+                "mailbox": .idle
+            ],
+            preserveActiveDuringCoverage: false,
+            plannerCapacity: 3,
+            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
+        )
+
+        XCTAssertEqual(decision.targetIDs, ["front", "back"])
+        XCTAssertTrue(decision.startIDs.isEmpty)
+    }
+
+    func testRetryBackoffDoesNotEvictWorkingCoverageStream() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 1)
+        _ = controller.recordSoftContention(
+            feedID: "back",
+            survivingStreamCount: 1,
+            at: now
+        )
+
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 0),
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 1, isDesired: false)
+            ],
+            transports: ["back": .idle, "front": .streaming],
+            preserveActiveDuringCoverage: true,
+            now: now.addingTimeInterval(0.5)
+        )
+
+        XCTAssertEqual(decision.targetIDs, ["front"])
+        XCTAssertTrue(decision.stopIDs.isEmpty)
+        XCTAssertTrue(decision.startIDs.isEmpty)
     }
 
     func testSnapshotFirstStartupRunsOneBatteryCaptureBeforeWiredLiveFallback() {
@@ -1229,7 +1465,7 @@ final class ObserveTests: XCTestCase {
         state.apply(.liveRequested(at: now), isBatteryCamera: false)
         state.apply(.liveFailed, isBatteryCamera: false)
 
-        XCTAssertEqual(state.resolution, .unresolved)
+        XCTAssertEqual(state.resolution, .recovering)
         XCTAssertTrue(state.liveAttempted)
         XCTAssertNil(state.liveFallbackStartedAt)
     }
@@ -1262,10 +1498,25 @@ final class ObserveTests: XCTestCase {
 
         state.apply(.snapshotFailed, isBatteryCamera: false)
         state.apply(.liveFailed, isBatteryCamera: false)
-        XCTAssertEqual(state.resolution, .unresolved)
+        XCTAssertEqual(state.resolution, .recovering)
 
         state.apply(.snapshotSucceeded, isBatteryCamera: false)
 
+        XCTAssertEqual(state.resolution, .trusted)
+    }
+
+    func testStartupCameraStateAllowsLiveRetryAfterBothPathsFail() {
+        var state = StartupCameraState()
+        state.apply(.snapshotFailed, isBatteryCamera: false)
+        state.apply(.liveFailed, isBatteryCamera: false)
+
+        let retryAt = now.addingTimeInterval(2)
+        state.apply(.liveRequested(at: retryAt), isBatteryCamera: false)
+
+        XCTAssertEqual(state.livePath, .inFlight(startedAt: retryAt))
+        XCTAssertEqual(state.liveFallbackStartedAt, retryAt)
+
+        state.apply(.liveStarted, isBatteryCamera: false)
         XCTAssertEqual(state.resolution, .trusted)
     }
 
@@ -1285,7 +1536,7 @@ final class ObserveTests: XCTestCase {
         var state = StartupCameraState()
         state.apply(.snapshotFailed, isBatteryCamera: false)
         state.apply(.liveFailed, isBatteryCamera: false)
-        XCTAssertEqual(state.resolution, .unresolved)
+        XCTAssertEqual(state.resolution, .recovering)
 
         state.apply(.reset, isBatteryCamera: false)
 
@@ -1396,20 +1647,20 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(liveIDs(in: plan), ["front"])
     }
 
-    func testSnapshotFirstStartupSkipsExplicitlyUnresolvedFeeds() {
+    func testSnapshotFirstStartupKeepsRecoveringFeedsEligible() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(
                     id: "failed-wired",
                     priorityIndex: 0,
                     startupSnapshotAttempted: true,
-                    startupCoverageResolution: .unresolved
+                    startupCoverageResolution: .recovering
                 ),
                 makeFeed(
                     id: "failed-battery",
                     priorityIndex: 1,
                     isBatteryWakeCamera: true,
-                    startupCoverageResolution: .unresolved
+                    startupCoverageResolution: .recovering
                 )
             ],
             sessionMode: .constrained,
@@ -1418,7 +1669,32 @@ final class ObserveTests: XCTestCase {
             now: now
         )
 
-        XCTAssertTrue(liveIDs(in: plan).isEmpty)
+        XCTAssertEqual(liveIDs(in: plan), ["failed-battery"])
+    }
+
+    func testSnapshotFirstStartupPrioritizesPendingCameraOverRecoveringCamera() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(
+                    id: "back",
+                    priorityIndex: 0,
+                    startupSnapshotAttempted: true,
+                    startupCoverageResolution: .recovering
+                ),
+                makeFeed(
+                    id: "mailbox",
+                    priorityIndex: 1,
+                    startupSnapshotAttempted: true,
+                    startupCoverageResolution: .pending
+                )
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 1,
+            startupLivePolicy: .firstImage(allowWiredFallback: true),
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["mailbox"])
     }
 
     func testStartupSnapshotConcurrencyPolicyCapsFirstFrameRequests() {
@@ -1937,6 +2213,39 @@ final class ObserveTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
     }
 
+    @MainActor
+    func testRestrictedCapacityV3IgnoresLegacyEvidence() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set(
+            ["v2#6:home-a#4:back|5:front": 2],
+            forKey: "observe.restrictedLiveCapacities"
+        )
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertNil(preferences.rememberedRestrictedLiveCapacity(
+            homeID: "home-a",
+            visibleCameraIDs: ["front", "back"]
+        ))
+
+        preferences.recordConfirmedRestrictedLiveCapacity(
+            2,
+            homeID: "home-a",
+            visibleCameraIDs: ["front", "back"]
+        )
+        XCTAssertEqual(preferences.rememberedRestrictedLiveCapacity(
+            homeID: "home-a",
+            visibleCameraIDs: ["back", "front"]
+        ), 2)
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
     func testDisplayClassifierMarksLiveAsGreenAndNotStale() {
         let classification = CameraDisplayClassifier.classify(
             isStreaming: true,
@@ -2415,6 +2724,16 @@ final class ObserveTests: XCTestCase {
             isAppActive: true,
             focusedFeedID: nil,
             liveCapacity: 1,
+            liveAdmissionMode: "constrained",
+            liveAdmissionSustainableCapacity: 1,
+            liveAdmissionSoftContentionCeiling: 1,
+            liveAdmissionPlannerCapacity: 2,
+            liveAdmissionEffectiveCapacity: 2,
+            liveAdmissionCapacityLimitReason: "softContentionProbe",
+            liveAdmissionActiveCapacityProbeFeedID: "side",
+            liveAdmissionTargetIDs: ["front"],
+            liveAdmissionReservedIDs: ["front"],
+            liveAdmissionQueuedIDs: ["side"],
             visibleFeedCount: 2,
             internalMaxConcurrentSnapshotRequests: 3,
             effectiveMaxConcurrentSnapshotRequests: 2,
@@ -2422,6 +2741,7 @@ final class ObserveTests: XCTestCase {
             untrustedSnapshotRefreshInterval: 2,
             trustedSnapshotRefreshInterval: 5,
             batteryCaptureWarmup: 5,
+            batteryWakeTriggerThreshold: 30,
             batteryWakeLeaseDuration: 8,
             batteryWakeLiveStartTimeout: 30,
             startupCoverageActive: true,
@@ -2436,7 +2756,8 @@ final class ObserveTests: XCTestCase {
             startupLiveRampFastThreshold: 3,
             activeSnapshotRequests: 2,
             outstandingSnapshotRequests: 3,
-            liveCapacityExpansionBlockedUntil: generatedAt.addingTimeInterval(5),
+            liveCapacityExpansionRetryIn: 5,
+            liveCapacityExpansionCooldownEligible: false,
             liveCapacityIncludesUnconfirmedMemory: false,
             startupMilestones: CameraStartupTelemetryMilestones(
                 enteredConstrainedModeAt: 1,
@@ -2446,8 +2767,8 @@ final class ObserveTests: XCTestCase {
                 allVisibleFeedsTrustedAt: 12,
                 allVisibleFeedsLiveAt: 8,
                 startupCoverageEndedAt: 15,
-                startupCoverageResult: "completedWithUnresolved",
-                unresolvedFeedIDs: ["side"],
+                startupCoverageResult: "completedWithRecovery",
+                recoveringFeedIDs: ["side"],
                 peakActiveSnapshotRequests: 3,
                 peakOutstandingSnapshotRequests: 4,
                 feedsByID: [
@@ -2472,7 +2793,7 @@ final class ObserveTests: XCTestCase {
                         lastLiveStartCallbackLatency: 0.9,
                         lastLiveStopCallbackLatency: 0.012,
                         firstStartupLiveFallbackAt: 4,
-                        startupResolvedAsUnresolved: false,
+                        startupEnteredRecovery: false,
                         firstBatteryWakeLeaseStartedAt: nil,
                         firstBatteryTrustedStillAt: nil,
                         batteryWakeLeaseStartedCount: 0,
@@ -2514,6 +2835,7 @@ final class ObserveTests: XCTestCase {
                     startupLivePath: "notAttempted",
                     startupLiveFallbackAge: nil,
                     batteryStillAge: nil,
+                    nextBatteryCaptureDueIn: 25,
                     batteryWakeLeaseAge: nil,
                     batteryWakeRetryIn: nil,
                     consecutiveBatteryWakeFailures: 0,
@@ -2533,6 +2855,11 @@ final class ObserveTests: XCTestCase {
         XCTAssertTrue(text.contains("sessionElapsed=20.0s"))
         XCTAssertTrue(text.contains("internalMaxConcurrentSnapshotRequests=3"))
         XCTAssertTrue(text.contains("effectiveMaxConcurrentSnapshotRequests=2"))
+        XCTAssertTrue(text.contains("liveAdmissionSoftContentionCeiling=1"))
+        XCTAssertTrue(text.contains("liveAdmissionPlannerCapacity=2"))
+        XCTAssertTrue(text.contains("liveAdmissionEffectiveCapacity=2"))
+        XCTAssertTrue(text.contains("liveAdmissionCapacityLimitReason=softContentionProbe"))
+        XCTAssertTrue(text.contains("liveAdmissionActiveCapacityProbeFeedID=side"))
         XCTAssertTrue(text.contains("startupLiveRampMode=fast"))
         XCTAssertTrue(text.contains("sessionNetworkClass=wifi"))
         XCTAssertTrue(text.contains("currentNetworkClass=wifi"))
@@ -2544,9 +2871,13 @@ final class ObserveTests: XCTestCase {
         XCTAssertTrue(text.contains("startupLiveRampFastThreshold=3.0s"))
         XCTAssertTrue(text.contains("outstandingSnapshotRequests=3"))
         XCTAssertTrue(text.contains("untrustedSnapshotRefreshInterval=2.0s"))
+        XCTAssertTrue(text.contains("batteryWakeTriggerThreshold=30.0s"))
+        XCTAssertTrue(text.contains("nextBatteryCaptureDueIn=25.0s"))
+        XCTAssertTrue(text.contains("liveCapacityExpansionRetryIn=5.0s"))
+        XCTAssertTrue(text.contains("liveCapacityExpansionCooldownEligible=false"))
         XCTAssertTrue(text.contains("allVisibleFeedsTrustedAt=12.0s"))
         XCTAssertTrue(text.contains("allVisibleFeedsLiveAt=8.0s"))
-        XCTAssertTrue(text.contains("startupCoverageResult=completedWithUnresolved"))
+        XCTAssertTrue(text.contains("startupCoverageResult=completedWithRecovery"))
         XCTAssertTrue(text.contains("peakOutstandingSnapshotRequests=4"))
         XCTAssertTrue(text.contains("front | firstTrustedImageAt=12.0s"))
         XCTAssertTrue(text.contains("firstTrustedImageSource=live"))
@@ -2959,7 +3290,7 @@ final class ObserveTests: XCTestCase {
             break
         case .trusted:
             startupState.apply(.trustedImageObserved, isBatteryCamera: isBatteryWakeCamera)
-        case .unresolved:
+        case .recovering:
             startupState.apply(.snapshotFailed, isBatteryCamera: isBatteryWakeCamera)
             startupState.apply(.liveFailed, isBatteryCamera: isBatteryWakeCamera)
         }

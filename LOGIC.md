@@ -74,11 +74,13 @@ APP START / SESSION START
     |   |   normally in parallel. A battery-only wall receives the same grace.
     |   +-- If every visible feed becomes live during either stage, keep the wall
     |   |   live and complete the speculative attempt.
-    |   +-- On the first capacity rejection, ordinary live-start failure,
-    |   |   4-second wired deadline, battery live-start deadline, network-path
-    |   |   change, or visible-camera-set change,
-    |   |   close the attempt permanently and enter Restricted Mode using only
-    |   |   live feeds that actually survived.
+    |   +-- On the first live-start error, 4-second wired deadline, battery
+    |   |   live-start deadline, network-path change, or visible-camera-set
+    |   |   change, close the attempt permanently. A true HomeKit hard-capacity
+    |   |   error uses the surviving streams as durable capacity evidence. A
+    |   |   soft busy error instead switches to serialized safe scheduling and
+    |   |   creates a non-persistent session ceiling from the streams that are
+    |   |   already working. Transport errors use their own retry policy.
     |   +-- Never reopen or retry the all-live burst during the same wall session;
     |       late callbacks cannot promote the session back to the burst path.
     +-- On cellular, another interface type, or an unknown / unsatisfied path,
@@ -129,30 +131,41 @@ APP START / SESSION START
     |   |   exceeding the ramp width.
     |   +-- An ordinary camera failure cools that camera down and admits the next
     |   |   eligible camera; do not let one bad camera block the whole wall.
-    |   +-- A classified capacity rejection stops all new ramp admissions and
-    |       enters Restricted Mode using only streams that survived the rejection.
+    |   +-- A hard-capacity rejection stops new ramp admissions and enters
+    |   |   Restricted Mode using only streams that survived the rejection.
+    |   +-- A soft-contention result enters the same serialized scheduler, caps
+    |   |   only the current session at the first surviving-stream count, and
+    |   |   retries after 1, 2, 4, then 8 seconds. It must not lower persisted
+    |   |   topology capacity. If the same startup camera is still busy on its
+    |   |   second bounded attempt, move it to nonterminal recovery and give the
+    |       next pending camera the startup lane.
     +-- On the normal remote-safe path, do not start ordinary non-battery live
     |   streams until every visible
     |   non-battery camera has had its startup snapshot path attempted and no
     |   non-overdue snapshot request remains active.
     +-- Then allow one non-battery live fallback at a time, preserving that
     |   fallback until it becomes trusted or explicitly fails / times out.
-    +-- Resolve each visible camera as either trusted or explicitly unresolved.
-    |   Do not silently substitute an old image for a failed startup path.
+    +-- Resolve each visible camera's blocking first pass as either trusted or
+    |   recovering. Do not silently substitute an old image for a failed path.
     +-- One per-camera startup state machine owns snapshot-path state,
     |   live-path state, and final coverage resolution. Request, success,
     |   failure, timeout, trusted-image, and reset events must transition through
     |   that state machine; do not maintain parallel startup booleans.
-    +-- A wired camera becomes unresolved only after both its snapshot and live
-    |   paths fail. A battery camera becomes unresolved after its live capture
-    |   path fails, because battery cameras do not use HomeKit snapshot requests.
-    +-- A valid late success may move an unresolved camera to trusted.
-    +-- End startup coverage only after every visible camera is resolved.
-    +-- Once a camera becomes explicitly unresolved, release its snapshot retry
+    +-- A wired camera enters recovery only after both its snapshot and live
+    |   paths fail. A battery camera enters recovery after its live capture path
+    |   fails, because battery cameras do not use HomeKit snapshot requests.
+    +-- Recovery is nonterminal: a later live request may be admitted again, and
+    |   any valid late snapshot or live success moves the camera to trusted.
+    +-- End the blocking startup first pass after every visible camera is trusted
+    |   or recovering. Recovery work continues after that boundary.
+    +-- Once a camera enters recovery, release its snapshot retry
     |   after the normal completion-based backoff even if other cameras are still
     |   completing startup coverage. This recovery is non-blocking: it must not
     |   return the camera to pending coverage, occupy the one-at-a-time live
     |   fallback, or delay coverage of another camera.
+    +-- When choosing the next wired live fallback, any camera still awaiting
+    |   its first-pass result outranks a camera already in recovery. A recovering
+    |   camera remains eligible after all pending cameras have had their chance.
     |
     +-- Continue or complete the same live-capacity ramp after startup coverage
         |
@@ -168,13 +181,25 @@ APP START / SESSION START
         |   that burst, a battery camera may perform a due trusted-still capture
         |   within its normal live stream and remain live afterward.
         +-- If HomeKit reports constrained live connections, enter RESTRICTED MODE.
-        +-- Apply every new live plan as a deterministic two-phase handoff:
+        +-- Send every live intent through one session admission controller.
+        |   The planner decides desired cameras and priority; only the admission
+        |   controller may turn that intent into HomeKit starts and stops.
+        +-- Apply every admitted live plan as a deterministic two-phase handoff:
         |   |
         |   +-- Preserve transports that remain selected.
         |   +-- Request stops for every outgoing transport before requesting any
         |   |   replacement live start.
         |   +-- Defer only the missing replacement starts until HomeKit reports
         |       the outgoing transports stopped; snapshot work continues meanwhile.
+        +-- Outside the bounded Wi-Fi burst, once contention is observed, admit
+        |   at most one pending live start across startup, steady state, recovery,
+        |   and capacity probing. Starting, streaming, and stopping transports all
+        |   reserve capacity; a stop callback must release its reservation before
+        |   a replacement starts.
+        +-- During first-image recovery, preserve working streams up to capacity.
+        |   Use a free slot first. If temporary battery or stopping work will free
+        |   a slot, wait; otherwise the single recovery lane may preempt only the
+        |   lowest-priority unprotected trusted stream.
         +-- Do not issue a routine refresh snapshot for a camera being promoted
         |   to live. Preserve urgent snapshot/live racing for an untrusted camera,
         |   and preserve the Wi-Fi burst's explicitly parallel snapshot path.
@@ -183,9 +208,29 @@ APP START / SESSION START
         |   a camera failure or user-visible camera error.
         +-- If no live stream has successfully reported active yet, keep one
         |   restricted live slot available for battery capture or live fallback.
+        +-- Classify HomeKit stop evidence before changing policy:
+        |   |
+        |   +-- Expected cancellation after an Observe stop: no failure.
+        |   +-- Accessory busy / operation in progress: soft contention; serialize,
+        |   |   set a temporary session ceiling from the first surviving-stream
+        |   |   count, and retry after 1, 2, 4, then 8 seconds. Do not persist the
+        |   |   ceiling. Yield a repeatedly busy startup camera after attempt two
+        |   |   so it cannot block first-image progress for the rest of the wall.
+        |   |   After the capacity-probe cooldown, allow exactly one explicit
+        |   |   capacity-probe intent one slot above that ceiling. If it succeeds,
+        |   |   raise the session ceiling by that one proven slot; if it fails,
+        |   |   restore the previous ceiling and restart the cooldown.
+        |   +-- Maximum object limit reached: hard capacity; lower and persist to
+        |   |   the number of streams that actually survived.
+        |   +-- Network or Home Hub unavailable: global 2, 4, 8, then 10-second
+        |   |   backoff without changing camera health or capacity memory.
+        |   +-- Communication, timeout, and camera failures: per-camera 2, 4, 8,
+        |       then 10-second backoff; keep recovery visible and nonterminal.
         +-- Persist restricted live capacity by the selected home ID plus the exact,
         |   order-independent set of visible camera IDs. A same-sized but different
         |   camera set must not reuse that result.
+        |   Version 3 capacity evidence intentionally ignores older learned values
+        |   once so the narrower hard-capacity rules can relearn cleanly.
         +-- Learn capacity only from streams that actually survive the rejected
             request. Current failure evidence lowers or clears older memory; an
             unconfirmed remembered value may be used only as a provisional hint,
@@ -262,7 +307,7 @@ RESTRICTED MODE
 |   |       +-- After at least one non-battery camera has a trusted image,
 |   |           allow up to 3 simultaneous snapshot requests.
 |   |       +-- Apply this cap from the first startup snapshot until every
-|   |           visible camera is trusted or explicitly unresolved, then use
+|   |           visible camera is trusted or recovering, then use
 |   |           the internal steady-state limit of 3 active requests.
 |   |       +-- Independently cap outstanding startup requests at 4. Overdue
 |   |           requests count toward this cap even though they no longer consume
@@ -341,12 +386,12 @@ RESTRICTED MODE
             |       no non-overdue snapshot request remains active, start one
             |       non-battery live fallback in UI priority order.
             |   +-- Do not rotate or duplicate that fallback while it is starting.
-            |   +-- Mark the camera trusted when the live stream starts. Mark it
-            |       explicitly unresolved if the one fallback fails or times out.
-            |   +-- An explicit unresolved result ends that camera's blocking
-            |       startup state without hiding the failure. Snapshot recovery
-            |       may continue in parallel after its ordinary backoff while
-            |       startup coverage proceeds for the remaining cameras.
+            |   +-- Mark the camera trusted when the live stream starts. Put it
+            |       into visible recovery if the fallback fails or times out.
+            |   +-- Recovery ends that camera's blocking first-pass state without
+            |       hiding the failure. Snapshot and opportunistic live recovery
+            |       continue after their ordinary backoffs while first-pass
+            |       coverage proceeds for the remaining cameras.
             |
             +-- 4. While any visible battery camera lacks a trusted still
             |   |
@@ -391,7 +436,7 @@ RESTRICTED MODE
                 |   +-- If known capacity is below the visible camera count,
                 |       cautiously try one additional live slot.
                 |   +-- If the additional slot succeeds, raise known capacity and
-                |       continue discovering capacity.
+                |       continue discovering capacity one serialized probe at a time.
                 |   +-- If HomeKit reports another constrained signal, keep the
                 |       number of streams that actually survived the rejected
                 |       request and pause before retrying.
