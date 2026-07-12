@@ -22,9 +22,9 @@ enum SnapshotRequestResult {
 
 enum CameraLiveTransportEvent: Equatable {
     case startRequested(at: Date, restarted: Bool)
-    case started(at: Date)
+    case started(at: Date, callbackLatency: TimeInterval?)
     case stopRequested(at: Date)
-    case stopped(at: Date, reason: CameraLiveStopReason)
+    case stopped(at: Date, reason: CameraLiveStopReason, callbackLatency: TimeInterval?)
 }
 
 enum CameraLiveStopReason: Equatable {
@@ -47,6 +47,16 @@ enum CameraLiveStopReason: Equatable {
     var isCapacityConstrained: Bool {
         if case .capacityConstrained = self { return true }
         return false
+    }
+}
+
+enum CameraLiveTransportActivityPolicy {
+    static func hasActiveTransport(
+        streamStateIsActive: Bool,
+        startIsPending: Bool,
+        stopIsPending: Bool
+    ) -> Bool {
+        streamStateIsActive || startIsPending || stopIsPending
     }
 }
 
@@ -152,6 +162,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     private let accessory: HMAccessory
     private(set) var liveStartRequestedAt: Date?
     private(set) var liveStartedAt: Date?
+    private var liveStopRequestedAt: Date?
     private var configuredStaleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold
     private var configuredBatteryTrustedStillThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold
     private var configuredBatteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup
@@ -178,6 +189,18 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     var isStartingLive: Bool {
         state == .starting || profile.streamControl?.streamState == .starting
+    }
+
+    var hasActiveLiveTransport: Bool {
+        let streamStateIsActive = switch profile.streamControl?.streamState {
+        case .starting, .streaming: true
+        default: false
+        }
+        return CameraLiveTransportActivityPolicy.hasActiveTransport(
+            streamStateIsActive: streamStateIsActive,
+            startIsPending: liveStartRequestedAt != nil,
+            stopIsPending: liveStopRequestedAt != nil || requestedStreamStop
+        )
     }
 
     var hasFreshImageThisSession: Bool {
@@ -466,12 +489,16 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         switch profile.streamControl?.streamState {
         case .starting, .streaming:
             if !requestedStreamStop {
-                onLiveTransportEvent?(id, .stopRequested(at: Date()))
+                let requestedAt = Date()
+                liveStopRequestedAt = requestedAt
+                onLiveTransportEvent?(id, .stopRequested(at: requestedAt))
             }
             requestedStreamStop = true
             profile.streamControl?.stopStream()
         default:
-            break
+            if !requestedStreamStop {
+                liveStopRequestedAt = nil
+            }
         }
         liveStartRequestedAt = nil
         liveStartedAt = nil
@@ -618,6 +645,9 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let now = Date()
+            let callbackLatency = self.liveStartRequestedAt.map {
+                max(0, now.timeIntervalSince($0))
+            }
             self.updateCameraSource(cameraStreamControl.cameraStream)
             self.sessionImageFreshness.apply(.liveStreamReceived)
             self.state = .live
@@ -626,15 +656,23 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             self.markLiveStartedIfNeeded(at: now)
             self.recencyTier = .live
             self.recoveryPhase = .idle
-            self.onLiveTransportEvent?(self.id, .started(at: now))
+            self.onLiveTransportEvent?(
+                self.id,
+                .started(at: now, callbackLatency: callbackLatency)
+            )
         }
     }
 
     nonisolated func cameraStreamControl(_ cameraStreamControl: HMCameraStreamControl, didStopStreamWithError error: (any Error)?) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            let stoppedAt = Date()
+            let callbackLatency = self.liveStopRequestedAt.map {
+                max(0, stoppedAt.timeIntervalSince($0))
+            }
             self.liveStartRequestedAt = nil
             self.liveStartedAt = nil
+            self.liveStopRequestedAt = nil
             let stopWasRequested = self.requestedStreamStop
             self.requestedStreamStop = false
             let transportError = CameraTransportError(error)
@@ -649,7 +687,7 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
 
             self.onLiveTransportEvent?(
                 self.id,
-                .stopped(at: Date(), reason: reason)
+                .stopped(at: stoppedAt, reason: reason, callbackLatency: callbackLatency)
             )
 
             self.presentSnapshotIfAvailable()

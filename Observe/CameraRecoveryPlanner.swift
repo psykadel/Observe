@@ -215,6 +215,63 @@ enum SnapshotQueueAdmissionPolicy {
     }
 }
 
+struct LivePlanTransition: Equatable {
+    let stopIDs: Set<String>
+    let startIDs: Set<String>
+    let deferredStartIDs: Set<String>
+}
+
+enum LivePlanTransitionPolicy {
+    static func makeTransition(
+        activeTransportIDs: Set<String>,
+        desiredLiveIDs: Set<String>
+    ) -> LivePlanTransition {
+        let stopIDs = activeTransportIDs.subtracting(desiredLiveIDs)
+        let missingDesiredIDs = desiredLiveIDs.subtracting(activeTransportIDs)
+        return LivePlanTransition(
+            stopIDs: stopIDs,
+            startIDs: stopIDs.isEmpty ? missingDesiredIDs : [],
+            deferredStartIDs: stopIDs.isEmpty ? [] : missingDesiredIDs
+        )
+    }
+}
+
+enum LivePromotionSnapshotPolicy {
+    static func shouldQueue(
+        priority: SnapshotPriority,
+        presentationMode: PlannedPresentationMode,
+        wifiBurstOpen: Bool
+    ) -> Bool {
+        guard priority != .none else { return false }
+        if wifiBurstOpen { return true }
+        return presentationMode != .live || priority == .urgent
+    }
+}
+
+enum StalledStartupRescuePolicy {
+    static func rescueCandidateID(
+        networkClass: CameraNetworkClass,
+        startupCoverageActive: Bool,
+        rescueAlreadyAttempted: Bool,
+        sessionElapsed: TimeInterval,
+        stallThreshold: TimeInterval,
+        hasAnyTrustedImage: Bool,
+        hasPendingBatteryProbe: Bool,
+        eligibleWiredIDs: [String]
+    ) -> String? {
+        guard networkClass == .cellular,
+              startupCoverageActive,
+              !rescueAlreadyAttempted,
+              sessionElapsed >= max(0, stallThreshold),
+              !hasAnyTrustedImage,
+              hasPendingBatteryProbe else {
+            return nil
+        }
+
+        return eligibleWiredIDs.first
+    }
+}
+
 enum StartupLiveRampMode: String, Equatable {
     case probing
     case conservative
@@ -248,8 +305,8 @@ enum WiFiLiveBurstMode: Equatable {
 }
 
 enum WiFiLiveBurstDefaults {
-    static let snapshotHeadStart: TimeInterval = 0.2
-    static let deadline: TimeInterval = 2
+    static let snapshotHeadStart: TimeInterval = 1
+    static let deadline: TimeInterval = 4
     static let batteryDeadline: TimeInterval = CameraSchedulingDefaults.batteryWakeLiveStartTimeout
 }
 

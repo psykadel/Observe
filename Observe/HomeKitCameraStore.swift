@@ -27,9 +27,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var startupCoverageActive = true
     private var startupLiveRampState: StartupLiveRampState?
     private var wifiLiveBurstState: WiFiLiveBurstState?
+    private var stalledStartupRescueAttempted = false
+    private var stalledStartupRescueLiveIDs: Set<String>?
+    private var lastLivePlanTelemetrySignature: String?
     private var sessionNetworkClass: CameraNetworkClass = .unknown
     private var telemetrySessionStartedAt = Date()
     private var telemetryEvents: [CameraTelemetryEvent] = []
+    private var nextTelemetrySequence = 1
     private var telemetryStartupMilestones = CameraStartupTelemetryMilestones()
     private var nextSnapshotRequestID: SnapshotRequestID = 1
     private var sessionGeneration: UInt64 = 0
@@ -103,6 +107,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             startupCoverageActive = true
             startupLiveRampState = nil
             wifiLiveBurstState = nil
+            stalledStartupRescueAttempted = false
+            stalledStartupRescueLiveIDs = nil
+            lastLivePlanTelemetrySignature = nil
             currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
             feeds.forEach { $0.resetSessionState() }
         }
@@ -312,6 +319,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupCoverageActive = true
         startupLiveRampState = nil
         wifiLiveBurstState = nil
+        stalledStartupRescueAttempted = false
+        stalledStartupRescueLiveIDs = nil
+        lastLivePlanTelemetrySignature = nil
         startSession()
     }
 
@@ -323,10 +333,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         telemetrySessionStartedAt = Date()
         telemetryEvents = []
+        nextTelemetrySequence = 1
         telemetryStartupMilestones = CameraStartupTelemetryMilestones()
         nextSnapshotRequestID = 1
         startupCoverageActive = true
         startupLiveRampState = nil
+        stalledStartupRescueAttempted = false
+        stalledStartupRescueLiveIDs = nil
+        lastLivePlanTelemetrySignature = nil
         let networkClass = networkPathClassifier.currentClass
         sessionNetworkClass = networkClass
         wifiLiveBurstState = WiFiLiveBurstState(
@@ -439,6 +453,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let hasActiveSnapshotRequest = feedScheduleStates.values.contains {
             $0.snapshotWorkState.isActive
         }
+        activateStalledStartupRescueIfNeeded(from: planningSnapshots, at: now)
         let startupLivePolicy: StartupLivePolicy
         if sessionMode == .optimistic,
            let wifiLiveBurstState,
@@ -448,6 +463,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
            let startupLiveRampState,
            startupLiveRampState.mode != .completed {
             startupLivePolicy = .capacityRamp(liveIDs: startupLiveRampState.selectedIDs)
+        } else if sessionMode == .optimistic,
+                  let stalledStartupRescueLiveIDs,
+                  !stalledStartupRescueLiveIDs.isEmpty {
+            startupLivePolicy = .capacityRamp(liveIDs: stalledStartupRescueLiveIDs)
         } else if startupCoverageActive {
             startupLivePolicy = .firstImage(
                 allowWiredFallback: allWiredSnapshotPathsAttempted && !hasActiveSnapshotRequest
@@ -470,26 +489,56 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         cancelBatteryWakeLeasesSupersededByFocus(at: now)
 
-        for feed in feeds {
-            guard isVisibleOnWall(feed) else {
-                feed.stopLiveIfNeeded()
-                continue
-            }
+        let desiredLiveIDs = Set(currentRecoveryPlan.decisionsByID.compactMap { id, decision in
+            decision.presentationMode == .live ? id : nil
+        })
+        let activeTransportIDs = Set(feeds.compactMap { feed in
+            feed.hasActiveLiveTransport ? feed.id : nil
+        })
+        let liveTransition = LivePlanTransitionPolicy.makeTransition(
+            activeTransportIDs: activeTransportIDs,
+            desiredLiveIDs: desiredLiveIDs
+        )
+        recordLivePlanTransitionIfNeeded(
+            liveTransition,
+            activeTransportIDs: activeTransportIDs,
+            desiredLiveIDs: desiredLiveIDs
+        )
 
+        for feed in feeds where isVisibleOnWall(feed) {
             guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
             feed.updatePlanningStatus(recencyTier: decision.recencyTier, recoveryPhase: decision.recoveryPhase)
             updateBatteryWakeLease(for: feed.id, decision: decision, at: now)
+        }
 
-            if decision.presentationMode == .live {
+        for feed in feeds where liveTransition.stopIDs.contains(feed.id) {
+            feed.stopLiveIfNeeded()
+        }
+
+        for feed in feeds where isVisibleOnWall(feed) && !desiredLiveIDs.contains(feed.id) {
+            feed.presentSnapshotIfAvailable()
+        }
+
+        if liveTransition.stopIDs.isEmpty {
+            for feed in feeds where desiredLiveIDs.contains(feed.id) && isVisibleOnWall(feed) {
+                guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
                 markStartupLiveFallbackIfNeeded(for: feed.id, decision: decision, at: now)
                 feed.preferLive(at: now, liveStartTimeout: batteryWakeLiveStartTimeout)
-                updateBatteryCaptureTrust(for: feed.id, at: now)
-            } else {
-                feed.stopLiveIfNeeded()
-                feed.presentSnapshotIfAvailable()
             }
+        }
 
-            if decision.snapshotPriority != .none, !feed.isStreaming {
+        for feed in feeds where desiredLiveIDs.contains(feed.id) && isVisibleOnWall(feed) {
+            updateBatteryCaptureTrust(for: feed.id, at: now)
+        }
+
+        let wifiBurstOpen = wifiLiveBurstState.map { !$0.liveIDs.isEmpty } ?? false
+        for feed in feeds where isVisibleOnWall(feed) {
+            guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
+            if LivePromotionSnapshotPolicy.shouldQueue(
+                priority: decision.snapshotPriority,
+                presentationMode: decision.presentationMode,
+                wifiBurstOpen: wifiBurstOpen
+            ), !feed.isStreaming {
                 queueSnapshotRefresh(for: feed.id, priority: decision.snapshotPriority, at: now)
             } else if var state = feedScheduleStates[feed.id],
                       case .queued = state.snapshotWorkState {
@@ -499,6 +548,66 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
 
         serviceSnapshotQueue()
+    }
+
+    private func activateStalledStartupRescueIfNeeded(
+        from planningSnapshots: [FeedPlanningSnapshot],
+        at now: Date
+    ) {
+        guard stalledStartupRescueLiveIDs == nil,
+              startupLiveRampState == nil,
+              sessionMode == .optimistic else { return }
+
+        let batteryProbeIDs = planningSnapshots.filter {
+            $0.isBatteryWakeCamera
+                && $0.hasActiveBatteryCapture(
+                    at: now,
+                    leaseDuration: batteryWakeLeaseDuration,
+                    warmup: batteryCaptureWarmup,
+                    liveStartTimeout: batteryWakeLiveStartTimeout
+                )
+        }.map(\.id)
+        let eligibleWiredIDs = planningSnapshots.filter {
+            !$0.isBatteryWakeCamera
+                && !$0.hasTrustedImage(at: now)
+                && $0.startupState.resolution == .pending
+                && !$0.startupState.liveAttempted
+        }.sorted { $0.priorityIndex < $1.priorityIndex }.map(\.id)
+        let rescueID = StalledStartupRescuePolicy.rescueCandidateID(
+            networkClass: sessionNetworkClass,
+            startupCoverageActive: startupCoverageActive,
+            rescueAlreadyAttempted: stalledStartupRescueAttempted,
+            sessionElapsed: elapsedSinceSession(now),
+            stallThreshold: snapshotRequestTimeout,
+            hasAnyTrustedImage: planningSnapshots.contains { $0.hasTrustedImage(at: now) },
+            hasPendingBatteryProbe: !batteryProbeIDs.isEmpty,
+            eligibleWiredIDs: eligibleWiredIDs
+        )
+        guard let rescueID else { return }
+
+        stalledStartupRescueAttempted = true
+        stalledStartupRescueLiveIDs = Set(batteryProbeIDs + [rescueID])
+        recordTelemetry(
+            "cellular stalled-start rescue admitted \(rescueID) alongside=\(batteryProbeIDs.sorted().joined(separator: ","))"
+        )
+    }
+
+    private func recordLivePlanTransitionIfNeeded(
+        _ transition: LivePlanTransition,
+        activeTransportIDs: Set<String>,
+        desiredLiveIDs: Set<String>
+    ) {
+        let signature = [
+            "desired=\(desiredLiveIDs.sorted().joined(separator: ","))",
+            "active=\(activeTransportIDs.sorted().joined(separator: ","))",
+            "stop=\(transition.stopIDs.sorted().joined(separator: ","))",
+            "start=\(transition.startIDs.sorted().joined(separator: ","))",
+            "deferred=\(transition.deferredStartIDs.sorted().joined(separator: ","))",
+            "capacity=\(liveCapacity)"
+        ].joined(separator: " ")
+        guard signature != lastLivePlanTelemetrySignature else { return }
+        lastLivePlanTelemetrySignature = signature
+        recordTelemetry("live plan \(signature)")
     }
 
     private func planningSnapshots(at now: Date, focusedFeedID: String?) -> [FeedPlanningSnapshot] {
@@ -910,13 +1019,15 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             let callbackLatency = feedScheduleStates[feedID]?.snapshotWorkState.pendingRequest.map {
                 max(0, callbackAt.timeIntervalSince($0.issuedAt))
             }
+            let failurePhase = snapshotFailurePhase(for: feedID)
             telemetryStartupMilestones.recordSnapshotFailure(
                 feedID: feedID,
                 callbackLatency: callbackLatency,
+                phase: failurePhase,
                 at: elapsedSinceSession(callbackAt)
             )
             recordTelemetry(
-                "snapshot failure \(feedID) request=\(requestID.map(String.init) ?? "nil") callbackLatency=\(optionalSeconds(callbackLatency)) error=\(transportErrorLabel(error))"
+                "snapshot failure \(feedID) request=\(requestID.map(String.init) ?? "nil") phase=\(failurePhase) callbackLatency=\(optionalSeconds(callbackLatency)) error=\(transportErrorLabel(error))"
             )
             handleSnapshotFailure(for: feedID, at: callbackAt)
         }
@@ -972,6 +1083,20 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             resultRequestID: requestID,
             isInFlight: state.snapshotWorkState.isOutstanding
         )
+    }
+
+    private func snapshotFailurePhase(for feedID: String) -> String {
+        guard let state = feedScheduleStates[feedID] else { return "unknown" }
+        if state.startupState.resolution == .unresolved {
+            return "unresolvedRecovery"
+        }
+        if startupCoverageActive {
+            return "initialStartup"
+        }
+        if state.snapshotWorkState.pendingRequest?.priority == .refresh {
+            return "routineRefresh"
+        }
+        return "backgroundRecovery"
     }
 
     private func hasTrustedImage(feedID: String, at now: Date) -> Bool {
@@ -1232,7 +1357,19 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         let elapsed = elapsedSinceSession(now)
         for snapshot in planningSnapshots where snapshot.hasTrustedImage(at: now) {
-            telemetryStartupMilestones.recordTrustedImage(feedID: snapshot.id, at: elapsed)
+            let source: String
+            if snapshot.isStreaming {
+                source = "live"
+            } else if snapshot.isBatteryWakeCamera {
+                source = "batteryStill"
+            } else {
+                source = "cachedSnapshot"
+            }
+            telemetryStartupMilestones.recordTrustedImage(
+                feedID: snapshot.id,
+                source: source,
+                at: elapsed
+            )
         }
 
         if planningSnapshots.allSatisfy({ $0.hasTrustedImage(at: now) }) {
@@ -1398,7 +1535,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 "live start requested \(feedID) restarted=\(restarted)",
                 at: requestedAt
             )
-        case .started(let startedAt):
+        case .started(let startedAt, let callbackLatency):
             let startedAtElapsed = elapsedSinceSession(startedAt)
             let burstOwnsLiveSelection = wifiLiveBurstState.map { state in
                 switch state.mode {
@@ -1434,10 +1571,27 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 )
                 feedScheduleStates[feedID] = state
             }
-            recordTelemetry("live started \(feedID)", at: startedAt)
+            stalledStartupRescueLiveIDs = nil
+            telemetryStartupMilestones.recordLiveStarted(
+                feedID: feedID,
+                callbackLatency: callbackLatency,
+                resolvesTrustedImage: !preferences.isBatteryWakeCamera(id: feedID) || burstOwnsLiveSelection,
+                at: startedAtElapsed
+            )
+            recordTelemetry(
+                "live started \(feedID) callbackLatency=\(optionalSeconds(callbackLatency))",
+                at: startedAt
+            )
         case .stopRequested(let requestedAt):
             recordTelemetry("live stop requested \(feedID)", at: requestedAt)
-        case .stopped(let stoppedAt, let reason):
+        case .stopped(let stoppedAt, let reason, let callbackLatency):
+            telemetryStartupMilestones.recordLiveStopped(
+                feedID: feedID,
+                callbackLatency: callbackLatency
+            )
+            if stalledStartupRescueLiveIDs?.contains(feedID) == true {
+                stalledStartupRescueLiveIDs = nil
+            }
             if reason.shouldFailStartupPath,
                var state = feedScheduleStates[feedID],
                startupCoverageActive {
@@ -1479,7 +1633,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 }
             }
             recordTelemetry(
-                "live stopped \(feedID) reason=\(liveStopReasonLabel(reason)) error=\(transportErrorLabel(reason.error))",
+                "live stopped \(feedID) reason=\(liveStopReasonLabel(reason)) callbackLatency=\(optionalSeconds(callbackLatency)) error=\(transportErrorLabel(reason.error))",
                 at: stoppedAt
             )
             if case .capacityConstrained = reason {
@@ -1590,10 +1744,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard telemetryEvents.last?.message != message else { return }
         telemetryEvents.append(
             CameraTelemetryEvent(
+                sequence: nextTelemetrySequence,
                 elapsed: max(0, date.timeIntervalSince(telemetrySessionStartedAt)),
                 message: message
             )
         )
+        nextTelemetrySequence += 1
         if telemetryEvents.count > maxTelemetryEvents {
             telemetryEvents.removeFirst(telemetryEvents.count - maxTelemetryEvents)
         }
@@ -1704,6 +1860,7 @@ private struct FeedScheduleState {
 }
 
 struct CameraTelemetryEvent: Equatable {
+    let sequence: Int
     let elapsed: TimeInterval
     let message: String
 }
@@ -1748,8 +1905,8 @@ struct CameraStartupTelemetryMilestones: Equatable {
         }
     }
 
-    mutating func recordTrustedImage(feedID: String, at elapsed: TimeInterval) {
-        updateFeed(feedID) { $0.recordTrustedImage(at: elapsed) }
+    mutating func recordTrustedImage(feedID: String, source: String, at elapsed: TimeInterval) {
+        updateFeed(feedID) { $0.recordTrustedImage(source: source, at: elapsed) }
     }
 
     mutating func recordSnapshotQueued(feedID: String, at elapsed: TimeInterval) {
@@ -1771,9 +1928,31 @@ struct CameraStartupTelemetryMilestones: Equatable {
     mutating func recordSnapshotFailure(
         feedID: String,
         callbackLatency: TimeInterval?,
+        phase: String,
         at elapsed: TimeInterval
     ) {
-        updateFeed(feedID) { $0.recordSnapshotFailure(callbackLatency: callbackLatency) }
+        updateFeed(feedID) {
+            $0.recordSnapshotFailure(callbackLatency: callbackLatency, phase: phase)
+        }
+    }
+
+    mutating func recordLiveStarted(
+        feedID: String,
+        callbackLatency: TimeInterval?,
+        resolvesTrustedImage: Bool,
+        at elapsed: TimeInterval
+    ) {
+        updateFeed(feedID) {
+            $0.recordLiveStarted(
+                callbackLatency: callbackLatency,
+                resolvesTrustedImage: resolvesTrustedImage,
+                at: elapsed
+            )
+        }
+    }
+
+    mutating func recordLiveStopped(feedID: String, callbackLatency: TimeInterval?) {
+        updateFeed(feedID) { $0.lastLiveStopCallbackLatency = callbackLatency }
     }
 
     mutating func recordSnapshotTimeout(feedID: String, at elapsed: TimeInterval) {
@@ -1829,6 +2008,8 @@ struct CameraStartupTelemetryMilestones: Equatable {
 struct CameraStartupTelemetryFeedMilestones: Equatable {
     let feedID: String
     var firstTrustedImageAt: TimeInterval?
+    var firstTrustedImageSource: String?
+    var firstFreshImageAt: TimeInterval?
     var firstSnapshotQueuedAt: TimeInterval?
     var firstSnapshotIssuedAt: TimeInterval?
     var firstSnapshotSuccessAt: TimeInterval?
@@ -1837,8 +2018,13 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
     var snapshotIssuedCount = 0
     var snapshotSuccessCount = 0
     var snapshotFailureCount = 0
+    var snapshotInitialFailureCount = 0
+    var snapshotRecoveryFailureCount = 0
+    var snapshotRoutineFailureCount = 0
     var snapshotTimeoutCount = 0
     var lastSnapshotCallbackLatency: TimeInterval?
+    var lastLiveStartCallbackLatency: TimeInterval?
+    var lastLiveStopCallbackLatency: TimeInterval?
     var firstStartupLiveFallbackAt: TimeInterval?
     var startupResolvedAsUnresolved = false
     var firstBatteryWakeLeaseStartedAt: TimeInterval?
@@ -1848,9 +2034,23 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
     var batteryWakeFailureCount = 0
     var batteryWakeTimeoutCount = 0
 
-    mutating func recordTrustedImage(at elapsed: TimeInterval) {
+    mutating func recordTrustedImage(source: String, at elapsed: TimeInterval) {
         if firstTrustedImageAt == nil {
             firstTrustedImageAt = elapsed
+            firstTrustedImageSource = source
+        }
+    }
+
+    mutating func recordFreshImage(
+        source: String,
+        resolvesTrustedImage: Bool,
+        at elapsed: TimeInterval
+    ) {
+        if firstFreshImageAt == nil {
+            firstFreshImageAt = elapsed
+        }
+        if resolvesTrustedImage {
+            recordTrustedImage(source: source, at: elapsed)
         }
     }
 
@@ -1875,11 +2075,30 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
         if firstSnapshotSuccessAt == nil {
             firstSnapshotSuccessAt = elapsed
         }
+        recordFreshImage(source: "snapshot", resolvesTrustedImage: true, at: elapsed)
     }
 
-    mutating func recordSnapshotFailure(callbackLatency: TimeInterval?) {
+    mutating func recordSnapshotFailure(callbackLatency: TimeInterval?, phase: String) {
         snapshotFailureCount += 1
         lastSnapshotCallbackLatency = callbackLatency
+        switch phase {
+        case "initialStartup": snapshotInitialFailureCount += 1
+        case "unresolvedRecovery": snapshotRecoveryFailureCount += 1
+        default: snapshotRoutineFailureCount += 1
+        }
+    }
+
+    mutating func recordLiveStarted(
+        callbackLatency: TimeInterval?,
+        resolvesTrustedImage: Bool,
+        at elapsed: TimeInterval
+    ) {
+        lastLiveStartCallbackLatency = callbackLatency
+        recordFreshImage(
+            source: "live",
+            resolvesTrustedImage: resolvesTrustedImage,
+            at: elapsed
+        )
     }
 
     mutating func recordSnapshotTimeout() {
@@ -1898,6 +2117,7 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
         if firstBatteryTrustedStillAt == nil {
             firstBatteryTrustedStillAt = elapsed
         }
+        recordFreshImage(source: "batteryStill", resolvesTrustedImage: true, at: elapsed)
     }
 
     mutating func recordBatteryWakeFailure() {
@@ -2061,7 +2281,9 @@ struct CameraTelemetryReport: Equatable {
         if events.isEmpty {
             lines.append("none")
         } else {
-            lines.append(contentsOf: events.map { "+\(formatSeconds($0.elapsed)) \($0.message)" })
+            lines.append(contentsOf: events.map {
+                "#\($0.sequence) +\(formatPreciseSeconds($0.elapsed)) \($0.message)"
+            })
         }
         return lines.joined(separator: "\n")
     }
@@ -2070,6 +2292,8 @@ struct CameraTelemetryReport: Equatable {
         [
             milestones.feedID,
             "firstTrustedImageAt=\(optionalSeconds(milestones.firstTrustedImageAt))",
+            "firstTrustedImageSource=\(milestones.firstTrustedImageSource ?? "nil")",
+            "firstFreshImageAt=\(optionalSeconds(milestones.firstFreshImageAt))",
             "firstSnapshotQueuedAt=\(optionalSeconds(milestones.firstSnapshotQueuedAt))",
             "firstSnapshotIssuedAt=\(optionalSeconds(milestones.firstSnapshotIssuedAt))",
             "firstSnapshotSuccessAt=\(optionalSeconds(milestones.firstSnapshotSuccessAt))",
@@ -2078,8 +2302,13 @@ struct CameraTelemetryReport: Equatable {
             "snapshotIssuedCount=\(milestones.snapshotIssuedCount)",
             "snapshotSuccessCount=\(milestones.snapshotSuccessCount)",
             "snapshotFailureCount=\(milestones.snapshotFailureCount)",
+            "snapshotInitialFailureCount=\(milestones.snapshotInitialFailureCount)",
+            "snapshotRecoveryFailureCount=\(milestones.snapshotRecoveryFailureCount)",
+            "snapshotRoutineFailureCount=\(milestones.snapshotRoutineFailureCount)",
             "snapshotTimeoutCount=\(milestones.snapshotTimeoutCount)",
             "lastSnapshotCallbackLatency=\(optionalSeconds(milestones.lastSnapshotCallbackLatency))",
+            "lastLiveStartCallbackLatency=\(optionalSeconds(milestones.lastLiveStartCallbackLatency))",
+            "lastLiveStopCallbackLatency=\(optionalSeconds(milestones.lastLiveStopCallbackLatency))",
             "firstStartupLiveFallbackAt=\(optionalSeconds(milestones.firstStartupLiveFallbackAt))",
             "startupResolvedAsUnresolved=\(milestones.startupResolvedAsUnresolved)",
             "firstBatteryWakeLeaseStartedAt=\(optionalSeconds(milestones.firstBatteryWakeLeaseStartedAt))",
@@ -2158,6 +2387,10 @@ private func optionalSeconds(_ value: TimeInterval?) -> String {
 
 private func formatSeconds(_ value: TimeInterval) -> String {
     String(format: "%.1fs", value)
+}
+
+private func formatPreciseSeconds(_ value: TimeInterval) -> String {
+    String(format: "%.3fs", value)
 }
 
 private func transportErrorLabel(_ error: CameraTransportError?) -> String {

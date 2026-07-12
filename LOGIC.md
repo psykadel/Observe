@@ -64,18 +64,18 @@ APP START / SESSION START
     |   |   A successfully started plain live stream resolves that camera's
     |   |   startup coverage, but it must not be recorded as a captured battery
     |   |   still for later Restricted Mode trust decisions.
-    |   +-- Queue startup snapshots normally, but give live requests a 200 ms
+    |   +-- Queue startup snapshots normally, but give live requests a 1-second
     |   |   head start before issuing the first HomeKit snapshot request.
-    |   +-- After 200 ms, release the existing capped snapshot lane in parallel
+    |   +-- After 1 second, release the existing capped snapshot lane in parallel
     |   |   so a remote Wi-Fi connection still progresses toward trusted images.
-    |   +-- At 2 seconds, require every visible non-battery camera to be live.
+    |   +-- At 4 seconds, require every visible non-battery camera to be live.
     |   |   If they are, keep the burst open for any slower battery cameras up
     |   |   to the existing battery live-start timeout while snapshots continue
     |   |   normally in parallel. A battery-only wall receives the same grace.
     |   +-- If every visible feed becomes live during either stage, keep the wall
     |   |   live and complete the speculative attempt.
     |   +-- On the first capacity rejection, ordinary live-start failure,
-    |   |   2-second wired deadline, battery live-start deadline, network-path
+    |   |   4-second wired deadline, battery live-start deadline, network-path
     |   |   change, or visible-camera-set change,
     |   |   close the attempt permanently and enter Restricted Mode using only
     |   |   live feeds that actually survived.
@@ -106,6 +106,16 @@ APP START / SESSION START
     |   live transport probe. If no
     |   battery camera needs capture, immediately start one UI-priority wired
     |   live probe alongside the capped snapshot lane.
+    +-- On cellular only, if the snapshot timeout elapses with no trusted image
+    |   while that battery probe is still pending, make one bounded stalled-start
+    |   rescue attempt:
+    |   |
+    |   +-- Admit exactly one UI-priority wired live probe alongside the battery.
+    |   +-- Do not reopen this rescue after its first attempt in the same session.
+    |   +-- Do not activate it on Wi-Fi, after any camera is trusted, without a
+    |       pending battery probe, or after startup coverage ends.
+    |   +-- A live success joins the ordinary bounded capacity ramp. A rejection
+    |       or failure follows the existing constrained / fallback rules.
     +-- When that initial probe becomes live, start one bounded live-capacity ramp
     |   that continues alongside trusted-image accounting and battery capture:
     |   |
@@ -158,6 +168,16 @@ APP START / SESSION START
         |   that burst, a battery camera may perform a due trusted-still capture
         |   within its normal live stream and remain live afterward.
         +-- If HomeKit reports constrained live connections, enter RESTRICTED MODE.
+        +-- Apply every new live plan as a deterministic two-phase handoff:
+        |   |
+        |   +-- Preserve transports that remain selected.
+        |   +-- Request stops for every outgoing transport before requesting any
+        |   |   replacement live start.
+        |   +-- Defer only the missing replacement starts until HomeKit reports
+        |       the outgoing transports stopped; snapshot work continues meanwhile.
+        +-- Do not issue a routine refresh snapshot for a camera being promoted
+        |   to live. Preserve urgent snapshot/live racing for an untrusted camera,
+        |   and preserve the Wi-Fi burst's explicitly parallel snapshot path.
         +-- If HomeKit reports `operationCancelled` after Observe intentionally
         |   stopped a stream, treat it as the expected stop callback rather than
         |   a camera failure or user-visible camera error.
@@ -307,8 +327,8 @@ RESTRICTED MODE
             +-- 3. During universal startup coverage
             |   |
             |   +-- While the one bounded Wi-Fi burst is open, request every
-            |   |   visible live feed immediately; its 200 ms snapshot head start,
-            |   |   2-second wired deadline, bounded battery grace, and
+            |   |   visible live feed immediately; its 1-second snapshot head start,
+            |   |   4-second wired deadline, bounded battery grace, and
             |   |   first-failure circuit breaker override the single-probe
             |   |   rules below.
             |   +-- Preserve a focused feed first.

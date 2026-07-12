@@ -582,6 +582,170 @@ final class ObserveTests: XCTestCase {
         XCTAssertTrue(SnapshotQueueAdmissionPolicy.shouldQueue(isBatteryCamera: false, priority: .refresh))
     }
 
+    func testLivePlanTransitionDrainsOutgoingTransportBeforeStartingReplacements() {
+        let transition = LivePlanTransitionPolicy.makeTransition(
+            activeTransportIDs: ["garage"],
+            desiredLiveIDs: ["front", "back"]
+        )
+
+        XCTAssertEqual(transition.stopIDs, ["garage"])
+        XCTAssertTrue(transition.startIDs.isEmpty)
+        XCTAssertEqual(transition.deferredStartIDs, ["front", "back"])
+
+        let afterStop = LivePlanTransitionPolicy.makeTransition(
+            activeTransportIDs: [],
+            desiredLiveIDs: ["front", "back"]
+        )
+
+        XCTAssertTrue(afterStop.stopIDs.isEmpty)
+        XCTAssertEqual(afterStop.startIDs, ["front", "back"])
+        XCTAssertTrue(afterStop.deferredStartIDs.isEmpty)
+    }
+
+    func testPendingStopRemainsAnActiveTransportUntilCallback() {
+        XCTAssertTrue(
+            CameraLiveTransportActivityPolicy.hasActiveTransport(
+                streamStateIsActive: false,
+                startIsPending: false,
+                stopIsPending: true
+            )
+        )
+        XCTAssertFalse(
+            CameraLiveTransportActivityPolicy.hasActiveTransport(
+                streamStateIsActive: false,
+                startIsPending: false,
+                stopIsPending: false
+            )
+        )
+    }
+
+    func testLivePromotionSuppressesOnlyRoutineSnapshotRefresh() {
+        XCTAssertFalse(
+            LivePromotionSnapshotPolicy.shouldQueue(
+                priority: .refresh,
+                presentationMode: .live,
+                wifiBurstOpen: false
+            )
+        )
+        XCTAssertTrue(
+            LivePromotionSnapshotPolicy.shouldQueue(
+                priority: .urgent,
+                presentationMode: .live,
+                wifiBurstOpen: false
+            )
+        )
+        XCTAssertTrue(
+            LivePromotionSnapshotPolicy.shouldQueue(
+                priority: .refresh,
+                presentationMode: .live,
+                wifiBurstOpen: true
+            )
+        )
+        XCTAssertTrue(
+            LivePromotionSnapshotPolicy.shouldQueue(
+                priority: .refresh,
+                presentationMode: .snapshot,
+                wifiBurstOpen: false
+            )
+        )
+    }
+
+    func testCellularStallAdmitsOneWiredRescueOnlyAfterTimeout() {
+        let beforeTimeout = StalledStartupRescuePolicy.rescueCandidateID(
+            networkClass: .cellular,
+            startupCoverageActive: true,
+            rescueAlreadyAttempted: false,
+            sessionElapsed: 3.99,
+            stallThreshold: 4,
+            hasAnyTrustedImage: false,
+            hasPendingBatteryProbe: true,
+            eligibleWiredIDs: ["front", "back"]
+        )
+        let atTimeout = StalledStartupRescuePolicy.rescueCandidateID(
+            networkClass: .cellular,
+            startupCoverageActive: true,
+            rescueAlreadyAttempted: false,
+            sessionElapsed: 4,
+            stallThreshold: 4,
+            hasAnyTrustedImage: false,
+            hasPendingBatteryProbe: true,
+            eligibleWiredIDs: ["front", "back"]
+        )
+
+        XCTAssertNil(beforeTimeout)
+        XCTAssertEqual(atTimeout, "front")
+    }
+
+    func testCellularStallRescueRequiresPendingBatteryAndNoTrustedImage() {
+        XCTAssertNil(
+            StalledStartupRescuePolicy.rescueCandidateID(
+                networkClass: .wifi,
+                startupCoverageActive: true,
+                rescueAlreadyAttempted: false,
+                sessionElapsed: 5,
+                stallThreshold: 4,
+                hasAnyTrustedImage: false,
+                hasPendingBatteryProbe: true,
+                eligibleWiredIDs: ["front"]
+            )
+        )
+        XCTAssertNil(
+            StalledStartupRescuePolicy.rescueCandidateID(
+                networkClass: .cellular,
+                startupCoverageActive: true,
+                rescueAlreadyAttempted: false,
+                sessionElapsed: 5,
+                stallThreshold: 4,
+                hasAnyTrustedImage: true,
+                hasPendingBatteryProbe: true,
+                eligibleWiredIDs: ["front"]
+            )
+        )
+        XCTAssertNil(
+            StalledStartupRescuePolicy.rescueCandidateID(
+                networkClass: .cellular,
+                startupCoverageActive: true,
+                rescueAlreadyAttempted: false,
+                sessionElapsed: 5,
+                stallThreshold: 4,
+                hasAnyTrustedImage: false,
+                hasPendingBatteryProbe: false,
+                eligibleWiredIDs: ["front"]
+            )
+        )
+        XCTAssertNil(
+            StalledStartupRescuePolicy.rescueCandidateID(
+                networkClass: .cellular,
+                startupCoverageActive: true,
+                rescueAlreadyAttempted: true,
+                sessionElapsed: 5,
+                stallThreshold: 4,
+                hasAnyTrustedImage: false,
+                hasPendingBatteryProbe: true,
+                eligibleWiredIDs: ["front"]
+            )
+        )
+    }
+
+    func testBatteryLiveTelemetryIsFreshBeforeTrustedStillCapture() {
+        var milestones = CameraStartupTelemetryFeedMilestones(feedID: "battery")
+
+        milestones.recordLiveStarted(
+            callbackLatency: 1.2,
+            resolvesTrustedImage: false,
+            at: 4
+        )
+
+        XCTAssertEqual(milestones.firstFreshImageAt, 4)
+        XCTAssertNil(milestones.firstTrustedImageAt)
+        XCTAssertNil(milestones.firstTrustedImageSource)
+
+        milestones.recordBatteryTrustedStill(at: 7)
+
+        XCTAssertEqual(milestones.firstTrustedImageAt, 7)
+        XCTAssertEqual(milestones.firstTrustedImageSource, "batteryStill")
+    }
+
     func testExpectedOperationCancelledStreamStopIsNotReportedAsFailure() {
         XCTAssertFalse(
             CameraStreamStopErrorPolicy.shouldReport(
@@ -826,6 +990,19 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(burst.liveIDs, ["one", "two", "three"])
     }
 
+    func testWiFiLiveBurstDefaultSnapshotHeadStartIsOneSecond() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two"],
+            startedAt: now
+        )
+
+        XCTAssertFalse(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.999)))
+        burst.evaluate(streamingIDs: [], at: now.addingTimeInterval(1))
+        XCTAssertEqual(burst.mode, .active)
+        XCTAssertTrue(burst.allowsSnapshotIssue(at: now.addingTimeInterval(1)))
+    }
+
     func testWiFiLiveBurstCompletesWhenEveryVisibleFeedIsLive() {
         var burst = WiFiLiveBurstState(
             networkClass: .wifi,
@@ -871,6 +1048,22 @@ final class ObserveTests: XCTestCase {
         burst.evaluate(streamingIDs: ["one", "two", "three"], at: now.addingTimeInterval(2.5))
         XCTAssertEqual(burst.mode, .closed(.deadline))
         XCTAssertTrue(burst.liveIDs.isEmpty)
+    }
+
+    func testWiFiLiveBurstDefaultWiredDeadlineIsFourSeconds() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two"],
+            startedAt: now
+        )
+
+        burst.evaluate(streamingIDs: ["one"], at: now.addingTimeInterval(2))
+        XCTAssertEqual(burst.mode, .active)
+        XCTAssertEqual(burst.liveIDs, ["one", "two"])
+
+        burst.evaluate(streamingIDs: ["one"], at: now.addingTimeInterval(4))
+        XCTAssertEqual(burst.mode, .closed(.deadline))
+        XCTAssertEqual(burst.survivingLiveIDs, ["one"])
     }
 
     func testWiFiLiveBurstWaitsForBatteryAfterEveryWiredFeedIsLive() {
@@ -2261,6 +2454,8 @@ final class ObserveTests: XCTestCase {
                     "front": CameraStartupTelemetryFeedMilestones(
                         feedID: "front",
                         firstTrustedImageAt: 12,
+                        firstTrustedImageSource: "live",
+                        firstFreshImageAt: 2,
                         firstSnapshotQueuedAt: 1,
                         firstSnapshotIssuedAt: 2,
                         firstSnapshotSuccessAt: 3,
@@ -2269,8 +2464,13 @@ final class ObserveTests: XCTestCase {
                         snapshotIssuedCount: 3,
                         snapshotSuccessCount: 2,
                         snapshotFailureCount: 1,
+                        snapshotInitialFailureCount: 1,
+                        snapshotRecoveryFailureCount: 0,
+                        snapshotRoutineFailureCount: 0,
                         snapshotTimeoutCount: 1,
                         lastSnapshotCallbackLatency: 2.5,
+                        lastLiveStartCallbackLatency: 0.9,
+                        lastLiveStopCallbackLatency: 0.012,
                         firstStartupLiveFallbackAt: 4,
                         startupResolvedAsUnresolved: false,
                         firstBatteryWakeLeaseStartedAt: nil,
@@ -2323,8 +2523,8 @@ final class ObserveTests: XCTestCase {
                 )
             ],
             events: [
-                CameraTelemetryEvent(elapsed: 0, message: "session start"),
-                CameraTelemetryEvent(elapsed: 2, message: "snapshot issued front priority=urgent")
+                CameraTelemetryEvent(sequence: 1, elapsed: 0, message: "session start"),
+                CameraTelemetryEvent(sequence: 2, elapsed: 2, message: "snapshot issued front priority=urgent")
             ]
         )
 
@@ -2349,13 +2549,18 @@ final class ObserveTests: XCTestCase {
         XCTAssertTrue(text.contains("startupCoverageResult=completedWithUnresolved"))
         XCTAssertTrue(text.contains("peakOutstandingSnapshotRequests=4"))
         XCTAssertTrue(text.contains("front | firstTrustedImageAt=12.0s"))
+        XCTAssertTrue(text.contains("firstTrustedImageSource=live"))
+        XCTAssertTrue(text.contains("firstFreshImageAt=2.0s"))
+        XCTAssertTrue(text.contains("lastLiveStartCallbackLatency=0.9s"))
+        XCTAssertTrue(text.contains("lastLiveStopCallbackLatency=0.0s"))
+        XCTAssertTrue(text.contains("snapshotInitialFailureCount=1"))
         XCTAssertTrue(text.contains("snapshotTimeoutCount=1"))
         XCTAssertTrue(text.contains("front | Front | room=Porch"))
         XCTAssertTrue(text.contains("snapshotInFlightAge=1.0s"))
         XCTAssertTrue(text.contains("snapshotWorkState=active"))
         XCTAssertTrue(text.contains("startupSnapshotPath=inFlight"))
         XCTAssertTrue(text.contains("startupLivePath=notAttempted"))
-        XCTAssertTrue(text.contains("+2.0s snapshot issued front priority=urgent"))
+        XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
     }
 
     @MainActor
