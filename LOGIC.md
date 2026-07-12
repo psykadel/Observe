@@ -51,6 +51,38 @@ APP START / SESSION START
     +-- Optimize for the first trusted image on every visible camera before
     |   ordinary live-wall assignment, regardless of whether restricted mode
     |   has already been detected.
+    +-- Classify only the active network interface with `NWPathMonitor`; do not
+    |   read or persist an SSID, request location permission, or assume that
+    |   Wi-Fi means the device is on the home LAN.
+    +-- When the session starts on a satisfied Wi-Fi path, make one bounded,
+    |   speculative all-live attempt for every visible camera:
+    |   |
+    |   +-- Request every visible live feed immediately in one planning pass.
+    |   |   Treat configured battery cameras as plain live feeds during this
+    |   |   burst; do not start a battery trusted-still capture lease or show
+    |   |   live-capture mode merely because the battery still is due.
+    |   |   A successfully started plain live stream resolves that camera's
+    |   |   startup coverage, but it must not be recorded as a captured battery
+    |   |   still for later Restricted Mode trust decisions.
+    |   +-- Queue startup snapshots normally, but give live requests a 200 ms
+    |   |   head start before issuing the first HomeKit snapshot request.
+    |   +-- After 200 ms, release the existing capped snapshot lane in parallel
+    |   |   so a remote Wi-Fi connection still progresses toward trusted images.
+    |   +-- At 2 seconds, require every visible non-battery camera to be live.
+    |   |   If they are, keep the burst open for any slower battery cameras up
+    |   |   to the existing battery live-start timeout while snapshots continue
+    |   |   normally in parallel. A battery-only wall receives the same grace.
+    |   +-- If every visible feed becomes live during either stage, keep the wall
+    |   |   live and complete the speculative attempt.
+    |   +-- On the first capacity rejection, ordinary live-start failure,
+    |   |   2-second wired deadline, battery live-start deadline, network-path
+    |   |   change, or visible-camera-set change,
+    |   |   close the attempt permanently and enter Restricted Mode using only
+    |   |   live feeds that actually survived.
+    |   +-- Never reopen or retry the all-live burst during the same wall session;
+    |       late callbacks cannot promote the session back to the burst path.
+    +-- On cellular, another interface type, or an unknown / unsatisfied path,
+    |   skip the Wi-Fi burst and use the normal remote-safe startup path below.
     +-- Immediately queue untrusted non-battery snapshot work in UI priority
     |   order. Defer routine refreshes for already-trusted cameras until startup
     |   coverage ends.
@@ -65,14 +97,16 @@ APP START / SESSION START
     |   +-- It continues consuming an outstanding-request slot.
     |   +-- Keep its HomeKit request identity and per-camera ownership.
     |   +-- Do not issue another request for that camera until its callback returns.
-    +-- In parallel, allow exactly one battery trusted-still live capture.
+    +-- Outside the Wi-Fi burst, allow exactly one battery trusted-still live
+    |   capture in parallel.
     |   Focused viewing wins that live opportunity.
     |   A battery live-start alone does not resolve startup coverage; the
     |   Observe-captured trusted still must complete first.
-    +-- Use that battery stream as the initial live transport probe. If no
+    +-- On the normal remote-safe path, use that battery stream as the initial
+    |   live transport probe. If no
     |   battery camera needs capture, immediately start one UI-priority wired
     |   live probe alongside the capped snapshot lane.
-    +-- When the initial probe becomes live, start one bounded live-capacity ramp
+    +-- When that initial probe becomes live, start one bounded live-capacity ramp
     |   that continues alongside trusted-image accounting and battery capture:
     |   |
     |   +-- If the first live success arrives before 3 seconds, allow at most 2
@@ -87,7 +121,8 @@ APP START / SESSION START
     |   |   eligible camera; do not let one bad camera block the whole wall.
     |   +-- A classified capacity rejection stops all new ramp admissions and
     |       enters Restricted Mode using only streams that survived the rejection.
-    +-- Do not start ordinary non-battery live streams until every visible
+    +-- On the normal remote-safe path, do not start ordinary non-battery live
+    |   streams until every visible
     |   non-battery camera has had its startup snapshot path attempted and no
     |   non-overdue snapshot request remains active.
     +-- Then allow one non-battery live fallback at a time, preserving that
@@ -103,19 +138,25 @@ APP START / SESSION START
     |   path fails, because battery cameras do not use HomeKit snapshot requests.
     +-- A valid late success may move an unresolved camera to trusted.
     +-- End startup coverage only after every visible camera is resolved.
-    +-- Continue ordinary background recovery for unresolved cameras afterward.
+    +-- Once a camera becomes explicitly unresolved, release its snapshot retry
+    |   after the normal completion-based backoff even if other cameras are still
+    |   completing startup coverage. This recovery is non-blocking: it must not
+    |   return the camera to pending coverage, occupy the one-at-a-time live
+    |   fallback, or delay coverage of another camera.
     |
     +-- Continue or complete the same live-capacity ramp after startup coverage
         |
         +-- Preserve every visible stream that is already working, including a
         |   battery stream used for startup trusted-still capture.
-        +-- Preserve the ramp width already classified from the first live result;
-        |   never switch to an unbounded request for every camera.
+        +-- Outside the one bounded Wi-Fi burst, preserve the ramp width already
+        |   classified from the first live result; never switch to an unbounded
+        |   request for every camera.
         +-- Defer routine snapshot refreshes for startup-trusted cameras until
         |   this capacity ramp succeeds or HomeKit reports a constrained signal.
         +-- If every admitted stream succeeds, keep every visible camera live.
-        |   A battery camera performs any due trusted-still capture within that
-        |   normal live stream and remains live afterward.
+        |   During the Wi-Fi burst, a battery camera remains plain live. Outside
+        |   that burst, a battery camera may perform a due trusted-still capture
+        |   within its normal live stream and remain live afterward.
         +-- If HomeKit reports constrained live connections, enter RESTRICTED MODE.
         +-- If HomeKit reports `operationCancelled` after Observe intentionally
         |   stopped a stream, treat it as the expected stop callback rather than
@@ -265,6 +306,11 @@ RESTRICTED MODE
             |
             +-- 3. During universal startup coverage
             |   |
+            |   +-- While the one bounded Wi-Fi burst is open, request every
+            |   |   visible live feed immediately; its 200 ms snapshot head start,
+            |   |   2-second wired deadline, bounded battery grace, and
+            |   |   first-failure circuit breaker override the single-probe
+            |   |   rules below.
             |   +-- Preserve a focused feed first.
             |   +-- Otherwise preserve or start one battery trusted-still capture.
             |   +-- If no battery capture is needed, allow one UI-priority wired
@@ -278,8 +324,9 @@ RESTRICTED MODE
             |   +-- Mark the camera trusted when the live stream starts. Mark it
             |       explicitly unresolved if the one fallback fails or times out.
             |   +-- An explicit unresolved result ends that camera's blocking
-            |       startup state without hiding the failure; background recovery
-            |       resumes after startup coverage ends.
+            |       startup state without hiding the failure. Snapshot recovery
+            |       may continue in parallel after its ordinary backoff while
+            |       startup coverage proceeds for the remaining cameras.
             |
             +-- 4. While any visible battery camera lacks a trusted still
             |   |

@@ -418,6 +418,37 @@ final class ObserveTests: XCTestCase {
         )
     }
 
+    func testStartupSnapshotRecoveryWaitsForBothPathsToFail() {
+        var startupState = StartupCameraState()
+        startupState.apply(.snapshotRequested(at: now.addingTimeInterval(-4)), isBatteryCamera: false)
+        startupState.apply(.snapshotFailed, isBatteryCamera: false)
+
+        XCTAssertNil(
+            StartupSnapshotRecoveryPolicy.retryEligibleDate(
+                startupCoverageActive: true,
+                startupState: startupState,
+                snapshotFailedAt: now,
+                lastRequestIssuedAt: now.addingTimeInterval(-4),
+                priority: .urgent
+            )
+        )
+
+        startupState.apply(.liveRequested(at: now), isBatteryCamera: false)
+        startupState.apply(.liveFailed, isBatteryCamera: false)
+
+        XCTAssertEqual(startupState.resolution, .unresolved)
+        XCTAssertEqual(
+            StartupSnapshotRecoveryPolicy.retryEligibleDate(
+                startupCoverageActive: true,
+                startupState: startupState,
+                snapshotFailedAt: now,
+                lastRequestIssuedAt: now.addingTimeInterval(-4),
+                priority: .urgent
+            ),
+            now.addingTimeInterval(2)
+        )
+    }
+
     func testOverdueSnapshotKeepsRequestOwnershipWhileOpeningAnActiveSlot() {
         let request = SnapshotPendingRequest(
             id: 41,
@@ -775,6 +806,223 @@ final class ObserveTests: XCTestCase {
         XCTAssertEqual(ramp.pendingIDs, ["two", "four"])
     }
 
+    func testWiFiLiveBurstOpensAllLiveAndReleasesSnapshotsAfterHeadStart() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two", "three"],
+            startedAt: now,
+            snapshotHeadStart: 0.2,
+            deadline: 2
+        )
+
+        XCTAssertEqual(burst.mode, .headStart)
+        XCTAssertEqual(burst.liveIDs, ["one", "two", "three"])
+        XCTAssertFalse(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.199)))
+
+        burst.evaluate(streamingIDs: [], at: now.addingTimeInterval(0.2))
+
+        XCTAssertEqual(burst.mode, .active)
+        XCTAssertTrue(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.2)))
+        XCTAssertEqual(burst.liveIDs, ["one", "two", "three"])
+    }
+
+    func testWiFiLiveBurstCompletesWhenEveryVisibleFeedIsLive() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two"],
+            startedAt: now
+        )
+
+        burst.evaluate(streamingIDs: ["one", "two"], at: now.addingTimeInterval(0.5))
+
+        XCTAssertEqual(burst.mode, .completed)
+        XCTAssertEqual(burst.liveIDs, ["one", "two"])
+        XCTAssertTrue(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.5)))
+    }
+
+    func testWiFiLiveBurstClosesAfterCompletionWhenWiFiPathIsLost() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two"],
+            startedAt: now
+        )
+
+        burst.evaluate(streamingIDs: ["one", "two"], at: now.addingTimeInterval(0.5))
+        burst.invalidatePath(streamingIDs: ["one"])
+
+        XCTAssertEqual(burst.mode, .closed(.pathInvalidated))
+        XCTAssertEqual(burst.survivingLiveIDs, ["one"])
+        XCTAssertTrue(burst.liveIDs.isEmpty)
+    }
+
+    func testWiFiLiveBurstDeadlineClosesAndCannotReopen() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two", "three"],
+            startedAt: now,
+            deadline: 2
+        )
+
+        burst.evaluate(streamingIDs: ["one"], at: now.addingTimeInterval(2))
+        XCTAssertEqual(burst.mode, .closed(.deadline))
+        XCTAssertEqual(burst.survivingLiveIDs, ["one"])
+        XCTAssertTrue(burst.liveIDs.isEmpty)
+
+        burst.evaluate(streamingIDs: ["one", "two", "three"], at: now.addingTimeInterval(2.5))
+        XCTAssertEqual(burst.mode, .closed(.deadline))
+        XCTAssertTrue(burst.liveIDs.isEmpty)
+    }
+
+    func testWiFiLiveBurstWaitsForBatteryAfterEveryWiredFeedIsLive() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["wired", "battery"],
+            batteryFeedIDs: ["battery"],
+            startedAt: now,
+            deadline: 2,
+            batteryDeadline: 30
+        )
+
+        burst.evaluate(streamingIDs: ["wired"], at: now.addingTimeInterval(2))
+
+        XCTAssertEqual(burst.mode, .batteryGrace)
+        XCTAssertEqual(burst.liveIDs, ["wired", "battery"])
+
+        burst.evaluate(streamingIDs: ["wired", "battery"], at: now.addingTimeInterval(8))
+        XCTAssertEqual(burst.mode, .completed)
+    }
+
+    func testWiFiLiveBurstStillFallsBackAtTwoSecondsWhenWiredFeedIsPending() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["wired-one", "wired-two", "battery"],
+            batteryFeedIDs: ["battery"],
+            startedAt: now,
+            deadline: 2,
+            batteryDeadline: 30
+        )
+
+        burst.evaluate(streamingIDs: ["wired-one"], at: now.addingTimeInterval(2))
+
+        XCTAssertEqual(burst.mode, .closed(.deadline))
+        XCTAssertEqual(burst.survivingLiveIDs, ["wired-one"])
+    }
+
+    func testWiFiLiveBurstBatteryGraceRemainsBounded() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["wired", "battery"],
+            batteryFeedIDs: ["battery"],
+            startedAt: now,
+            deadline: 2,
+            batteryDeadline: 30
+        )
+
+        burst.evaluate(streamingIDs: ["wired"], at: now.addingTimeInterval(2))
+        burst.evaluate(streamingIDs: ["wired"], at: now.addingTimeInterval(30))
+
+        XCTAssertEqual(burst.mode, .closed(.batteryDeadline))
+        XCTAssertEqual(burst.survivingLiveIDs, ["wired"])
+    }
+
+    func testWiFiLiveBurstGivesBatteryOnlyWallTheSameGrace() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["battery"],
+            batteryFeedIDs: ["battery"],
+            startedAt: now,
+            deadline: 2,
+            batteryDeadline: 30
+        )
+
+        burst.evaluate(streamingIDs: [], at: now.addingTimeInterval(2))
+
+        XCTAssertEqual(burst.mode, .batteryGrace)
+        XCTAssertEqual(burst.liveIDs, ["battery"])
+    }
+
+    func testWiFiLiveBurstCapacitySignalClosesImmediately() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two", "three"],
+            startedAt: now
+        )
+
+        burst.recordCapacityRejection(streamingIDs: ["one"], at: now.addingTimeInterval(0.3))
+
+        XCTAssertEqual(burst.mode, .closed(.capacity))
+        XCTAssertEqual(burst.survivingLiveIDs, ["one"])
+        XCTAssertTrue(burst.liveIDs.isEmpty)
+        XCTAssertTrue(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.3)))
+    }
+
+    func testWiFiLiveBurstOrdinaryFailureAlsoClosesWithoutRetry() {
+        var burst = WiFiLiveBurstState(
+            networkClass: .wifi,
+            visibleFeedIDs: ["one", "two"],
+            startedAt: now
+        )
+
+        burst.recordFailure(streamingIDs: ["one"], at: now.addingTimeInterval(0.4))
+
+        XCTAssertEqual(burst.mode, .closed(.failure))
+        XCTAssertEqual(burst.survivingLiveIDs, ["one"])
+        XCTAssertTrue(burst.liveIDs.isEmpty)
+    }
+
+    func testWiFiLiveBurstStaysInactiveForCellularAndUnknownPaths() {
+        let cellular = WiFiLiveBurstState(
+            networkClass: .cellular,
+            visibleFeedIDs: ["one", "two"],
+            startedAt: now
+        )
+        let unknown = WiFiLiveBurstState(
+            networkClass: .unknown,
+            visibleFeedIDs: ["one", "two"],
+            startedAt: now
+        )
+
+        XCTAssertEqual(cellular.mode, .inactive)
+        XCTAssertEqual(unknown.mode, .inactive)
+        XCTAssertTrue(cellular.liveIDs.isEmpty)
+        XCTAssertTrue(unknown.allowsSnapshotIssue(at: now))
+    }
+
+    func testCameraNetworkClassPolicyRequiresSatisfiedWiFiPath() {
+        XCTAssertEqual(
+            CameraNetworkClassPolicy.classify(
+                isSatisfied: true,
+                usesWiFi: true,
+                usesCellular: false
+            ),
+            .wifi
+        )
+        XCTAssertEqual(
+            CameraNetworkClassPolicy.classify(
+                isSatisfied: true,
+                usesWiFi: false,
+                usesCellular: true
+            ),
+            .cellular
+        )
+        XCTAssertEqual(
+            CameraNetworkClassPolicy.classify(
+                isSatisfied: false,
+                usesWiFi: true,
+                usesCellular: false
+            ),
+            .unknown
+        )
+        XCTAssertEqual(
+            CameraNetworkClassPolicy.classify(
+                isSatisfied: true,
+                usesWiFi: false,
+                usesCellular: false
+            ),
+            .other
+        )
+    }
+
     func testStartupCameraStateRequiresBothWiredPathsToFail() {
         var state = StartupCameraState()
 
@@ -803,6 +1051,16 @@ final class ObserveTests: XCTestCase {
 
         state.apply(.trustedImageObserved, isBatteryCamera: true)
 
+        XCTAssertEqual(state.resolution, .trusted)
+    }
+
+    func testWiFiBurstPlainLiveResolvesBatteryStartupWithoutCapturedStill() {
+        var state = StartupCameraState()
+
+        state.apply(.liveRequested(at: now), isBatteryCamera: true)
+        state.apply(.plainLiveStarted, isBatteryCamera: true)
+
+        XCTAssertEqual(state.livePath, .succeeded)
         XCTAssertEqual(state.resolution, .trusted)
     }
 
@@ -865,6 +1123,48 @@ final class ObserveTests: XCTestCase {
 
         XCTAssertEqual(liveIDs(in: plan), ["front", "garage"])
         XCTAssertEqual(plan.decisionsByID["back"]?.presentationMode, .snapshot)
+    }
+
+    func testWiFiLiveBurstUsesPlainLiveForDueBatteryCamera() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "wired", priorityIndex: 0),
+                makeFeed(
+                    id: "battery",
+                    priorityIndex: 1,
+                    lastSnapshotAge: 90,
+                    isBatteryWakeCamera: true
+                )
+            ],
+            sessionMode: .optimistic,
+            liveCapacity: 2,
+            startupLivePolicy: .liveBurst(liveIDs: ["wired", "battery"]),
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery", "wired"])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .live)
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .idle)
+    }
+
+    func testNormalCapacityRampStillCapturesDueBatteryCamera() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(
+                    id: "battery",
+                    priorityIndex: 0,
+                    lastSnapshotAge: 90,
+                    isBatteryWakeCamera: true
+                )
+            ],
+            sessionMode: .optimistic,
+            liveCapacity: 1,
+            startupLivePolicy: .capacityRamp(liveIDs: ["battery"]),
+            now: now
+        )
+
+        XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .live)
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
     }
 
     func testSnapshotFirstStartupUsesOnlyOneWiredFallbackWithoutBatteryDemand() {
@@ -1932,6 +2232,10 @@ final class ObserveTests: XCTestCase {
             batteryWakeLeaseDuration: 8,
             batteryWakeLiveStartTimeout: 30,
             startupCoverageActive: true,
+            sessionNetworkClass: "wifi",
+            currentNetworkClass: "wifi",
+            wifiLiveBurstMode: "closed:capacity",
+            wifiLiveBurstSurvivorIDs: ["front"],
             startupLiveRampMode: "fast",
             startupLiveRampSelectedIDs: ["front", "side"],
             startupLiveRampPendingIDs: ["side"],
@@ -2030,6 +2334,10 @@ final class ObserveTests: XCTestCase {
         XCTAssertTrue(text.contains("internalMaxConcurrentSnapshotRequests=3"))
         XCTAssertTrue(text.contains("effectiveMaxConcurrentSnapshotRequests=2"))
         XCTAssertTrue(text.contains("startupLiveRampMode=fast"))
+        XCTAssertTrue(text.contains("sessionNetworkClass=wifi"))
+        XCTAssertTrue(text.contains("currentNetworkClass=wifi"))
+        XCTAssertTrue(text.contains("wifiLiveBurstMode=closed:capacity"))
+        XCTAssertTrue(text.contains("wifiLiveBurstSurvivorIDs=front"))
         XCTAssertTrue(text.contains("startupLiveRampSelectedIDs=front,side"))
         XCTAssertTrue(text.contains("startupLiveRampPendingIDs=side"))
         XCTAssertTrue(text.contains("startupLiveRampMaxPendingCount=2"))

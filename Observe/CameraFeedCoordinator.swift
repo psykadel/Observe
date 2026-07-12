@@ -23,6 +23,7 @@ enum SnapshotRequestResult {
 enum CameraLiveTransportEvent: Equatable {
     case startRequested(at: Date, restarted: Bool)
     case started(at: Date)
+    case stopRequested(at: Date)
     case stopped(at: Date, reason: CameraLiveStopReason)
 }
 
@@ -464,6 +465,9 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     func stopLiveIfNeeded() {
         switch profile.streamControl?.streamState {
         case .starting, .streaming:
+            if !requestedStreamStop {
+                onLiveTransportEvent?(id, .stopRequested(at: Date()))
+            }
             requestedStreamStop = true
             profile.streamControl?.stopStream()
         default:
