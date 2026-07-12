@@ -1,137 +1,6 @@
 import Foundation
 import HomeKit
 
-struct CameraTransportError: Equatable {
-    let domain: String
-    let code: Int
-    let message: String
-
-    init?(_ error: (any Error)?) {
-        guard let error else { return nil }
-        let nsError = error as NSError
-        domain = nsError.domain
-        code = nsError.code
-        message = nsError.localizedDescription
-    }
-}
-
-enum SnapshotRequestResult {
-    case success(Date)
-    case failure(CameraTransportError?)
-}
-
-enum CameraLiveTransportEvent: Equatable {
-    case startRequested(at: Date, restarted: Bool)
-    case started(at: Date, callbackLatency: TimeInterval?)
-    case stopRequested(at: Date)
-    case stopped(at: Date, disposition: CameraLiveFailureDisposition, callbackLatency: TimeInterval?)
-}
-
-enum CameraLiveTransportActivityPolicy {
-    static func hasActiveTransport(
-        streamStateIsActive: Bool,
-        startIsPending: Bool,
-        stopIsPending: Bool
-    ) -> Bool {
-        streamStateIsActive || startIsPending || stopIsPending
-    }
-}
-
-enum CameraLiveFailureDisposition: Equatable {
-    case requestedStop
-    case softContention(CameraTransportError)
-    case hardCapacity(CameraTransportError)
-    case infrastructureUnavailable(CameraTransportError)
-    case retryableTransport(CameraTransportError)
-    case cameraFailure(CameraTransportError)
-    case ended
-
-    var error: CameraTransportError? {
-        switch self {
-        case .softContention(let error),
-             .hardCapacity(let error),
-             .infrastructureUnavailable(let error),
-             .retryableTransport(let error),
-             .cameraFailure(let error):
-            error
-        case .requestedStop, .ended:
-            nil
-        }
-    }
-}
-
-enum CameraLiveFailureDispositionPolicy {
-    static func classify(
-        error: CameraTransportError?,
-        stopWasRequested: Bool
-    ) -> CameraLiveFailureDisposition {
-        guard let error else { return stopWasRequested ? .requestedStop : .ended }
-
-        if stopWasRequested,
-           error.domain == HMErrorDomain,
-           error.code == HMError.Code.operationCancelled.rawValue {
-            return .requestedStop
-        }
-
-        guard error.domain == HMErrorDomain,
-              let code = HMError.Code(rawValue: error.code) else {
-            return .cameraFailure(error)
-        }
-
-        switch code {
-        case .accessoryIsBusy, .operationInProgress:
-            return .softContention(error)
-        case .maximumObjectLimitReached:
-            return .hardCapacity(error)
-        case .networkUnavailable, .noHomeHub, .noCompatibleHomeHub:
-            return .infrastructureUnavailable(error)
-        case .operationTimedOut,
-             .communicationFailure,
-             .accessoryCommunicationFailure,
-             .timedOutWaitingForAccessory:
-            return .retryableTransport(error)
-        default:
-            return .cameraFailure(error)
-        }
-    }
-}
-
-enum CameraStreamStopErrorPolicy {
-    static func shouldReport(domain: String, code: Int, stopWasRequested: Bool) -> Bool {
-        let error = CameraTransportError(
-            NSError(domain: domain, code: code)
-        )
-        return CameraLiveFailureDispositionPolicy.classify(
-            error: error,
-            stopWasRequested: stopWasRequested
-        ).error != nil
-    }
-}
-
-typealias SnapshotRequestID = Int64
-
-enum CameraSessionImageEvent: Equatable {
-    case reset
-    case cachedSnapshotPresented
-    case freshSnapshotReceived
-    case liveStreamReceived
-}
-
-struct CameraSessionImageFreshness: Equatable {
-    private(set) var hasFreshImage = false
-
-    mutating func apply(_ event: CameraSessionImageEvent) {
-        switch event {
-        case .reset:
-            hasFreshImage = false
-        case .cachedSnapshotPresented:
-            break
-        case .freshSnapshotReceived, .liveStreamReceived:
-            hasFreshImage = true
-        }
-    }
-}
-
 @MainActor
 final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     let id: String
@@ -229,7 +98,6 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     var isVisibleOnWall: Bool {
         CameraWallAvailability.isVisibleOnWall(
             isReachable: isReachable,
-            isAvailableInSession: isAvailableInSession,
             isHomeKitCameraActive: isHomeKitCameraActive
         )
     }
@@ -307,9 +175,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     func refreshHomeKitCameraActiveStateIfNeeded(for characteristic: HMCharacteristic) {
-        let serviceType = characteristic.service?.serviceType ?? ""
         guard CameraWallAvailability.isCameraAvailabilityCharacteristic(
-            serviceType: serviceType,
             characteristicType: characteristic.characteristicType
         ) else {
             return
@@ -518,13 +384,6 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         liveStartedAt = nil
     }
 
-    func markOfflineIfNeeded() {
-        isReachable = accessory.isReachable
-        if !isReachable {
-            markOffline()
-        }
-    }
-
     func resetSessionState() {
         stopLiveIfNeeded()
         isReachable = accessory.isReachable
@@ -555,7 +414,6 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             .flatMap(\.characteristics)
             .filter { characteristic in
                 CameraWallAvailability.isCameraAvailabilityCharacteristic(
-                    serviceType: characteristic.service?.serviceType ?? "",
                     characteristicType: characteristic.characteristicType
                 )
             }
@@ -564,7 +422,6 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     private var cameraAvailabilitySnapshots: [CameraWallAvailability.CharacteristicSnapshot] {
         cameraAvailabilityCharacteristics.map { characteristic in
             CameraWallAvailability.CharacteristicSnapshot(
-                serviceType: characteristic.service?.serviceType ?? "",
                 characteristicType: characteristic.characteristicType,
                 value: characteristic.value
             )
@@ -652,8 +509,20 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
     }
 
-}
+    private func applySnapshot(_ snapshot: HMCameraSnapshot) {
+        updateCameraSource(snapshot)
+        lastSnapshotDate = snapshot.captureDate
+        recencyTier = currentRecencyTier(at: Date())
+        if recencyTier == .recentSnapshot {
+            sessionImageFreshness.apply(.freshSnapshotReceived)
+            recoveryPhase = .idle
+        }
+        if state != .live {
+            state = .snapshot
+        }
+    }
 
+}
 extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
     nonisolated func cameraStreamControlDidStartStream(_ cameraStreamControl: HMCameraStreamControl) {
         Task { @MainActor [weak self] in
@@ -729,18 +598,7 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
             self.pendingSnapshotRequestID = nil
 
             if let snapshot {
-                self.updateCameraSource(snapshot)
-                self.lastSnapshotDate = snapshot.captureDate
-                self.recencyTier = self.currentRecencyTier(at: Date())
-                if self.recencyTier == .recentSnapshot {
-                    self.sessionImageFreshness.apply(.freshSnapshotReceived)
-                }
-                if self.recencyTier == .recentSnapshot {
-                    self.recoveryPhase = .idle
-                }
-                if self.state != .live {
-                    self.state = .snapshot
-                }
+                self.applySnapshot(snapshot)
                 self.lastErrorMessage = nil
                 self.onSnapshotResult?(self.id, requestID, .success(snapshot.captureDate))
             } else {
@@ -759,18 +617,7 @@ extension CameraFeedCoordinator: HMCameraSnapshotControlDelegate {
         Task { @MainActor [weak self] in
             guard let self, let snapshot = cameraSnapshotControl.mostRecentSnapshot else { return }
             if self.lastSnapshotDate == nil || snapshot.captureDate > self.lastSnapshotDate! {
-                self.updateCameraSource(snapshot)
-                self.lastSnapshotDate = snapshot.captureDate
-                self.recencyTier = self.currentRecencyTier(at: Date())
-                if self.recencyTier == .recentSnapshot {
-                    self.sessionImageFreshness.apply(.freshSnapshotReceived)
-                }
-                if self.recencyTier == .recentSnapshot {
-                    self.recoveryPhase = .idle
-                }
-                if self.state != .live {
-                    self.state = .snapshot
-                }
+                self.applySnapshot(snapshot)
             }
         }
     }

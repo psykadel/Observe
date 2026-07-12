@@ -145,13 +145,6 @@ final class ObservePreferences: ObservableObject {
         remotePriorityIDs = ids
     }
 
-    func prioritize(_ id: String, availableIDs: [String]) {
-        var ids = normalizedPriority(availableIDs: availableIDs)
-        ids.removeAll { $0 == id }
-        ids.insert(id, at: 0)
-        remotePriorityIDs = ids
-    }
-
     func adjustDensity(with scale: CGFloat) {
         if scale > 1.1 {
             wallDensity = wallDensity.stepped(by: -1)
@@ -182,10 +175,6 @@ final class ObservePreferences: ObservableObject {
 
         staleVisualHighlightSeconds = sanitized
         userDefaults.set(sanitized, forKey: Keys.staleVisualHighlightSeconds)
-    }
-
-    func resetStaleVisualHighlightSeconds() {
-        setStaleVisualHighlightSeconds(defaultStaleVisualHighlightSeconds)
     }
 
     func rememberedRestrictedLiveCapacity(homeID: String?, visibleCameraIDs: [String]) -> Int? {

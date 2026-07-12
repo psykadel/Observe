@@ -19,8 +19,27 @@
 		A1000015000000000000000A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000A /* SettingsView.swift */; };
 		A1000015000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000B /* Assets.xcassets */; };
 		A1000015000000000000000C /* CameraRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000E /* CameraRecoveryPlanner.swift */; };
-		A1000015000000000000000D /* ObserveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000F /* ObserveTests.swift */; };
+		A1000015000000000000000F /* ObserveTestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000012 /* ObserveTestCase.swift */; };
+		A10000150000000000000010 /* CameraRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000013 /* CameraRecoveryPlannerTests.swift */; };
+		A10000150000000000000011 /* SnapshotSchedulingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000014 /* SnapshotSchedulingTests.swift */; };
+		A10000150000000000000012 /* CameraStartupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000015 /* CameraStartupTests.swift */; };
+		A10000150000000000000013 /* CameraLiveAdmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000016 /* CameraLiveAdmissionTests.swift */; };
+		A10000150000000000000014 /* CameraDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000017 /* CameraDisplayTests.swift */; };
+		A10000150000000000000015 /* CameraWallTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000018 /* CameraWallTests.swift */; };
+		A10000150000000000000016 /* ObservePreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000019 /* ObservePreferencesTests.swift */; };
+		A10000150000000000000017 /* CameraAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001A /* CameraAvailabilityTests.swift */; };
+		A10000150000000000000018 /* CameraTelemetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001B /* CameraTelemetryTests.swift */; };
 		A1000015000000000000000E /* CameraLiveAdmissionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000011 /* CameraLiveAdmissionController.swift */; };
+		A10000150000000000000019 /* CameraStartupPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001C /* CameraStartupPolicies.swift */; };
+		A1000015000000000000001A /* CameraTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001D /* CameraTelemetry.swift */; };
+		A1000015000000000000001B /* CameraSchedulingPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001E /* CameraSchedulingPolicies.swift */; };
+		A1000015000000000000001C /* CameraWallLayouts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001F /* CameraWallLayouts.swift */; };
+		A1000015000000000000001D /* MainWindowPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000020 /* MainWindowPresentation.swift */; };
+		A1000015000000000000001E /* NumberSettingEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000021 /* NumberSettingEditor.swift */; };
+		A1000015000000000000001F /* CameraWallTileButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000022 /* CameraWallTileButton.swift */; };
+		A10000150000000000000020 /* CameraTransportPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000023 /* CameraTransportPolicies.swift */; };
+		A10000150000000000000021 /* CameraNetworkPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000024 /* CameraNetworkPolicies.swift */; };
+		A10000150000000000000022 /* CameraPresentationPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000025 /* CameraPresentationPolicies.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,9 +67,28 @@
 		A1000001000000000000000C /* Observe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Observe.entitlements; sourceTree = "<group>"; };
 		A1000001000000000000000D /* Observe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Observe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1000001000000000000000E /* CameraRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRecoveryPlanner.swift; sourceTree = "<group>"; };
-		A1000001000000000000000F /* ObserveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObserveTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000012 /* ObserveTestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObserveTestCase.swift; sourceTree = "<group>"; };
+		A10000010000000000000013 /* CameraRecoveryPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRecoveryPlannerTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000014 /* SnapshotSchedulingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotSchedulingTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000015 /* CameraStartupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraStartupTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000016 /* CameraLiveAdmissionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraLiveAdmissionTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000017 /* CameraDisplayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraDisplayTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000018 /* CameraWallTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraWallTests.swift; sourceTree = "<group>"; };
+		A10000010000000000000019 /* ObservePreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservePreferencesTests.swift; sourceTree = "<group>"; };
+		A1000001000000000000001A /* CameraAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAvailabilityTests.swift; sourceTree = "<group>"; };
+		A1000001000000000000001B /* CameraTelemetryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTelemetryTests.swift; sourceTree = "<group>"; };
 		A10000010000000000000010 /* ObserveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ObserveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000010000000000000011 /* CameraLiveAdmissionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraLiveAdmissionController.swift; sourceTree = "<group>"; };
+		A1000001000000000000001C /* CameraStartupPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraStartupPolicies.swift; sourceTree = "<group>"; };
+		A1000001000000000000001D /* CameraTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTelemetry.swift; sourceTree = "<group>"; };
+		A1000001000000000000001E /* CameraSchedulingPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSchedulingPolicies.swift; sourceTree = "<group>"; };
+		A1000001000000000000001F /* CameraWallLayouts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraWallLayouts.swift; sourceTree = "<group>"; };
+		A10000010000000000000020 /* MainWindowPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowPresentation.swift; sourceTree = "<group>"; };
+		A10000010000000000000021 /* NumberSettingEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NumberSettingEditor.swift; sourceTree = "<group>"; };
+		A10000010000000000000022 /* CameraWallTileButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraWallTileButton.swift; sourceTree = "<group>"; };
+		A10000010000000000000023 /* CameraTransportPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTransportPolicies.swift; sourceTree = "<group>"; };
+		A10000010000000000000024 /* CameraNetworkPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraNetworkPolicies.swift; sourceTree = "<group>"; };
+		A10000010000000000000025 /* CameraPresentationPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPresentationPolicies.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,6 +132,16 @@
 				A10000010000000000000009 /* HomeKitCameraStore.swift */,
 				A1000001000000000000000E /* CameraRecoveryPlanner.swift */,
 				A10000010000000000000011 /* CameraLiveAdmissionController.swift */,
+				A1000001000000000000001C /* CameraStartupPolicies.swift */,
+				A1000001000000000000001D /* CameraTelemetry.swift */,
+				A1000001000000000000001E /* CameraSchedulingPolicies.swift */,
+				A1000001000000000000001F /* CameraWallLayouts.swift */,
+				A10000010000000000000020 /* MainWindowPresentation.swift */,
+				A10000010000000000000021 /* NumberSettingEditor.swift */,
+				A10000010000000000000022 /* CameraWallTileButton.swift */,
+				A10000010000000000000023 /* CameraTransportPolicies.swift */,
+				A10000010000000000000024 /* CameraNetworkPolicies.swift */,
+				A10000010000000000000025 /* CameraPresentationPolicies.swift */,
 				A1000001000000000000000A /* SettingsView.swift */,
 				A1000001000000000000000B /* Assets.xcassets */,
 				A1000001000000000000000C /* Observe.entitlements */,
@@ -113,7 +161,16 @@
 		A10000020000000000000004 /* ObserveTests */ = {
 			isa = PBXGroup;
 			children = (
-				A1000001000000000000000F /* ObserveTests.swift */,
+				A10000010000000000000012 /* ObserveTestCase.swift */,
+				A10000010000000000000013 /* CameraRecoveryPlannerTests.swift */,
+				A10000010000000000000014 /* SnapshotSchedulingTests.swift */,
+				A10000010000000000000015 /* CameraStartupTests.swift */,
+				A10000010000000000000016 /* CameraLiveAdmissionTests.swift */,
+				A10000010000000000000017 /* CameraDisplayTests.swift */,
+				A10000010000000000000018 /* CameraWallTests.swift */,
+				A10000010000000000000019 /* ObservePreferencesTests.swift */,
+				A1000001000000000000001A /* CameraAvailabilityTests.swift */,
+				A1000001000000000000001B /* CameraTelemetryTests.swift */,
 			);
 			path = ObserveTests;
 			sourceTree = "<group>";
@@ -220,6 +277,16 @@
 				A10000150000000000000009 /* HomeKitCameraStore.swift in Sources */,
 				A1000015000000000000000C /* CameraRecoveryPlanner.swift in Sources */,
 				A1000015000000000000000E /* CameraLiveAdmissionController.swift in Sources */,
+				A10000150000000000000019 /* CameraStartupPolicies.swift in Sources */,
+				A1000015000000000000001A /* CameraTelemetry.swift in Sources */,
+				A1000015000000000000001B /* CameraSchedulingPolicies.swift in Sources */,
+				A1000015000000000000001C /* CameraWallLayouts.swift in Sources */,
+				A1000015000000000000001D /* MainWindowPresentation.swift in Sources */,
+				A1000015000000000000001E /* NumberSettingEditor.swift in Sources */,
+				A1000015000000000000001F /* CameraWallTileButton.swift in Sources */,
+				A10000150000000000000020 /* CameraTransportPolicies.swift in Sources */,
+				A10000150000000000000021 /* CameraNetworkPolicies.swift in Sources */,
+				A10000150000000000000022 /* CameraPresentationPolicies.swift in Sources */,
 				A1000015000000000000000A /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -228,7 +295,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000015000000000000000D /* ObserveTests.swift in Sources */,
+				A1000015000000000000000F /* ObserveTestCase.swift in Sources */,
+				A10000150000000000000010 /* CameraRecoveryPlannerTests.swift in Sources */,
+				A10000150000000000000011 /* SnapshotSchedulingTests.swift in Sources */,
+				A10000150000000000000012 /* CameraStartupTests.swift in Sources */,
+				A10000150000000000000013 /* CameraLiveAdmissionTests.swift in Sources */,
+				A10000150000000000000014 /* CameraDisplayTests.swift in Sources */,
+				A10000150000000000000015 /* CameraWallTests.swift in Sources */,
+				A10000150000000000000016 /* ObservePreferencesTests.swift in Sources */,
+				A10000150000000000000017 /* CameraAvailabilityTests.swift in Sources */,
+				A10000150000000000000018 /* CameraTelemetryTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
