@@ -152,7 +152,7 @@ struct CameraRecoveryPlanner {
                 batteryCaptureIDs: [],
                 batteryWaitingIDs: []
             )
-        case .capacityRamp(let liveIDs):
+        case .capacityRamp(let liveIDs, _):
             let batteryCaptureIDs = Set(prioritizedFeeds.filter {
                 liveIDs.contains($0.id)
                     && $0.isBatteryWakeCamera

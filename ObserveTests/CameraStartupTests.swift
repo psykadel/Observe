@@ -80,6 +80,32 @@ final class CameraStartupTests: ObserveTestCase {
             )
         )
     }
+    func testStalledRescueContractAdmitsWiredStartAlongsidePendingBattery() {
+        let policy = StartupLivePolicy.capacityRamp(
+            liveIDs: ["battery", "front"],
+            maxPendingStarts: 2
+        )
+        var controller = LiveAdmissionController(
+            mode: .adaptive(maxPendingStarts: policy.pendingStartLimit),
+            sustainableCapacity: 5
+        )
+
+        XCTAssertEqual(policy.pendingStartLimit, 2)
+
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(id: "battery", role: .batteryCapture, priorityIndex: 1),
+                LiveIntent(id: "front", role: .firstImageRecovery, priorityIndex: 0)
+            ],
+            transports: ["battery": .starting, "front": .idle],
+            preserveActiveDuringCoverage: false,
+            now: now
+        )
+
+        XCTAssertEqual(decision.targetIDs, ["battery", "front"])
+        XCTAssertEqual(decision.startIDs, ["front"])
+        XCTAssertTrue(decision.queuedStartIDs.isEmpty)
+    }
     func testStartupLiveRampUsesTwoPendingSlotsAfterFastFirstSuccess() {
         var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
 
@@ -446,7 +472,10 @@ final class CameraStartupTests: ObserveTestCase {
             ],
             sessionMode: .optimistic,
             liveCapacity: 3,
-            startupLivePolicy: .capacityRamp(liveIDs: ["front", "garage"]),
+            startupLivePolicy: .capacityRamp(
+                liveIDs: ["front", "garage"],
+                maxPendingStarts: 1
+            ),
             now: now
         )
 
@@ -486,7 +515,10 @@ final class CameraStartupTests: ObserveTestCase {
             ],
             sessionMode: .optimistic,
             liveCapacity: 1,
-            startupLivePolicy: .capacityRamp(liveIDs: ["battery"]),
+            startupLivePolicy: .capacityRamp(
+                liveIDs: ["battery"],
+                maxPendingStarts: 1
+            ),
             now: now
         )
 

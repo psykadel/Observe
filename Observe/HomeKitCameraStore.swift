@@ -471,6 +471,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let (admission, desiredLiveIDs) = reconcileLiveAdmission(
             focusedFeedID: focusedFeedID,
             liveBudget: liveBudget,
+            startupLivePolicy: startupLivePolicy,
             now: now
         )
         applyRecoveryPlan(
@@ -548,11 +549,17 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         } else if sessionMode == .optimistic,
            let startupLiveRampState,
            startupLiveRampState.mode != .completed {
-            return .capacityRamp(liveIDs: startupLiveRampState.selectedIDs)
+            return .capacityRamp(
+                liveIDs: startupLiveRampState.selectedIDs,
+                maxPendingStarts: startupLiveRampState.maxPendingCount
+            )
         } else if sessionMode == .optimistic,
                   let stalledStartupRescueLiveIDs,
                   !stalledStartupRescueLiveIDs.isEmpty {
-            return .capacityRamp(liveIDs: stalledStartupRescueLiveIDs)
+            return .capacityRamp(
+                liveIDs: stalledStartupRescueLiveIDs,
+                maxPendingStarts: 2
+            )
         } else if startupCoverageActive {
             return .firstImage(
                 allowWiredFallback: allWiredSnapshotPathsAttempted && !hasActiveSnapshotRequest
@@ -565,6 +572,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func reconcileLiveAdmission(
         focusedFeedID: String?,
         liveBudget: Int,
+        startupLivePolicy: StartupLivePolicy,
         now: Date
     ) -> (LiveAdmissionDecision, Set<String>) {
         let desiredLiveIDs = Set(currentRecoveryPlan.decisionsByID.compactMap { id, decision in
@@ -576,7 +584,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         } else if sessionMode == .constrained {
             admissionMode = .constrained
         } else {
-            admissionMode = .adaptive(maxPendingStarts: startupLiveRampState?.maxPendingCount ?? 1)
+            admissionMode = .adaptive(maxPendingStarts: startupLivePolicy.pendingStartLimit)
         }
         liveAdmissionController.update(mode: admissionMode, sustainableCapacity: liveCapacity)
 

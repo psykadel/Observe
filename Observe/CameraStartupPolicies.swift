@@ -9,7 +9,18 @@ enum StartupLivePolicy: Equatable {
     case normal
     case firstImage(allowWiredFallback: Bool)
     case liveBurst(liveIDs: Set<String>)
-    case capacityRamp(liveIDs: Set<String>)
+    case capacityRamp(liveIDs: Set<String>, maxPendingStarts: Int)
+
+    var pendingStartLimit: Int {
+        switch self {
+        case .normal, .firstImage:
+            1
+        case .liveBurst:
+            Int.max
+        case .capacityRamp(_, let maxPendingStarts):
+            max(1, maxPendingStarts)
+        }
+    }
 }
 
 enum StartupCoverageResolution: Equatable {
