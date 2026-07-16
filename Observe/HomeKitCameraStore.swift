@@ -205,6 +205,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             batteryWakeTriggerThreshold: preferences.batteryWakeTriggerThreshold,
             batteryWakeLeaseDuration: batteryWakeLeaseDuration,
             batteryWakeLiveStartTimeout: batteryWakeLiveStartTimeout,
+            wiredStartupLiveStartTimeout: CameraSchedulingDefaults.wiredStartupLiveStartTimeout,
             startupCoverageActive: startupCoverageActive,
             sessionNetworkClass: sessionNetworkClass.rawValue,
             currentNetworkClass: networkPathClassifier.currentClass.rawValue,
@@ -654,7 +655,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             for feed in feeds where admission.startIDs.contains(feed.id) && isVisibleOnWall(feed) {
                 guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
                 markStartupLiveFallbackIfNeeded(for: feed.id, decision: decision, at: now)
-                feed.preferLive(at: now, liveStartTimeout: batteryWakeLiveStartTimeout)
+                feed.preferLive(at: now)
             }
         }
 
@@ -779,18 +780,21 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         for feed in feeds {
             guard var state = feedScheduleStates[feed.id] else { continue }
 
+            let isBatteryCamera = preferences.isBatteryWakeCamera(id: feed.id)
+            let liveStartTimeout = LiveStartTimeoutPolicy.timeout(
+                startupCoverageActive: startupCoverageActive,
+                isBatteryCamera: isBatteryCamera
+            )
             if let fallbackStartedAt = state.startupState.liveFallbackStartedAt,
                !feed.isStreaming,
-               now.timeIntervalSince(fallbackStartedAt) >= batteryWakeLiveStartTimeout {
-                applyStartupEvent(.liveFailed, feedID: feed.id, state: &state)
-                liveAdmissionController.recordRetryableFailure(feedID: feed.id, at: now)
-                feed.stopLiveIfNeeded()
+               now.timeIntervalSince(fallbackStartedAt) >= liveStartTimeout,
+               feed.stopLiveIfNeeded(reason: .startupTimeout) {
                 recordTelemetry(
-                    "startup live fallback timed out \(feed.id) retryIn=\(optionalSeconds(liveAdmissionController.retryDelay(feedID: feed.id, at: now)))"
+                    "startup live fallback timed out \(feed.id) elapsed=\(formatSeconds(now.timeIntervalSince(fallbackStartedAt)))"
                 )
             }
 
-            guard isVisibleOnWall(feed), preferences.isBatteryWakeCamera(id: feed.id) else {
+            guard isVisibleOnWall(feed), isBatteryCamera else {
                 state.batteryWakeLeaseStartedAt = nil
                 state.batteryWakeRetryAfter = nil
                 state.consecutiveBatteryWakeFailures = 0
@@ -1725,8 +1729,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 "live started \(feedID) callbackLatency=\(optionalSeconds(callbackLatency))",
                 at: startedAt
             )
-        case .stopRequested(let requestedAt):
-            recordTelemetry("live stop requested \(feedID)", at: requestedAt)
+        case .stopRequested(let requestedAt, let reason):
+            recordTelemetry(
+                "live stop requested \(feedID) reason=\(String(describing: reason))",
+                at: requestedAt
+            )
         case .stopped(let stoppedAt, let disposition, let callbackLatency):
             telemetryStartupMilestones.recordLiveStopped(
                 feedID: feedID,
@@ -1736,7 +1743,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 stalledStartupRescueLiveIDs = nil
             }
             let shouldFailCameraPath: Bool = switch disposition {
-            case .retryableTransport, .cameraFailure, .ended: true
+            case .startupTimedOut, .retryableTransport, .cameraFailure, .ended: true
             case .requestedStop, .softContention, .hardCapacity, .infrastructureUnavailable: false
             }
             if shouldFailCameraPath,
@@ -1823,7 +1830,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 if burstWasOpen {
                     enterSerializedModePreservingCapacity(reason: "infrastructureUnavailable", at: stoppedAt)
                 }
-            case .retryableTransport, .cameraFailure, .ended:
+            case .startupTimedOut, .retryableTransport, .cameraFailure, .ended:
                 liveAdmissionController.recordRetryableFailure(feedID: feedID, at: stoppedAt)
                 recordTelemetry(
                     "live retry queued \(feedID) disposition=\(liveFailureDispositionLabel(disposition)) retryIn=\(optionalSeconds(liveAdmissionController.retryDelay(feedID: feedID, at: stoppedAt)))",
@@ -1856,6 +1863,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func liveFailureDispositionLabel(_ disposition: CameraLiveFailureDisposition) -> String {
         switch disposition {
         case .requestedStop: "requestedStop"
+        case .startupTimedOut: "startupTimedOut"
         case .softContention: "softContention"
         case .hardCapacity: "hardCapacity"
         case .infrastructureUnavailable: "infrastructureUnavailable"
@@ -1922,6 +1930,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 isBatteryWakeCamera: feed.isBatteryWakeCamera,
                 isStreaming: feed.isStreaming,
                 isStartingLive: feed.isStartingLive,
+                liveTransportPhase: String(describing: feed.liveTransportPhase),
                 displayState: String(describing: feed.state),
                 recencyTier: String(describing: feed.recencyTier),
                 recoveryPhase: String(describing: feed.recoveryPhase),
@@ -1951,6 +1960,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 consecutiveBatteryWakeFailures: state?.consecutiveBatteryWakeFailures ?? 0,
                 liveStartedAge: age(of: feed.liveStartedAt, at: now),
                 liveStartRequestedAge: age(of: feed.liveStartRequestedAt, at: now),
+                liveStopRequestedAge: age(of: feed.liveStopRequestedAt, at: now),
+                liveStopReason: feed.liveStopReason.map { String(describing: $0) },
                 lastErrorMessage: feed.lastErrorMessage
             )
         }

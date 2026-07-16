@@ -11,8 +11,20 @@ enum CameraSchedulingDefaults {
     static let batteryCaptureWarmup: TimeInterval = 5
     static let batteryCaptureLeasePadding: TimeInterval = 3
     static let batteryWakeLeaseDuration: TimeInterval = 8
+    static let wiredStartupLiveStartTimeout: TimeInterval = 8
     static let batteryWakeLiveStartTimeout: TimeInterval = 30
     static let liveCapacityExpansionRetryDelay: TimeInterval = 10
+}
+
+enum LiveStartTimeoutPolicy {
+    static func timeout(
+        startupCoverageActive: Bool,
+        isBatteryCamera: Bool
+    ) -> TimeInterval {
+        startupCoverageActive && !isBatteryCamera
+            ? CameraSchedulingDefaults.wiredStartupLiveStartTimeout
+            : CameraSchedulingDefaults.batteryWakeLiveStartTimeout
+    }
 }
 
 enum SnapshotQueuePolicy {

@@ -288,6 +288,7 @@ struct CameraTelemetryFeed: Equatable {
     let isBatteryWakeCamera: Bool
     let isStreaming: Bool
     let isStartingLive: Bool
+    let liveTransportPhase: String
     let displayState: String
     let recencyTier: String
     let recoveryPhase: String
@@ -313,6 +314,8 @@ struct CameraTelemetryFeed: Equatable {
     let consecutiveBatteryWakeFailures: Int
     let liveStartedAge: TimeInterval?
     let liveStartRequestedAge: TimeInterval?
+    let liveStopRequestedAge: TimeInterval?
+    let liveStopReason: String?
     let lastErrorMessage: String?
 }
 
@@ -347,6 +350,7 @@ struct CameraTelemetryReport: Equatable {
     let batteryWakeTriggerThreshold: TimeInterval
     let batteryWakeLeaseDuration: TimeInterval
     let batteryWakeLiveStartTimeout: TimeInterval
+    let wiredStartupLiveStartTimeout: TimeInterval
     let startupCoverageActive: Bool
     let sessionNetworkClass: String
     let currentNetworkClass: String
@@ -399,6 +403,7 @@ struct CameraTelemetryReport: Equatable {
         lines.append("batteryWakeTriggerThreshold=\(formatSeconds(batteryWakeTriggerThreshold))")
         lines.append("batteryWakeLeaseDuration=\(formatSeconds(batteryWakeLeaseDuration))")
         lines.append("batteryWakeLiveStartTimeout=\(formatSeconds(batteryWakeLiveStartTimeout))")
+        lines.append("wiredStartupLiveStartTimeout=\(formatSeconds(wiredStartupLiveStartTimeout))")
         lines.append("startupCoverageActive=\(startupCoverageActive)")
         lines.append("sessionNetworkClass=\(sessionNetworkClass)")
         lines.append("currentNetworkClass=\(currentNetworkClass)")
@@ -497,6 +502,7 @@ struct CameraTelemetryReport: Equatable {
             "battery=\(feed.isBatteryWakeCamera)",
             "streaming=\(feed.isStreaming)",
             "startingLive=\(feed.isStartingLive)",
+            "liveTransportPhase=\(feed.liveTransportPhase)",
             "displayState=\(feed.displayState)",
             "recency=\(feed.recencyTier)",
             "recovery=\(feed.recoveryPhase)",
@@ -522,6 +528,8 @@ struct CameraTelemetryReport: Equatable {
             "batteryWakeFailures=\(feed.consecutiveBatteryWakeFailures)",
             "liveStartedAge=\(optionalSeconds(feed.liveStartedAge))",
             "liveStartRequestedAge=\(optionalSeconds(feed.liveStartRequestedAge))",
+            "liveStopRequestedAge=\(optionalSeconds(feed.liveStopRequestedAge))",
+            "liveStopReason=\(feed.liveStopReason ?? "nil")",
             "lastError=\(feed.lastErrorMessage ?? "nil")"
         ].joined(separator: " | ")
     }

@@ -493,27 +493,27 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .live)
         XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
     }
-    func testTimedOutLiveStartShouldRestartInsteadOfStayingStartingForever() {
-        XCTAssertFalse(
-            LiveStartRecoveryPolicy.shouldRestartStartingStream(
-                requestedAt: now.addingTimeInterval(-29),
-                timeout: 30,
-                now: now
-            )
+    func testStartupLiveTimeoutPolicySeparatesWiredAndBatteryWork() {
+        XCTAssertEqual(
+            LiveStartTimeoutPolicy.timeout(
+                startupCoverageActive: true,
+                isBatteryCamera: false
+            ),
+            8
         )
-        XCTAssertTrue(
-            LiveStartRecoveryPolicy.shouldRestartStartingStream(
-                requestedAt: now.addingTimeInterval(-31),
-                timeout: 30,
-                now: now
-            )
+        XCTAssertEqual(
+            LiveStartTimeoutPolicy.timeout(
+                startupCoverageActive: true,
+                isBatteryCamera: true
+            ),
+            30
         )
-        XCTAssertFalse(
-            LiveStartRecoveryPolicy.shouldRestartStartingStream(
-                requestedAt: nil,
-                timeout: 30,
-                now: now
-            )
+        XCTAssertEqual(
+            LiveStartTimeoutPolicy.timeout(
+                startupCoverageActive: false,
+                isBatteryCamera: false
+            ),
+            30
         )
     }
 }

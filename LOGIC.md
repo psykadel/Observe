@@ -145,6 +145,13 @@ APP START / SESSION START
     |   non-overdue snapshot request remains active.
     +-- Then allow one non-battery live fallback at a time, preserving that
     |   fallback until it becomes trusted or explicitly fails / times out.
+    |   A wired startup live request may remain pending for at most 8 seconds.
+    |   A battery live start keeps its existing 30-second allowance because
+    |   waking a battery camera is legitimately slower.
+    |   On timeout, request one clean stop, keep the transport slot reserved
+    |   until HomeKit confirms the stop, then apply per-camera backoff and admit
+    |   the next eligible camera. Do not stop and immediately restart the same
+    |   stalled request.
     +-- Resolve each visible camera's blocking first pass as either trusted or
     |   recovering. Do not silently substitute an old image for a failed path.
     +-- One per-camera startup state machine owns snapshot-path state,
@@ -196,6 +203,9 @@ APP START / SESSION START
         |   and capacity probing. Starting, streaming, and stopping transports all
         |   reserve capacity; a stop callback must release its reservation before
         |   a replacement starts.
+        |   Live transport ownership is tracked independently from tile display
+        |   state: snapshot loading or other presentation state must never count
+        |   as a live start or reserve live capacity.
         +-- During first-image recovery, preserve working streams up to capacity.
         |   Use a free slot first. If temporary battery or stopping work will free
         |   a slot, wait; otherwise the single recovery lane may preempt only the

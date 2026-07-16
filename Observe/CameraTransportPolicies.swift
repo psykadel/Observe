@@ -23,22 +23,82 @@ enum SnapshotRequestResult {
 enum CameraLiveTransportEvent: Equatable {
     case startRequested(at: Date, restarted: Bool)
     case started(at: Date, callbackLatency: TimeInterval?)
-    case stopRequested(at: Date)
+    case stopRequested(at: Date, reason: CameraLiveStopReason)
     case stopped(at: Date, disposition: CameraLiveFailureDisposition, callbackLatency: TimeInterval?)
 }
 
-enum CameraLiveTransportActivityPolicy {
-    static func hasActiveTransport(
-        streamStateIsActive: Bool,
-        startIsPending: Bool,
-        stopIsPending: Bool
-    ) -> Bool {
-        streamStateIsActive || startIsPending || stopIsPending
+enum CameraLiveStopReason: Equatable {
+    case planned
+    case startupTimeout
+}
+
+enum CameraLiveTransportState: Equatable {
+    case idle
+    case starting(requestedAt: Date)
+    case streaming(startedAt: Date)
+    case stopping(requestedAt: Date, reason: CameraLiveStopReason)
+
+    var phase: LiveTransportPhase {
+        switch self {
+        case .idle: .idle
+        case .starting: .starting
+        case .streaming: .streaming
+        case .stopping: .stopping
+        }
+    }
+
+    var startRequestedAt: Date? {
+        guard case .starting(let requestedAt) = self else { return nil }
+        return requestedAt
+    }
+
+    var startedAt: Date? {
+        guard case .streaming(let startedAt) = self else { return nil }
+        return startedAt
+    }
+
+    var stopRequestedAt: Date? {
+        guard case .stopping(let requestedAt, _) = self else { return nil }
+        return requestedAt
+    }
+
+    var stopReason: CameraLiveStopReason? {
+        guard case .stopping(_, let reason) = self else { return nil }
+        return reason
+    }
+
+    mutating func requestStart(at date: Date) -> Bool {
+        guard case .idle = self else { return false }
+        self = .starting(requestedAt: date)
+        return true
+    }
+
+    mutating func confirmStarted(at date: Date) -> Bool {
+        guard case .starting = self else { return false }
+        self = .streaming(startedAt: date)
+        return true
+    }
+
+    mutating func requestStop(at date: Date, reason: CameraLiveStopReason) -> Bool {
+        switch self {
+        case .starting, .streaming:
+            self = .stopping(requestedAt: date, reason: reason)
+            return true
+        case .idle, .stopping:
+            return false
+        }
+    }
+
+    mutating func confirmStopped() -> CameraLiveStopReason? {
+        let reason = stopReason
+        self = .idle
+        return reason
     }
 }
 
 enum CameraLiveFailureDisposition: Equatable {
     case requestedStop
+    case startupTimedOut
     case softContention(CameraTransportError)
     case hardCapacity(CameraTransportError)
     case infrastructureUnavailable(CameraTransportError)
@@ -54,7 +114,7 @@ enum CameraLiveFailureDisposition: Equatable {
              .retryableTransport(let error),
              .cameraFailure(let error):
             error
-        case .requestedStop, .ended:
+        case .requestedStop, .startupTimedOut, .ended:
             nil
         }
     }
@@ -63,14 +123,16 @@ enum CameraLiveFailureDisposition: Equatable {
 enum CameraLiveFailureDispositionPolicy {
     static func classify(
         error: CameraTransportError?,
-        stopWasRequested: Bool
+        stopReason: CameraLiveStopReason?
     ) -> CameraLiveFailureDisposition {
-        guard let error else { return stopWasRequested ? .requestedStop : .ended }
+        guard let error else {
+            return expectedStopDisposition(for: stopReason) ?? .ended
+        }
 
-        if stopWasRequested,
+        if stopReason != nil,
            error.domain == HMErrorDomain,
            error.code == HMError.Code.operationCancelled.rawValue {
-            return .requestedStop
+            return expectedStopDisposition(for: stopReason) ?? .ended
         }
 
         guard error.domain == HMErrorDomain,
@@ -92,6 +154,23 @@ enum CameraLiveFailureDispositionPolicy {
             return .retryableTransport(error)
         default:
             return .cameraFailure(error)
+        }
+    }
+
+    static func classify(
+        error: CameraTransportError?,
+        stopWasRequested: Bool
+    ) -> CameraLiveFailureDisposition {
+        classify(error: error, stopReason: stopWasRequested ? .planned : nil)
+    }
+
+    private static func expectedStopDisposition(
+        for reason: CameraLiveStopReason?
+    ) -> CameraLiveFailureDisposition? {
+        switch reason {
+        case .planned: .requestedStop
+        case .startupTimeout: .startupTimedOut
+        case nil: nil
         }
     }
 }

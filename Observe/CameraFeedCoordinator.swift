@@ -30,14 +30,27 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     var onAvailabilityChanged: ((String) -> Void)?
 
     private let accessory: HMAccessory
-    private(set) var liveStartRequestedAt: Date?
-    private(set) var liveStartedAt: Date?
-    private var liveStopRequestedAt: Date?
+    private var liveTransportState = CameraLiveTransportState.idle
     private var configuredStaleThreshold: TimeInterval = CameraSchedulingDefaults.staleVisualHighlightThreshold
     private var configuredBatteryTrustedStillThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold
     private var configuredBatteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup
     private var pendingSnapshotRequestID: SnapshotRequestID?
-    private var requestedStreamStop = false
+
+    var liveStartRequestedAt: Date? {
+        liveTransportState.startRequestedAt
+    }
+
+    var liveStartedAt: Date? {
+        liveTransportState.startedAt
+    }
+
+    var liveStopRequestedAt: Date? {
+        liveTransportState.stopRequestedAt
+    }
+
+    var liveStopReason: CameraLiveStopReason? {
+        liveTransportState.stopReason
+    }
 
     init(accessory: HMAccessory, profile: HMCameraProfile, profileIndex: Int) {
         self.accessory = accessory
@@ -54,36 +67,20 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     var isStreaming: Bool {
-        state == .live || profile.streamControl?.streamState == .streaming
+        liveTransportState.phase == .streaming
+            || profile.streamControl?.streamState == .streaming
     }
 
     var isStartingLive: Bool {
-        state == .starting || profile.streamControl?.streamState == .starting
+        liveTransportState.phase == .starting
     }
 
     var hasActiveLiveTransport: Bool {
-        let streamStateIsActive = switch profile.streamControl?.streamState {
-        case .starting, .streaming: true
-        default: false
-        }
-        return CameraLiveTransportActivityPolicy.hasActiveTransport(
-            streamStateIsActive: streamStateIsActive,
-            startIsPending: liveStartRequestedAt != nil,
-            stopIsPending: liveStopRequestedAt != nil || requestedStreamStop
-        )
+        liveTransportState.phase.reservesCapacity
     }
 
     var liveTransportPhase: LiveTransportPhase {
-        if liveStopRequestedAt != nil || requestedStreamStop {
-            return .stopping
-        }
-        if liveStartRequestedAt != nil || isStartingLive {
-            return .starting
-        }
-        if isStreaming {
-            return .streaming
-        }
-        return .idle
+        liveTransportState.phase
     }
 
     var hasFreshImageThisSession: Bool {
@@ -252,10 +249,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         ).isStale
     }
 
-    func preferLive(
-        at date: Date,
-        liveStartTimeout: TimeInterval = CameraSchedulingDefaults.batteryWakeLiveStartTimeout
-    ) {
+    func preferLive(at date: Date) {
         guard isReachable else {
             markOffline()
             return
@@ -264,46 +258,25 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         if let stream = profile.streamControl?.cameraStream {
             updateCameraSource(stream)
             sessionImageFreshness.apply(.liveStreamReceived)
-            state = .live
-            liveStartRequestedAt = nil
-            markLiveStartedIfNeeded(at: date)
+            if acceptHomeKitStreamingState(at: date) {
+                state = .live
+            }
             return
         }
 
         switch profile.streamControl?.streamState {
         case .starting:
-            if LiveStartRecoveryPolicy.shouldRestartStartingStream(
-                requestedAt: liveStartRequestedAt,
-                timeout: liveStartTimeout,
-                now: date
-            ) {
-                requestedStreamStop = true
-                profile.streamControl?.stopStream()
-                liveStartRequestedAt = date
-                state = .starting
-                onLiveTransportEvent?(id, .startRequested(at: date, restarted: true))
-                profile.streamControl?.startStream()
-                return
-            }
-
             state = .starting
-            if liveStartRequestedAt == nil {
-                liveStartRequestedAt = date
-            }
+            _ = liveTransportState.requestStart(at: date)
         case .streaming:
             updateCameraSource(profile.streamControl?.cameraStream)
             sessionImageFreshness.apply(.liveStreamReceived)
-            state = .live
-            liveStartRequestedAt = nil
-            markLiveStartedIfNeeded(at: date)
-        default:
-            if let liveStartRequestedAt,
-               date.timeIntervalSince(liveStartRequestedAt) < CameraSchedulingDefaults.snapshotRequestTimeout {
-                state = .starting
-                return
+            if acceptHomeKitStreamingState(at: date) {
+                state = .live
             }
+        default:
+            guard liveTransportState.requestStart(at: date) else { return }
             state = .starting
-            liveStartRequestedAt = date
             onLiveTransportEvent?(id, .startRequested(at: date, restarted: false))
             profile.streamControl?.startStream()
         }
@@ -365,23 +338,17 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         return true
     }
 
-    func stopLiveIfNeeded() {
-        switch profile.streamControl?.streamState {
-        case .starting, .streaming:
-            if !requestedStreamStop {
-                let requestedAt = Date()
-                liveStopRequestedAt = requestedAt
-                onLiveTransportEvent?(id, .stopRequested(at: requestedAt))
-            }
-            requestedStreamStop = true
-            profile.streamControl?.stopStream()
-        default:
-            if !requestedStreamStop {
-                liveStopRequestedAt = nil
-            }
+    @discardableResult
+    func stopLiveIfNeeded(reason: CameraLiveStopReason = .planned) -> Bool {
+        reconcileLiveTransportStateFromHomeKit(at: Date())
+        let requestedAt = Date()
+        guard liveTransportState.requestStop(at: requestedAt, reason: reason) else {
+            return false
         }
-        liveStartRequestedAt = nil
-        liveStartedAt = nil
+
+        onLiveTransportEvent?(id, .stopRequested(at: requestedAt, reason: reason))
+        profile.streamControl?.stopStream()
+        return true
     }
 
     func resetSessionState() {
@@ -457,12 +424,11 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     private func markHomeKitOff(wasVisibleOnWall: Bool? = nil) {
         let wasVisibleOnWall = wasVisibleOnWall ?? isVisibleOnWall
+        stopLiveIfNeeded()
         isAvailableInSession = false
         state = .offline
         cameraSource = nil
         lastSnapshotDate = nil
-        liveStartRequestedAt = nil
-        liveStartedAt = nil
         recencyTier = .empty
         recoveryPhase = .idle
         batteryStillDate = nil
@@ -473,9 +439,8 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     private func markOffline() {
+        stopLiveIfNeeded()
         state = .offline
-        liveStartRequestedAt = nil
-        liveStartedAt = nil
         recencyTier = .empty
         recoveryPhase = .idle
     }
@@ -503,10 +468,27 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
     }
 
-    private func markLiveStartedIfNeeded(at date: Date) {
-        if liveStartedAt == nil {
-            liveStartedAt = date
+    private func reconcileLiveTransportStateFromHomeKit(at date: Date) {
+        guard liveTransportState.phase == .idle else { return }
+
+        switch profile.streamControl?.streamState {
+        case .starting:
+            _ = liveTransportState.requestStart(at: date)
+        case .streaming:
+            _ = acceptHomeKitStreamingState(at: date)
+        default:
+            break
         }
+    }
+
+    private func acceptHomeKitStreamingState(at date: Date) -> Bool {
+        if liveTransportState.phase == .idle {
+            _ = liveTransportState.requestStart(at: date)
+        }
+        if liveTransportState.phase == .starting {
+            _ = liveTransportState.confirmStarted(at: date)
+        }
+        return liveTransportState.phase == .streaming
     }
 
     private func applySnapshot(_ snapshot: HMCameraSnapshot) {
@@ -531,12 +513,13 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             let callbackLatency = self.liveStartRequestedAt.map {
                 max(0, now.timeIntervalSince($0))
             }
+            let acceptedAsActiveTransport = self.liveTransportState.confirmStarted(at: now)
             self.updateCameraSource(cameraStreamControl.cameraStream)
             self.sessionImageFreshness.apply(.liveStreamReceived)
-            self.state = .live
             self.lastErrorMessage = nil
-            self.liveStartRequestedAt = nil
-            self.markLiveStartedIfNeeded(at: now)
+            guard acceptedAsActiveTransport else { return }
+
+            self.state = .live
             self.recencyTier = .live
             self.recoveryPhase = .idle
             self.onLiveTransportEvent?(
@@ -553,15 +536,11 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             let callbackLatency = self.liveStopRequestedAt.map {
                 max(0, stoppedAt.timeIntervalSince($0))
             }
-            self.liveStartRequestedAt = nil
-            self.liveStartedAt = nil
-            self.liveStopRequestedAt = nil
-            let stopWasRequested = self.requestedStreamStop
-            self.requestedStreamStop = false
+            let stopReason = self.liveTransportState.confirmStopped()
             let transportError = CameraTransportError(error)
             let disposition = CameraLiveFailureDispositionPolicy.classify(
                 error: transportError,
-                stopWasRequested: stopWasRequested
+                stopReason: stopReason
             )
 
             if case .retryableTransport(let error) = disposition {
@@ -572,20 +551,23 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
                 self.lastErrorMessage = nil
             }
 
-            self.onLiveTransportEvent?(
-                self.id,
-                .stopped(at: stoppedAt, disposition: disposition, callbackLatency: callbackLatency)
-            )
-
+            if self.state != .offline {
+                self.state = .idle
+            }
             self.presentSnapshotIfAvailable()
             if self.cameraSource == nil, self.state != .offline {
                 switch disposition {
-                case .retryableTransport, .cameraFailure, .ended:
+                case .startupTimedOut, .retryableTransport, .cameraFailure, .ended:
                     self.state = .failed("Unavailable")
                 case .requestedStop, .softContention, .hardCapacity, .infrastructureUnavailable:
                     self.state = .idle
                 }
             }
+
+            self.onLiveTransportEvent?(
+                self.id,
+                .stopped(at: stoppedAt, disposition: disposition, callbackLatency: callbackLatency)
+            )
         }
     }
 }

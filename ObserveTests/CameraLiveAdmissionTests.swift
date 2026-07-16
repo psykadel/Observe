@@ -81,21 +81,57 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
         XCTAssertEqual(afterStop.startIDs, ["front", "back"])
         XCTAssertTrue(afterStop.deferredStartIDs.isEmpty)
     }
-    func testPendingStopRemainsAnActiveTransportUntilCallback() {
+    func testLiveTransportStateOwnsCapacityIndependentlyFromDisplayState() {
+        var transport = CameraLiveTransportState.idle
+        let display = FeedDisplayState.starting
+
+        XCTAssertEqual(display, .starting)
+        XCTAssertEqual(transport.phase, .idle)
+        XCTAssertFalse(transport.phase.reservesCapacity)
+
+        XCTAssertTrue(transport.requestStart(at: now))
+        XCTAssertEqual(transport.phase, .starting)
+        XCTAssertEqual(transport.startRequestedAt, now)
+        XCTAssertTrue(transport.phase.reservesCapacity)
+
         XCTAssertTrue(
-            CameraLiveTransportActivityPolicy.hasActiveTransport(
-                streamStateIsActive: false,
-                startIsPending: false,
-                stopIsPending: true
+            transport.requestStop(
+                at: now.addingTimeInterval(8),
+                reason: .startupTimeout
             )
         )
+        XCTAssertEqual(transport.phase, .stopping)
+        XCTAssertEqual(transport.stopReason, .startupTimeout)
         XCTAssertFalse(
-            CameraLiveTransportActivityPolicy.hasActiveTransport(
-                streamStateIsActive: false,
-                startIsPending: false,
-                stopIsPending: false
+            transport.requestStop(
+                at: now.addingTimeInterval(9),
+                reason: .startupTimeout
             )
         )
+
+        XCTAssertEqual(transport.confirmStopped(), .startupTimeout)
+        XCTAssertEqual(transport, .idle)
+    }
+    func testLateStartWhileStoppingDoesNotRestoreStreamingOwnership() {
+        var transport = CameraLiveTransportState.starting(requestedAt: now)
+        _ = transport.requestStop(
+            at: now.addingTimeInterval(8),
+            reason: .startupTimeout
+        )
+
+        XCTAssertFalse(transport.confirmStarted(at: now.addingTimeInterval(8.1)))
+        XCTAssertEqual(transport.phase, .stopping)
+    }
+    func testLateStartAfterStopDoesNotReacquireTransportOwnership() {
+        var transport = CameraLiveTransportState.starting(requestedAt: now)
+        _ = transport.requestStop(
+            at: now.addingTimeInterval(8),
+            reason: .startupTimeout
+        )
+        _ = transport.confirmStopped()
+
+        XCTAssertFalse(transport.confirmStarted(at: now.addingTimeInterval(8.2)))
+        XCTAssertEqual(transport.phase, .idle)
     }
     func testExpectedOperationCancelledStreamStopIsNotReportedAsFailure() {
         XCTAssertFalse(
@@ -137,18 +173,26 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             NSError(domain: "Camera", code: 7)
         ))
 
-        let requested = CameraLiveFailureDispositionPolicy.classify(error: cancelled, stopWasRequested: true)
+        let requested = CameraLiveFailureDispositionPolicy.classify(error: cancelled, stopReason: .planned)
         XCTAssertEqual(requested, .requestedStop)
         XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: capacity, stopWasRequested: false),
+            CameraLiveFailureDispositionPolicy.classify(error: nil, stopReason: .startupTimeout),
+            .startupTimedOut
+        )
+        XCTAssertEqual(
+            CameraLiveFailureDispositionPolicy.classify(error: cancelled, stopReason: .startupTimeout),
+            .startupTimedOut
+        )
+        XCTAssertEqual(
+            CameraLiveFailureDispositionPolicy.classify(error: capacity, stopReason: nil),
             .hardCapacity(capacity)
         )
         XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: cameraFailure, stopWasRequested: false),
+            CameraLiveFailureDispositionPolicy.classify(error: cameraFailure, stopReason: nil),
             .cameraFailure(cameraFailure)
         )
         XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: nil, stopWasRequested: false),
+            CameraLiveFailureDispositionPolicy.classify(error: nil, stopReason: nil),
             .ended
         )
     }
@@ -169,11 +213,11 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             NSError(domain: "Camera", code: 7)
         ))
 
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: busy, stopWasRequested: false), .softContention(busy))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: hardLimit, stopWasRequested: false), .hardCapacity(hardLimit))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: communication, stopWasRequested: false), .retryableTransport(communication))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: network, stopWasRequested: false), .infrastructureUnavailable(network))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: camera, stopWasRequested: false), .cameraFailure(camera))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: busy, stopReason: .startupTimeout), .softContention(busy))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: hardLimit, stopReason: .startupTimeout), .hardCapacity(hardLimit))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: communication, stopReason: .startupTimeout), .retryableTransport(communication))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: network, stopReason: .startupTimeout), .infrastructureUnavailable(network))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: camera, stopReason: .startupTimeout), .cameraFailure(camera))
     }
     func testConstrainedAdmissionSerializesColdStarts() {
         var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)

@@ -79,6 +79,7 @@ final class CameraTelemetryTests: ObserveTestCase {
             batteryWakeTriggerThreshold: 30,
             batteryWakeLeaseDuration: 8,
             batteryWakeLiveStartTimeout: 30,
+            wiredStartupLiveStartTimeout: 8,
             startupCoverageActive: true,
             sessionNetworkClass: "wifi",
             currentNetworkClass: "wifi",
@@ -151,6 +152,7 @@ final class CameraTelemetryTests: ObserveTestCase {
                     isBatteryWakeCamera: false,
                     isStreaming: false,
                     isStartingLive: false,
+                    liveTransportPhase: "stopping",
                     displayState: "starting",
                     recencyTier: "empty",
                     recoveryPhase: "idle",
@@ -176,6 +178,8 @@ final class CameraTelemetryTests: ObserveTestCase {
                     consecutiveBatteryWakeFailures: 0,
                     liveStartedAge: nil,
                     liveStartRequestedAge: nil,
+                    liveStopRequestedAge: 0.5,
+                    liveStopReason: "startupTimeout",
                     lastErrorMessage: nil
                 )
             ],
@@ -207,6 +211,7 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("outstandingSnapshotRequests=3"))
         XCTAssertTrue(text.contains("untrustedSnapshotRefreshInterval=2.0s"))
         XCTAssertTrue(text.contains("batteryWakeTriggerThreshold=30.0s"))
+        XCTAssertTrue(text.contains("wiredStartupLiveStartTimeout=8.0s"))
         XCTAssertTrue(text.contains("nextBatteryCaptureDueIn=25.0s"))
         XCTAssertTrue(text.contains("liveCapacityExpansionRetryIn=5.0s"))
         XCTAssertTrue(text.contains("liveCapacityExpansionCooldownEligible=false"))
@@ -226,8 +231,11 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("snapshotWorkState=active"))
         XCTAssertTrue(text.contains("startupSnapshotPath=inFlight"))
         XCTAssertTrue(text.contains("startupLivePath=notAttempted"))
+        XCTAssertTrue(text.contains("liveTransportPhase=stopping"))
+        XCTAssertTrue(text.contains("liveStopRequestedAge=0.5s"))
+        XCTAssertTrue(text.contains("liveStopReason=startupTimeout"))
         XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
-        XCTAssertEqual(stableFingerprint(text), 5_774_604_140_840_478_573)
+        XCTAssertEqual(stableFingerprint(text), 5_079_298_362_538_272_522)
     }
 
     private func stableFingerprint(_ text: String) -> UInt64 {
