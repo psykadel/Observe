@@ -1,593 +1,171 @@
-# Live / Refresh Logic
+# How Observe Handles Cameras
 
-## App Start / Session Start
+This document explains what Observe should do from the user's point of view.
 
-APP START / SESSION START
-|
-+-- Persist user settings only
-|   |
-|   +-- Keep user choices such as selected home, camera order, wall layout,
-|       stale thresholds, and battery-camera settings across app opens.
-|   +-- Keep whether battery cameras are currently enabled across app opens.
-|   +-- Do not persist the active operational camera session as authoritative.
-|   +-- Rebuild the active wall from current HomeKit discovery and current
-|       per-session camera availability each time a fresh wall session starts.
-|   +-- A redundant scene-phase notification that says the already-active app
-|       is active again must not rebuild the HomeKit session or stop streams
-|       that just started.
-|   +-- Every rebuilt wall session receives a new generation. Snapshot, live,
-|       constrained, and availability callbacks from an older generation must
-|       be ignored and must not mutate the active session.
-|
-+-- Build active visible wall set
-|   |
-|   +-- Include every camera discovered for the selected home unless HomeKit
-|       explicitly reports that camera as off or not responding.
-|   +-- Cameras that are powered off, reported inactive by HomeKit's
-|       HomeKitCameraActive state, or reported manually disabled by HomeKit's
-|       camera operating mode state, must not occupy wall layout slots.
-|   +-- Cameras whose HomeKit accessory is not reachable / not responding must
-|       not occupy wall layout slots.
-|   +-- Battery cameras must not occupy wall layout slots while the user-level
-|       battery camera visibility toggle is shown and off.
-|   +-- If the battery camera visibility toggle button setting is off, force
-|       the user-level battery camera visibility state on so battery cameras
-|       remain visible and reachable while the control is hidden.
-|   +-- A battery camera hidden by the user-level toggle must not receive
-|       snapshot requests, live feed requests, live captures, refreshes,
-|       battery wake leases, or other camera work while hidden.
-|   +-- Do not remove cameras from the wall for restricted-mode pressure,
-|       transient stream failures, snapshot failures, network errors, or
-|       HomeKit communication errors while the accessory is still reachable.
-|       Those conditions may change status, live assignment, or refresh
-|       behavior, but they must not consume the camera's wall identity or make
-|       it disappear.
-|   +-- If HomeKit later reports an off or not-responding camera as active and
-|       reachable again, it may re-enter the wall according to the persisted
-|       user priority order.
-|
-+-- Start universal STARTUP COVERAGE PHASE
-    |
-    +-- Optimize for the first trusted image on every visible camera before
-    |   ordinary live-wall assignment, regardless of whether restricted mode
-    |   has already been detected.
-    +-- Classify only the active network interface with `NWPathMonitor`; do not
-    |   read or persist an SSID, request location permission, or assume that
-    |   Wi-Fi means the device is on the home LAN.
-    +-- When the session starts on a satisfied Wi-Fi path, make one bounded,
-    |   speculative all-live attempt for every visible camera:
-    |   |
-    |   +-- Request every visible live feed immediately in one planning pass.
-    |   |   Treat configured battery cameras as plain live feeds during this
-    |   |   burst; do not start a battery trusted-still capture lease or show
-    |   |   live-capture mode merely because the battery still is due.
-    |   |   A successfully started plain live stream resolves that camera's
-    |   |   startup coverage, but it must not be recorded as a captured battery
-    |   |   still for later Restricted Mode trust decisions.
-    |   +-- Queue startup snapshots normally, but give live requests a 1-second
-    |   |   head start before issuing the first HomeKit snapshot request.
-    |   +-- After 1 second, release the existing capped snapshot lane in parallel
-    |   |   so a remote Wi-Fi connection still progresses toward trusted images.
-    |   +-- At 4 seconds, require every visible non-battery camera to be live.
-    |   |   If they are, keep the burst open for any slower battery cameras up
-    |   |   to the existing battery live-start timeout while snapshots continue
-    |   |   normally in parallel. A battery-only wall receives the same grace.
-    |   +-- If every visible feed becomes live during either stage, keep the wall
-    |   |   live and complete the speculative attempt.
-    |   +-- On the first live-start error, 4-second wired deadline, battery
-    |   |   live-start deadline, network-path change, or visible-camera-set
-    |   |   change, close the attempt permanently. A true HomeKit hard-capacity
-    |   |   error uses the surviving streams as durable capacity evidence. A
-    |   |   soft busy error instead switches to serialized safe scheduling and
-    |   |   creates a non-persistent session ceiling from the streams that are
-    |   |   already working. Transport errors use their own retry policy.
-    |   +-- Never reopen or retry the all-live burst during the same wall session;
-    |       late callbacks cannot promote the session back to the burst path.
-    +-- On cellular, another interface type, or an unknown / unsatisfied path,
-    |   skip the Wi-Fi burst and use the normal remote-safe startup path below.
-    +-- Immediately queue untrusted non-battery snapshot work in UI priority
-    |   order. Defer routine refreshes for already-trusted cameras until startup
-    |   coverage ends.
-    +-- Run at most 2 active snapshot requests until the first non-battery
-    |   camera becomes trusted, then at most 3 active requests. Snapshot
-    |   concurrency is an internal scheduling policy, not a user setting.
-    +-- Keep at most 4 HomeKit snapshot requests outstanding, including overdue
-    |   requests whose callbacks have not returned.
-    +-- A request that has not returned after 4 seconds becomes overdue:
-    |   |
-    |   +-- It stops consuming an active scheduler slot.
-    |   +-- It continues consuming an outstanding-request slot.
-    |   +-- Keep its HomeKit request identity and per-camera ownership.
-    |   +-- Do not issue another request for that camera until its callback returns.
-    +-- Outside the Wi-Fi burst, allow exactly one battery trusted-still live
-    |   capture in parallel.
-    |   Focused viewing wins that live opportunity.
-    |   A battery live-start alone does not resolve startup coverage; the
-    |   Observe-captured trusted still must complete first.
-    +-- On the normal remote-safe path, use that battery stream as the initial
-    |   live transport probe. If no
-    |   battery camera needs capture, immediately start one UI-priority wired
-    |   live probe alongside the capped snapshot lane.
-    +-- On cellular only, if the snapshot timeout elapses with no trusted image
-    |   while that battery probe is still pending, make one bounded stalled-start
-    |   rescue attempt:
-    |   |
-    |   +-- Admit exactly one UI-priority wired live probe alongside the battery.
-    |   +-- Do not reopen this rescue after its first attempt in the same session.
-    |   +-- Do not activate it on Wi-Fi, after any camera is trusted, without a
-    |       pending battery probe, or after startup coverage ends.
-    |   +-- A live success joins the ordinary bounded capacity ramp. A rejection
-    |       or failure follows the existing constrained / fallback rules.
-    +-- When that initial probe becomes live, start one bounded live-capacity ramp
-    |   that continues alongside trusted-image accounting and battery capture:
-    |   |
-    |   +-- If the first live success arrives before 3 seconds, allow at most 2
-    |   |   additional live starts to be pending at once.
-    |   +-- If it arrives at or after 3 seconds, allow at most 1 additional live
-    |   |   start to be pending at once. This is the remote-safe path.
-    |   +-- Each confirmed live success immediately admits the next camera in UI
-    |   |   priority order without waiting for startup coverage to end.
-    |   +-- A focused camera preempts the lowest-priority pending probe without
-    |   |   exceeding the ramp width.
-    |   +-- An ordinary camera failure cools that camera down and admits the next
-    |   |   eligible camera; do not let one bad camera block the whole wall.
-    |   +-- A hard-capacity rejection stops new ramp admissions and enters
-    |   |   Restricted Mode using only streams that survived the rejection.
-    |   +-- A soft-contention result enters the same serialized scheduler, caps
-    |   |   only the current session at the first surviving-stream count, and
-    |   |   retries after 1, 2, 4, then 8 seconds. It must not lower persisted
-    |   |   topology capacity. If the same startup camera is still busy on its
-    |   |   second bounded attempt, move it to nonterminal recovery and give the
-    |       next pending camera the startup lane.
-    +-- On the normal remote-safe path, do not start ordinary non-battery live
-    |   streams until every visible
-    |   non-battery camera has had its startup snapshot path attempted and no
-    |   non-overdue snapshot request remains active.
-    +-- Then allow one non-battery live fallback at a time, preserving that
-    |   fallback until it becomes trusted or explicitly fails / times out.
-    |   A wired startup live request may remain pending for at most 8 seconds.
-    |   A battery live start keeps its existing 30-second allowance because
-    |   waking a battery camera is legitimately slower.
-    |   On timeout, request one clean stop, keep the transport slot reserved
-    |   until HomeKit confirms the stop, then apply per-camera backoff and admit
-    |   the next eligible camera. Do not stop and immediately restart the same
-    |   stalled request.
-    +-- Resolve each visible camera's blocking first pass as either trusted or
-    |   recovering. Do not silently substitute an old image for a failed path.
-    +-- One per-camera startup state machine owns snapshot-path state,
-    |   live-path state, and final coverage resolution. Request, success,
-    |   failure, timeout, trusted-image, and reset events must transition through
-    |   that state machine; do not maintain parallel startup booleans.
-    +-- A wired camera enters recovery only after both its snapshot and live
-    |   paths fail. A battery camera enters recovery after its live capture path
-    |   fails, because battery cameras do not use HomeKit snapshot requests.
-    +-- Recovery is nonterminal: a later live request may be admitted again, and
-    |   any valid late snapshot or live success moves the camera to trusted.
-    +-- End the blocking startup first pass after every visible camera is trusted
-    |   or recovering. Recovery work continues after that boundary.
-    +-- Once a camera enters recovery, release its snapshot retry
-    |   after the normal completion-based backoff even if other cameras are still
-    |   completing startup coverage. This recovery is non-blocking: it must not
-    |   return the camera to pending coverage, occupy the one-at-a-time live
-    |   fallback, or delay coverage of another camera.
-    +-- When choosing the next wired live fallback, any camera still awaiting
-    |   its first-pass result outranks a camera already in recovery. A recovering
-    |   camera remains eligible after all pending cameras have had their chance.
-    |
-    +-- Continue or complete the same live-capacity ramp after startup coverage
-        |
-        +-- Preserve every visible stream that is already working, including a
-        |   battery stream used for startup trusted-still capture.
-        +-- Outside the one bounded Wi-Fi burst, preserve the ramp width already
-        |   classified from the first live result; never switch to an unbounded
-        |   request for every camera.
-        +-- Defer routine snapshot refreshes for startup-trusted cameras until
-        |   this capacity ramp succeeds or HomeKit reports a constrained signal.
-        +-- If every admitted stream succeeds, keep every visible camera live.
-        |   During the Wi-Fi burst, a battery camera remains plain live. Outside
-        |   that burst, a battery camera may perform a due trusted-still capture
-        |   within its normal live stream and remain live afterward.
-        +-- If HomeKit reports constrained live connections, enter RESTRICTED MODE.
-        +-- Send every live intent through one session admission controller.
-        |   The planner decides desired cameras and priority; only the admission
-        |   controller may turn that intent into HomeKit starts and stops.
-        +-- Apply every admitted live plan as a deterministic two-phase handoff:
-        |   |
-        |   +-- Preserve transports that remain selected.
-        |   +-- Request stops for every outgoing transport before requesting any
-        |   |   replacement live start.
-        |   +-- Defer only the missing replacement starts until HomeKit reports
-        |       the outgoing transports stopped; snapshot work continues meanwhile.
-        +-- Outside the bounded Wi-Fi burst, once contention is observed, admit
-        |   at most one pending live start across startup, steady state, recovery,
-        |   and capacity probing. Starting, streaming, and stopping transports all
-        |   reserve capacity; a stop callback must release its reservation before
-        |   a replacement starts.
-        |   Live transport ownership is tracked independently from tile display
-        |   state: snapshot loading or other presentation state must never count
-        |   as a live start or reserve live capacity.
-        +-- During first-image recovery, preserve working streams up to capacity.
-        |   Use a free slot first. If temporary battery or stopping work will free
-        |   a slot, wait; otherwise the single recovery lane may preempt only the
-        |   lowest-priority unprotected trusted stream.
-        +-- Do not issue a routine refresh snapshot for a camera being promoted
-        |   to live. Preserve urgent snapshot/live racing for an untrusted camera,
-        |   and preserve the Wi-Fi burst's explicitly parallel snapshot path.
-        +-- If HomeKit reports `operationCancelled` after Observe intentionally
-        |   stopped a stream, treat it as the expected stop callback rather than
-        |   a camera failure or user-visible camera error.
-        +-- If no live stream has successfully reported active yet, keep one
-        |   restricted live slot available for battery capture or live fallback.
-        +-- Classify HomeKit stop evidence before changing policy:
-        |   |
-        |   +-- Expected cancellation after an Observe stop: no failure.
-        |   +-- Accessory busy / operation in progress: soft contention; serialize,
-        |   |   set a temporary session ceiling from the first surviving-stream
-        |   |   count, and retry after 1, 2, 4, then 8 seconds. Do not persist the
-        |   |   ceiling. Yield a repeatedly busy startup camera after attempt two
-        |   |   so it cannot block first-image progress for the rest of the wall.
-        |   |   After the capacity-probe cooldown, allow exactly one explicit
-        |   |   capacity-probe intent one slot above that ceiling. If it succeeds,
-        |   |   raise the session ceiling by that one proven slot; if it fails,
-        |   |   restore the previous ceiling and restart the cooldown.
-        |   +-- Maximum object limit reached: hard capacity; lower and persist to
-        |   |   the number of streams that actually survived.
-        |   +-- Network or Home Hub unavailable: global 2, 4, 8, then 10-second
-        |   |   backoff without changing camera health or capacity memory.
-        |   +-- Communication, timeout, and camera failures: per-camera 2, 4, 8,
-        |       then 10-second backoff; keep recovery visible and nonterminal.
-        +-- Persist restricted live capacity by the selected home ID plus the exact,
-        |   order-independent set of visible camera IDs. A same-sized but different
-        |   camera set must not reuse that result.
-        |   Version 3 capacity evidence intentionally ignores older learned values
-        |   once so the narrower hard-capacity rules can relearn cleanly.
-        +-- Learn capacity only from streams that actually survive the rejected
-            request. Current failure evidence lowers or clears older memory; an
-            unconfirmed remembered value may be used only as a provisional hint,
-            and retry one extra slot only after the probe cooldown.
+**Writing rule:** Keep it understandable to someone who uses Observe but does
+not build it. Describe what the user sees and what the app does next. Use plain
+language. Keep class names, internal labels, detailed timers, and retry formulas
+in the code and tests.
 
----
+## Which Cameras Appear
+
+Observe remembers the user's home, camera order, layout, and settings. Each time
+a new camera view begins, it asks HomeKit for the current cameras and starts
+fresh.
+
+- Show every camera that HomeKit says is on and reachable.
+- Do not remove a camera just because a picture or live-video request failed.
+- Remove a camera only when HomeKit says it is off, disabled, or unreachable.
+- Return a recovered camera to its saved place in the layout.
+- Ignore late results left over from an earlier camera view.
+- Do not restart everything when the already-open app receives another
+  “active” notification.
+
+When the user hides battery cameras, remove them from the layout and do not wake,
+refresh, or connect to them. If the option to hide battery cameras is itself
+hidden, keep battery cameras visible.
+
+## What Counts as a Current Picture
+
+For an ordinary camera, either live video or a recent snapshot is current.
+
+For a battery camera, Observe normally needs to capture its own recent still
+from a live connection. Battery cameras do not provide ordinary HomeKit
+snapshots. If a battery camera is already live, Observe uses that connection
+instead of opening another one.
+
+During the initial Wi-Fi attempt, live video is enough to show the battery camera
+right away. It does not count as a saved battery still for later use.
+
+Observe never presents an old picture as if it were current merely because a new
+request failed.
+
+## When the Camera View Opens
+
+Observe first tries to get a current picture for every visible camera. Only then
+does it concentrate on showing as many live feeds as HomeKit will allow.
+
+On Wi-Fi, Observe makes one quick attempt to start every camera live. It also
+begins taking snapshots shortly afterward so the view still fills in when Wi-Fi
+is not actually connected to the home network.
+
+If that all-live attempt succeeds, keep it. If a camera fails, the attempt takes
+too long, the network changes, or the visible cameras change, stop using this
+fast approach for the rest of that camera view. Late responses must not turn it
+back on.
+
+On cellular or any other connection, Observe starts more cautiously:
+
+- Take a few ordinary-camera snapshots at a time.
+- Wake one battery camera that needs a new still. If none does, try one ordinary
+  camera live.
+- If a camera stalls or fails, move on so it cannot hold up the entire view.
+- Add more live feeds gradually as HomeKit accepts them.
+- If HomeKit clearly refuses another live feed, keep the feeds that still work
+  and switch to Restricted Mode.
+- If HomeKit is merely busy, slow down and try again without treating that as a
+  permanent limit.
+
+A camera whose first attempts fail remains visible and keeps trying in the
+background. The initial loading period ends when every camera either has a
+current picture or has moved into background recovery. A later successful
+picture or live connection immediately brings that camera up to date.
 
 ## Restricted Mode
 
-RESTRICTED MODE
-|
-+-- Primary goal
-|   |
-|   +-- Make sure every visible camera has a recent / trusted image as quickly as possible.
-|
-+-- Determine whether each visible camera has a trusted image
-|   |
-|   +-- Non-battery camera
-|   |   |
-|   |   +-- Is the camera currently live?
-|   |       |
-|   |       +-- Yes -> Trusted.
-|   |       |
-|   |       +-- No
-|   |           |
-|   |           +-- Does it have a recent snapshot?
-|   |               |
-|   |               +-- Yes -> Trusted.
-|   |               +-- No  -> Needs snapshot refresh.
-|   |
-|   +-- Battery camera
-|       |
-|       +-- Does it have an Observe-captured still within the
-|           "Start Live Capture After" threshold?
-|           |
-|           +-- Yes -> Trusted.
-|           +-- No  -> Needs battery wake / live capture.
-|
-+-- Refresh work
-|   |
-|   +-- Non-battery cameras that are not live
-|   |   |
-|   |   +-- Refresh snapshots immediately and continuously.
-|   |   +-- After startup coverage, request the next snapshot as soon as the
-|   |       previous request succeeds or fails, the per-camera minimum refresh interval
-|   |       has elapsed, and a snapshot request slot is available.
-|   |       Use a 2-second minimum while the camera still lacks a
-|   |       trusted image; use the normal 5-second minimum after a recent
-|   |       trusted image exists.
-|   |       After a failed snapshot request, measure that minimum interval
-|   |       from callback completion so retry waves do not immediately stampede
-|   |       HomeKit again. An overdue request is not a completed failure and
-|   |       must not be retried while HomeKit still owns it.
-|   |   +-- Empty / stale cameras are more urgent than already-recent cameras.
-|   |   +-- Preserve UI priority order within each snapshot urgency tier.
-|   |   +-- A recent snapshot is trusted for display and stale marking.
-|   |   +-- A trusted snapshot does not stop ongoing non-battery refresh work.
-|   |   +-- If an overdue snapshot later succeeds before the camera has any
-|   |       trusted image, accept it as the first trusted frame
-|   |       as long as the returned capture age is within the configured stale
-|   |       threshold. Old failures and late successes older than that threshold
-|   |       must still be ignored.
-|   |   +-- Snapshot refreshes do not consume restricted live slots.
-|   |   +-- Snapshot refreshes may run in parallel with battery wake work.
-|   |   +-- Never enqueue snapshot work with priority `none`, and never enqueue
-|   |       HomeKit snapshot work for a configured battery camera.
-|   |   +-- Snapshot request concurrency is controlled internally by Observe.
-|   |       Do not expose a user setting or honor a persisted override.
-|   |   +-- During startup coverage, adapt the active snapshot cap to observed
-|   |       first-image progress:
-|   |       |
-|   |       +-- Before any non-battery camera has a trusted image, allow up
-|   |           to 2 simultaneous snapshot requests.
-|   |       +-- After at least one non-battery camera has a trusted image,
-|   |           allow up to 3 simultaneous snapshot requests.
-|   |       +-- Apply this cap from the first startup snapshot until every
-|   |           visible camera is trusted or recovering, then use
-|   |           the internal steady-state limit of 3 active requests.
-|   |       +-- Independently cap outstanding startup requests at 4. Overdue
-|   |           requests count toward this cap even though they no longer consume
-|   |           an active slot.
-|   |       +-- After startup, cap outstanding requests at the same internal
-|   |           steady-state limit of 3.
-|   |
-|   +-- Battery cameras that do not have trusted stills
-|       |
-|       +-- Must receive a live slot long enough to wake.
-|       +-- Must capture an Observe-captured still.
-|       +-- In restricted mode, any warm live battery stream may produce the
-|           Observe-captured still, whether it began during focused live viewing
-|           or a restricted live wake lease.
-|       +-- Outside restricted mode, a battery camera that already has an
-|           active live feed does not start a separate live capture session;
-|           the live feed is already sufficient.
-|       +-- After the Observe-captured still is received, the camera becomes trusted.
-|       +-- If a live wake lease times out without a trusted still:
-|           |
-|           +-- Release the live slot.
-|           +-- Put that camera under a short retry backoff.
-|           +-- Let the next eligible waiting battery camera try the slot.
-|
-+-- Build live-slot plan
-    |
-    +-- Is live capacity currently 0?
-    |   |
-    |   +-- Yes
-    |       |
-    |       +-- Refresh non-battery snapshots continuously.
-    |       +-- Mark due battery cameras as "Queued".
-    |       +-- Do not start any live feeds.
-    |
-    +-- Is at least one live slot available?
-        |
-        +-- Yes
-            |
-            +-- 1. Reserve the first live slot for the focused
-            |      full-screen feed, if any
-            |   |
-            |   +-- Focus is an explicit cancellation reason for another
-            |       active battery trusted-still capture if capacity is full.
-            |   +-- If the focused camera is battery-powered, this live slot may
-            |       also satisfy its battery wake / trusted still requirement.
-            |
-            +-- 2. Preserve active battery trusted-still captures
-            |   |
-            |   +-- Any battery camera already using a live slot to capture
-            |       a trusted still keeps that slot unless focus explicitly
-            |       needs the slot.
-            |   +-- Do not swap, rotate, reprioritize, or reclaim that slot
-            |       while the trusted still is still pending.
-            |   +-- Release the slot after the camera has any trusted battery
-            |       still, timeout, or explicit focus cancellation.
-            |   +-- A battery camera that is already warm live can become trusted
-            |       as soon as the trusted-still warmup after live start is satisfied.
-            |   +-- While HomeKit is still trying to establish live, use a separate
-            |       live-start timeout so slow connection setup does not rotate the
-            |       protected slot on the shorter capture warmup clock.
-            |
-            +-- 3. During universal startup coverage
-            |   |
-            |   +-- While the one bounded Wi-Fi burst is open, request every
-            |   |   visible live feed immediately; its 1-second snapshot head start,
-            |   |   4-second wired deadline, bounded battery grace, and
-            |   |   first-failure circuit breaker override the single-probe
-            |   |   rules below.
-            |   +-- Preserve a focused feed first.
-            |   +-- Otherwise preserve or start one battery trusted-still capture.
-            |   +-- If no battery capture is needed, allow one UI-priority wired
-            |       live transport probe while startup snapshots are active.
-            |   +-- Leave all other live slots idle while any non-overdue startup
-            |       snapshot request is active unless the local fast path activates.
-            |   +-- After every non-battery snapshot path has been attempted and
-            |       no non-overdue snapshot request remains active, start one
-            |       non-battery live fallback in UI priority order.
-            |   +-- Do not rotate or duplicate that fallback while it is starting.
-            |   +-- Mark the camera trusted when the live stream starts. Put it
-            |       into visible recovery if the fallback fails or times out.
-            |   +-- Recovery ends that camera's blocking first-pass state without
-            |       hiding the failure. Snapshot and opportunistic live recovery
-            |       continue after their ordinary backoffs while first-pass
-            |       coverage proceeds for the remaining cameras.
-            |
-            +-- 4. While any visible battery camera lacks a trusted still
-            |   |
-            |   +-- Use unleased remaining live slots for battery wake candidates.
-            |   +-- Choose battery wake candidates in UI sort order.
-            |   +-- Rotate to the next waiting candidate as slots become available.
-            |   +-- If battery wake work does not consume all known live capacity,
-            |       fill the remaining slots with the normal UI-priority live feeds.
-            |   +-- Battery cameras that still lack a trusted still are not normal
-            |       live-fill candidates while they are waiting or under retry backoff.
-            |       They may hold a live slot only as the focused feed, an active
-            |       trusted-still capture, or a newly eligible battery wake lease.
-            |   +-- Do not probe extra live capacity while any visible battery camera
-            |       still lacks a trusted still. Use the known restricted capacity for
-            |       battery wake first, then fill any leftover known slots normally.
-            |   +-- Mark cameras waiting for a slot as "Queued"
-            |       with a yellow indicator.
-            |   +-- When a leased battery camera captures a still after the
-            |       configured warmup time has elapsed since the stream became live:
-            |       |
-            |       +-- Mark it trusted.
-            |       +-- Release / rotate the slot to the next waiting battery camera.
-            |   +-- When a leased battery camera times out without a trusted still:
-            |       |
-            |       +-- If the stream became live, measure the capture timeout from
-            |           live start so "Wait Before Capturing" means seconds live.
-            |       +-- If HomeKit rejects the live start before the stream becomes live,
-            |           treat it as a failed wake attempt, not as a lease to preserve.
-            |       +-- Stop the timed-out HomeKit live attempt so the next retry
-            |           starts from a clean live connection request.
-            |       +-- Release / rotate the slot to the next waiting battery camera.
-            |       +-- Keep the failed camera waiting under retry backoff until eligible.
-            |
-            +-- 5. Once every visible camera has a trusted image
-                |
-                +-- Use live slots normally.
-                |
-                +-- Maximize the final live end state
-                |   |
-                |   +-- Keep the highest successful simultaneous live count as the
-                |       known restricted live capacity.
-                |   +-- If known capacity is below the visible camera count,
-                |       cautiously try one additional live slot.
-                |   +-- If the additional slot succeeds, raise known capacity and
-                |       continue discovering capacity one serialized probe at a time.
-                |   +-- If HomeKit reports another constrained signal, keep the
-                |       number of streams that actually survived the rejected
-                |       request and pause before retrying.
-                |
-                +-- Do not let the initial one-slot fallback become the final
-                |   restricted capacity after trusted images are available.
-                |
-                +-- Assign live feeds by UI priority order
-                    |
-                    +-- Focused feed still wins the first slot, if present.
-                    +-- Remaining slots go to the highest-priority visible cameras.
-                    +-- Battery and non-battery cameras are treated the same here.
-                    +-- Cameras without live slots remain on their trusted still image.
+Restricted Mode means HomeKit will not allow every visible camera to be live at
+the same time. Observe uses the available live connections to get every camera
+up to date before filling the final live view.
 
----
+### Ordinary Cameras
 
-# Initial Camera Tile Presentation
+An ordinary camera that is not live keeps receiving snapshots. Missing and old
+pictures go first, followed by the user's camera order.
 
-This is a wall-tile-only visual rule for the beginning of a new app camera
-session. It does not change camera scheduling, trust, refresh, reconnect, or
-detail-view behavior.
+Observe limits how many snapshot requests it makes at once. If HomeKit is slow
+to answer, Observe may continue with other cameras, but it does not send a
+duplicate request to the same camera. A late picture is useful only if it is
+still recent and no newer picture has already arrived.
 
-- If HomeKit already provides a cached snapshot whose age is within that
-  camera's existing visual stale threshold, display it immediately using the
-  ordinary status and border logic below.
-- Otherwise, until the camera receives a fresh snapshot or current live stream
-  in this session:
-  - Hide any stale cached image.
-  - Show the existing black camera placeholder and camera icon.
-  - Draw the red stale border.
-  - Hide the entire status row: no indicator dot, status label, or age suffix.
-  - Keep the camera name and optional battery-percentage overlay.
-- After a fresh image or live stream arrives, use the ordinary camera display
-  logic below for every subsequent loading, stale, reconnect, capture, queued,
-  live, and error state.
+Snapshots do not use one of HomeKit's limited live connections.
 
----
+### Battery Cameras
 
-# Stale Marking Logic
+A battery camera that needs a new still must briefly use a live connection to
+wake and capture it.
 
-Stale marking is separate from refresh work.
+- Let an active capture finish instead of continually rotating cameras.
+- Count the capture wait from when live video actually begins, not while the
+  camera is still waking.
+- The full-screen camera may take the connection if none is free.
+- After a failure or timeout, stop the connection cleanly, wait before trying
+  that camera again, and give the next battery camera a turn.
+- Show **Queued** while a battery camera is waiting for a connection.
 
-Stale marking only decides what the app should call the currently displayed image right now. Refresh logic may respond to that state later, but marking a camera stale does not itself request a snapshot or consume a live slot.
+### Who Gets Live Video First
 
-For ordinary live / recent / stale states, status and border must agree:
+When live connections are limited, use them in this order:
 
-- Stale means stale status, red indicator, and stale border.
-- Not stale means non-stale status and no stale border.
+1. The camera the user opened full screen.
+2. Battery cameras already capturing a still.
+3. Cameras still needed to finish the initial view.
+4. Other battery cameras waiting for a new still, in layout order.
+5. Normal live feeds, in layout order.
 
-Battery capture and waiting states are the exception:
+Do not use a waiting battery camera as an ordinary live feed. First give every
+visible battery camera a current still. After every camera has a current picture,
+carefully try to add more live feeds one at a time.
 
-- A battery camera that owns a live slot for trusted-still capture shows
-  "Live Capture".
-- Once that capture stream is live, keep showing "Live Capture", switch the
-  indicator to green, and append the remaining warmup countdown, for example
-  "Live Capture (5s)".
-- A battery camera that still needs a trusted still but does not currently own
-  a live capture slot shows "Queued" with a yellow indicator.
-- Show the stale red border only when the displayed still has actually reached
-  the configured "Show As Stale" age, or when no still is available.
+Observe remembers a confirmed live-camera limit for each home and exact group of
+visible cameras. A different group starts fresh. A temporary busy message or a
+network problem must not permanently lower the remembered limit.
 
-FOR EACH VISIBLE CAMERA
-|
-+-- Is this a battery camera currently capturing or queued for live capture?
-    |
-    +-- Yes
-    |   |
-    |   +-- Is the live capture stream currently live?
-    |       |
-    |       +-- Yes
-    |       |   |
-    |       |   +-- Not stale.
-    |       |   +-- Status: Live Capture with warmup countdown.
-    |       |   +-- Indicator: Green.
-    |       |   +-- Border: None.
-    |       |
-    |       +-- No
-    |           |
-    |           +-- Does it have a displayed still within the configured
-    |               "Show As Stale" threshold?
-    |               |
-    |               +-- Yes
-    |               |   |
-    |               |   +-- Not stale.
-    |               |   +-- Status: Live Capture or Queued.
-    |               |   +-- Indicator: Yellow.
-    |               |   +-- Border: None.
-    |               |
-    |               +-- No
-    |                   |
-    |                   +-- Stale.
-    |                   +-- Status: Live Capture or Queued.
-    |                   +-- Indicator: Yellow.
-    |                   +-- Border: Stale.
-    |
-    +-- No
-        |
-        +-- Is the camera currently streaming live?
-            |
-            +-- Yes
-            |   |
-            |   +-- Not stale.
-            |   +-- Status: Live.
-            |   +-- Indicator: Green.
-            |   +-- Border: None.
-            |
-            +-- No
-                |
-                +-- Does the camera have a displayed still image?
-                    |
-                    +-- No
-                    |   |
-                    |   +-- Stale.
-                    |   +-- Status: Stale.
-                    |   +-- Indicator: Red.
-                    |   +-- Border: Stale.
-                    |
-                    +-- Yes
-                        |
-                        +-- Select stale threshold
-                        |   |
-                        |   +-- Battery camera:
-                        |   |   |
-                        |   |   +-- Use Battery Cameras "Show As Stale" threshold.
-                        |   |
-                        |   +-- Non-battery camera:
-                        |       |
-                        |       +-- Use standard Stale Threshold.
-                        |
-                        +-- Is the displayed still age within the selected threshold?
-                            |
-                            +-- Yes
-                            |   |
-                            |   +-- Not stale.
-                            |   +-- Status: Recent.
-                            |   +-- Indicator: Yellow.
-                            |   +-- Border: None.
-                            |
-                            +-- No
-                                |
-                                +-- Stale.
-                                +-- Status: Stale.
-                                +-- Indicator: Red.
-                                +-- Border: Stale.
+## Starting and Stopping Live Video
+
+Observe must stop a feed it no longer needs before using that connection for a
+replacement. A connection remains occupied while it is starting, playing, or
+stopping.
+
+HomeKit saying “started” is not enough to show **Live**. Observe must have actual
+video to display. Until then, keep showing the previous picture or loading view.
+
+While video is live or still stopping, a newly returned snapshot must not replace
+it. Once HomeKit confirms that video stopped, show the available snapshot right
+away.
+
+When something goes wrong:
+
+- If HomeKit clearly says no more live feeds are allowed, remember only the
+  number that continued working.
+- If HomeKit says it is busy, slow down temporarily and try one more feed later.
+- If the network or Home Hub is unavailable, wait and retry without marking the
+  cameras bad or changing the remembered limit.
+- If only one camera fails, wait before retrying that camera and let the others
+  continue.
+- A cancellation caused by Observe intentionally stopping a feed is normal, not
+  an error.
+
+## What the User Sees
+
+At first, show a saved picture only when it is still recent. Otherwise show the
+black camera placeholder, camera name, optional battery percentage, and red
+border. Hide the status row until a new picture or live video arrives.
+
+After that:
+
+| What is visible | Status | Color | Border |
+| --- | --- | --- | --- |
+| Live video | Live | Green | None |
+| A recent still picture | Recent | Yellow | None |
+| No picture, or an old picture | Stale | Red | Red |
+
+A battery camera actively capturing shows **Live Capture**. Once live, it is
+green and shows the remaining warmup time. While connecting, it is yellow. A
+battery camera waiting its turn shows **Queued** in yellow.
+
+For a connecting or queued battery camera, the red border describes only the
+picture currently on screen: show it when that picture is old or missing.
+
+Use the battery stale setting for battery-camera stills and the standard stale
+setting for all other cameras. Marking a picture stale changes only its display;
+it does not itself start a refresh or use a live connection.
