@@ -67,8 +67,10 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     var isStreaming: Bool {
-        liveTransportState.phase == .streaming
-            || profile.streamControl?.streamState == .streaming
+        CameraLivePresentationPolicy.isLive(
+            transportPhase: liveTransportState.phase,
+            hasVideoSource: hasVideoSource
+        )
     }
 
     var isStartingLive: Bool {
@@ -81,6 +83,10 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
 
     var liveTransportPhase: LiveTransportPhase {
         liveTransportState.phase
+    }
+
+    private var hasVideoSource: Bool {
+        cameraSource is HMCameraStream
     }
 
     var hasFreshImageThisSession: Bool {
@@ -255,12 +261,8 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             return
         }
 
-        if let stream = profile.streamControl?.cameraStream {
-            updateCameraSource(stream)
-            sessionImageFreshness.apply(.liveStreamReceived)
-            if acceptHomeKitStreamingState(at: date) {
-                state = .live
-            }
+        if profile.streamControl?.cameraStream != nil {
+            _ = reconcileLiveSourceIfAvailable(at: date)
             return
         }
 
@@ -269,11 +271,7 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
             state = .starting
             _ = liveTransportState.requestStart(at: date)
         case .streaming:
-            updateCameraSource(profile.streamControl?.cameraStream)
-            sessionImageFreshness.apply(.liveStreamReceived)
-            if acceptHomeKitStreamingState(at: date) {
-                state = .live
-            }
+            _ = reconcileLiveSourceIfAvailable(at: date)
         default:
             guard liveTransportState.requestStart(at: date) else { return }
             state = .starting
@@ -297,14 +295,20 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         }
 
         if let snapshot = profile.snapshotControl?.mostRecentSnapshot {
-            updateCameraSource(snapshot)
-            sessionImageFreshness.apply(.cachedSnapshotPresented)
+            let shouldPresentSnapshot = CameraLivePresentationPolicy.shouldPresentSnapshot(
+                transportPhase: liveTransportState.phase,
+                hasVideoSource: hasVideoSource
+            )
+            if shouldPresentSnapshot {
+                updateCameraSource(snapshot)
+                sessionImageFreshness.apply(.cachedSnapshotPresented)
+            }
             lastSnapshotDate = snapshot.captureDate
             recencyTier = currentRecencyTier(at: Date())
             if recencyTier == .recentSnapshot {
                 recoveryPhase = .idle
             }
-            if state != .offline {
+            if shouldPresentSnapshot, state != .offline {
                 state = .snapshot
             }
         } else if !isReachable {
@@ -475,31 +479,59 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         case .starting:
             _ = liveTransportState.requestStart(at: date)
         case .streaming:
-            _ = acceptHomeKitStreamingState(at: date)
+            _ = reconcileLiveSourceIfAvailable(at: date)
         default:
             break
         }
     }
 
-    private func acceptHomeKitStreamingState(at date: Date) -> Bool {
+    @discardableResult
+    func reconcileLiveSourceIfAvailable(at date: Date) -> Bool {
+        guard let stream = profile.streamControl?.cameraStream else { return false }
+
         if liveTransportState.phase == .idle {
             _ = liveTransportState.requestStart(at: date)
         }
-        if liveTransportState.phase == .starting {
-            _ = liveTransportState.confirmStarted(at: date)
+
+        let callbackLatency = liveStartRequestedAt.map {
+            max(0, date.timeIntervalSince($0))
         }
-        return liveTransportState.phase == .streaming
+        let acceptedAsActiveTransport = liveTransportState.confirmStarted(
+            at: date,
+            hasVideoSource: true
+        )
+        updateCameraSource(stream)
+        sessionImageFreshness.apply(.liveStreamReceived)
+        lastErrorMessage = nil
+
+        guard liveTransportState.phase == .streaming else { return false }
+
+        state = .live
+        recencyTier = .live
+        recoveryPhase = .idle
+        if acceptedAsActiveTransport {
+            onLiveTransportEvent?(
+                id,
+                .started(at: date, callbackLatency: callbackLatency)
+            )
+        }
+        return true
     }
 
     private func applySnapshot(_ snapshot: HMCameraSnapshot) {
-        updateCameraSource(snapshot)
+        if CameraLivePresentationPolicy.shouldPresentSnapshot(
+            transportPhase: liveTransportState.phase,
+            hasVideoSource: hasVideoSource
+        ) {
+            updateCameraSource(snapshot)
+        }
         lastSnapshotDate = snapshot.captureDate
         recencyTier = currentRecencyTier(at: Date())
         if recencyTier == .recentSnapshot {
             sessionImageFreshness.apply(.freshSnapshotReceived)
             recoveryPhase = .idle
         }
-        if state != .live {
+        if !isStreaming, state != .offline {
             state = .snapshot
         }
     }
@@ -509,23 +541,7 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
     nonisolated func cameraStreamControlDidStartStream(_ cameraStreamControl: HMCameraStreamControl) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let now = Date()
-            let callbackLatency = self.liveStartRequestedAt.map {
-                max(0, now.timeIntervalSince($0))
-            }
-            let acceptedAsActiveTransport = self.liveTransportState.confirmStarted(at: now)
-            self.updateCameraSource(cameraStreamControl.cameraStream)
-            self.sessionImageFreshness.apply(.liveStreamReceived)
-            self.lastErrorMessage = nil
-            guard acceptedAsActiveTransport else { return }
-
-            self.state = .live
-            self.recencyTier = .live
-            self.recoveryPhase = .idle
-            self.onLiveTransportEvent?(
-                self.id,
-                .started(at: now, callbackLatency: callbackLatency)
-            )
+            _ = self.reconcileLiveSourceIfAvailable(at: Date())
         }
     }
 

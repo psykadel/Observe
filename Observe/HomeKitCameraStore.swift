@@ -668,6 +668,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
 
         for feed in feeds where desiredLiveIDs.contains(feed.id) && isVisibleOnWall(feed) {
+            feed.reconcileLiveSourceIfAvailable(at: now)
             updateBatteryCaptureTrust(for: feed.id, at: now)
         }
     }

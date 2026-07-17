@@ -73,8 +73,8 @@ enum CameraLiveTransportState: Equatable {
         return true
     }
 
-    mutating func confirmStarted(at date: Date) -> Bool {
-        guard case .starting = self else { return false }
+    mutating func confirmStarted(at date: Date, hasVideoSource: Bool = true) -> Bool {
+        guard hasVideoSource, case .starting = self else { return false }
         self = .streaming(startedAt: date)
         return true
     }
@@ -93,6 +93,23 @@ enum CameraLiveTransportState: Equatable {
         let reason = stopReason
         self = .idle
         return reason
+    }
+}
+
+enum CameraLivePresentationPolicy {
+    static func isLive(
+        transportPhase: LiveTransportPhase,
+        hasVideoSource: Bool
+    ) -> Bool {
+        transportPhase == .streaming && hasVideoSource
+    }
+
+    static func shouldPresentSnapshot(
+        transportPhase: LiveTransportPhase,
+        hasVideoSource: Bool
+    ) -> Bool {
+        guard hasVideoSource else { return true }
+        return transportPhase != .streaming && transportPhase != .stopping
     }
 }
 

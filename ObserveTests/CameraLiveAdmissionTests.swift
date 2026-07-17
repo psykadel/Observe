@@ -122,6 +122,73 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
         XCTAssertFalse(transport.confirmStarted(at: now.addingTimeInterval(8.1)))
         XCTAssertEqual(transport.phase, .stopping)
     }
+    func testLiveTransportDoesNotConfirmStartedWithoutVideoSource() {
+        var transport = CameraLiveTransportState.starting(requestedAt: now)
+
+        XCTAssertFalse(
+            transport.confirmStarted(
+                at: now.addingTimeInterval(1),
+                hasVideoSource: false
+            )
+        )
+        XCTAssertEqual(transport.phase, .starting)
+
+        XCTAssertTrue(
+            transport.confirmStarted(
+                at: now.addingTimeInterval(2),
+                hasVideoSource: true
+            )
+        )
+        XCTAssertEqual(transport.phase, .streaming)
+    }
+    func testLivePresentationRequiresStreamingTransportAndVideoSource() {
+        XCTAssertFalse(
+            CameraLivePresentationPolicy.isLive(
+                transportPhase: .starting,
+                hasVideoSource: true
+            )
+        )
+        XCTAssertFalse(
+            CameraLivePresentationPolicy.isLive(
+                transportPhase: .streaming,
+                hasVideoSource: false
+            )
+        )
+        XCTAssertTrue(
+            CameraLivePresentationPolicy.isLive(
+                transportPhase: .streaming,
+                hasVideoSource: true
+            )
+        )
+    }
+    func testSnapshotPresentationDoesNotReplaceActiveLiveVideo() {
+        XCTAssertFalse(
+            CameraLivePresentationPolicy.shouldPresentSnapshot(
+                transportPhase: .streaming,
+                hasVideoSource: true
+            )
+        )
+        XCTAssertFalse(
+            CameraLivePresentationPolicy.shouldPresentSnapshot(
+                transportPhase: .stopping,
+                hasVideoSource: true
+            )
+        )
+    }
+    func testSnapshotPresentationReplacesReleasedVideoAfterStopCallback() {
+        XCTAssertTrue(
+            CameraLivePresentationPolicy.shouldPresentSnapshot(
+                transportPhase: .idle,
+                hasVideoSource: true
+            )
+        )
+        XCTAssertTrue(
+            CameraLivePresentationPolicy.shouldPresentSnapshot(
+                transportPhase: .starting,
+                hasVideoSource: false
+            )
+        )
+    }
     func testLateStartAfterStopDoesNotReacquireTransportOwnership() {
         var transport = CameraLiveTransportState.starting(requestedAt: now)
         _ = transport.requestStop(
