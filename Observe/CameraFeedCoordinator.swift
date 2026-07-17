@@ -177,6 +177,56 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         refreshBatteryPercentage()
     }
 
+    func startupMetadataOperations() -> [StartupMetadataOperationDescriptor] {
+        let availabilityOperations = cameraAvailabilityCharacteristics.flatMap { characteristic in
+            metadataOperations(
+                for: characteristic,
+                notificationKind: .availabilityNotification,
+                readKind: .availabilityRead
+            )
+        }
+        let batteryOperations = batteryPercentageCharacteristics.flatMap { characteristic in
+            metadataOperations(
+                for: characteristic,
+                notificationKind: .batteryNotification,
+                readKind: .batteryRead
+            )
+        }
+        return availabilityOperations + batteryOperations
+    }
+
+    @discardableResult
+    func performStartupMetadataOperation(
+        _ operation: StartupMetadataOperationDescriptor,
+        completion: @escaping (CameraTransportError?) -> Void
+    ) -> Bool {
+        guard operation.feedID == id,
+              let characteristic = startupMetadataCharacteristic(for: operation) else {
+            return false
+        }
+
+        let finish: @Sendable ((any Error)?) -> Void = { [weak self] error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                switch operation.kind {
+                case .availabilityNotification, .availabilityRead:
+                    self.refreshHomeKitCameraActiveState()
+                case .batteryNotification, .batteryRead:
+                    self.refreshBatteryPercentage()
+                }
+                completion(CameraTransportError(error))
+            }
+        }
+
+        switch operation.kind {
+        case .availabilityNotification, .batteryNotification:
+            characteristic.enableNotification(true, completionHandler: finish)
+        case .availabilityRead, .batteryRead:
+            characteristic.readValue(completionHandler: finish)
+        }
+        return true
+    }
+
     func refreshHomeKitCameraActiveStateIfNeeded(for characteristic: HMCharacteristic) {
         guard CameraWallAvailability.isCameraAvailabilityCharacteristic(
             characteristicType: characteristic.characteristicType
@@ -403,6 +453,46 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         cameraAvailabilityServices
             .flatMap(\.characteristics)
             .filter { $0.characteristicType == HMCharacteristicTypeBatteryLevel }
+    }
+
+    private func metadataOperations(
+        for characteristic: HMCharacteristic,
+        notificationKind: StartupMetadataOperationKind,
+        readKind: StartupMetadataOperationKind
+    ) -> [StartupMetadataOperationDescriptor] {
+        let characteristicID = characteristic.uniqueIdentifier.uuidString
+        var operations: [StartupMetadataOperationDescriptor] = []
+        if characteristic.properties.contains(HMCharacteristicPropertySupportsEventNotification),
+           !characteristic.isNotificationEnabled {
+            operations.append(
+                StartupMetadataOperationDescriptor(
+                    feedID: id,
+                    characteristicID: characteristicID,
+                    characteristicType: characteristic.characteristicType,
+                    kind: notificationKind
+                )
+            )
+        }
+        operations.append(
+            StartupMetadataOperationDescriptor(
+                feedID: id,
+                characteristicID: characteristicID,
+                characteristicType: characteristic.characteristicType,
+                kind: readKind
+            )
+        )
+        return operations
+    }
+
+    private func startupMetadataCharacteristic(
+        for operation: StartupMetadataOperationDescriptor
+    ) -> HMCharacteristic? {
+        cameraAvailabilityServices
+            .flatMap(\.characteristics)
+            .first { characteristic in
+                characteristic.uniqueIdentifier.uuidString == operation.characteristicID
+                    && characteristic.characteristicType == operation.characteristicType
+            }
     }
 
     private func refreshBatteryPercentage() {

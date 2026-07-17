@@ -25,6 +25,74 @@ enum RestrictedStartupPhase: String, Equatable {
     }
 }
 
+enum StartupMetadataWorkMode: String, Equatable {
+    case immediateParallel
+    case mediaPrioritySerial
+
+    static func resolve(networkClass: CameraNetworkClass) -> StartupMetadataWorkMode {
+        networkClass == .wifi ? .immediateParallel : .mediaPrioritySerial
+    }
+}
+
+enum StartupMetadataOperationKind: String, Equatable {
+    case availabilityNotification
+    case availabilityRead
+    case batteryNotification
+    case batteryRead
+
+    fileprivate var priority: Int {
+        switch self {
+        case .availabilityNotification: 0
+        case .availabilityRead: 1
+        case .batteryNotification: 2
+        case .batteryRead: 3
+        }
+    }
+}
+
+struct StartupMetadataOperationDescriptor: Equatable, Identifiable {
+    let feedID: String
+    let characteristicID: String
+    let characteristicType: String
+    let kind: StartupMetadataOperationKind
+
+    var id: String {
+        "\(feedID):\(characteristicID):\(kind.rawValue)"
+    }
+
+    var telemetryLabel: String {
+        "\(feedID):\(kind.rawValue)"
+    }
+}
+
+enum StartupMetadataAdmissionPolicy {
+    static func maxConcurrentOperations(
+        mode: StartupMetadataWorkMode,
+        initialMediaAdmissionCompleted: Bool
+    ) -> Int {
+        switch mode {
+        case .immediateParallel:
+            Int.max
+        case .mediaPrioritySerial:
+            initialMediaAdmissionCompleted ? 1 : 0
+        }
+    }
+
+    static func ordered(
+        _ operations: [StartupMetadataOperationDescriptor]
+    ) -> [StartupMetadataOperationDescriptor] {
+        operations.sorted { lhs, rhs in
+            if lhs.kind.priority != rhs.kind.priority {
+                return lhs.kind.priority < rhs.kind.priority
+            }
+            if lhs.feedID != rhs.feedID {
+                return lhs.feedID < rhs.feedID
+            }
+            return lhs.characteristicID < rhs.characteristicID
+        }
+    }
+}
+
 enum StartupLivePolicy: Equatable {
     case normal
     case restrictedSnapshotOnly

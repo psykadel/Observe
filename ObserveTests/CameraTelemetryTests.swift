@@ -5,6 +5,26 @@ import XCTest
 @testable import Observe
 
 final class CameraTelemetryTests: ObserveTestCase {
+    func testMetadataMilestonesMeasureQueueConcurrencyFailuresAndLatency() {
+        var milestones = CameraStartupMetadataTelemetryMilestones()
+
+        milestones.recordQueued(count: 4, at: 0)
+        milestones.recordIssued(activeCount: 1, at: 0.1)
+        milestones.recordCompleted(failed: false, callbackLatency: 0.8, at: 0.9)
+        milestones.recordIssued(activeCount: 1, at: 1)
+        milestones.recordCompleted(failed: true, callbackLatency: 1.4, at: 2.4)
+
+        XCTAssertEqual(milestones.queuedCount, 4)
+        XCTAssertEqual(milestones.issuedCount, 2)
+        XCTAssertEqual(milestones.completedCount, 2)
+        XCTAssertEqual(milestones.failureCount, 1)
+        XCTAssertEqual(milestones.peakActiveOperations, 1)
+        XCTAssertEqual(milestones.firstQueuedAt, 0)
+        XCTAssertEqual(milestones.firstIssuedAt, 0.1)
+        XCTAssertEqual(milestones.firstCompletedAt, 0.9)
+        XCTAssertEqual(milestones.lastCompletedAt, 2.4)
+        XCTAssertEqual(milestones.maxCallbackLatency, 1.4)
+    }
     func testBatteryLiveTelemetryIsFreshBeforeTrustedStillCapture() {
         var milestones = CameraStartupTelemetryFeedMilestones(feedID: "battery")
 
@@ -94,6 +114,11 @@ final class CameraTelemetryTests: ObserveTestCase {
             startupLiveRampFastThreshold: 3,
             activeSnapshotRequests: 2,
             outstandingSnapshotRequests: 3,
+            startupMetadataMode: "mediaPrioritySerial",
+            startupMetadataGateState: "open",
+            activeMetadataOperations: 1,
+            queuedMetadataOperations: 3,
+            activeMetadataOperation: "front:availabilityRead",
             liveCapacityExpansionRetryIn: 5,
             liveCapacityExpansionCooldownEligible: false,
             liveCapacityIncludesUnconfirmedMemory: false,
@@ -109,6 +134,18 @@ final class CameraTelemetryTests: ObserveTestCase {
                 recoveringFeedIDs: ["side"],
                 peakActiveSnapshotRequests: 3,
                 peakOutstandingSnapshotRequests: 4,
+                metadata: CameraStartupMetadataTelemetryMilestones(
+                    queuedCount: 8,
+                    issuedCount: 5,
+                    completedCount: 4,
+                    failureCount: 1,
+                    peakActiveOperations: 1,
+                    firstQueuedAt: 0,
+                    firstIssuedAt: 0.02,
+                    firstCompletedAt: 0.6,
+                    lastCompletedAt: 4.2,
+                    maxCallbackLatency: 1.4
+                ),
                 feedsByID: [
                     "front": CameraStartupTelemetryFeedMilestones(
                         feedID: "front",
@@ -202,6 +239,11 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("startupLiveRampMode=fast"))
         XCTAssertTrue(text.contains("restrictedStartupPhase=snapshotRecovery"))
         XCTAssertTrue(text.contains("ordinaryLiveGateState=waitingForAllTrusted"))
+        XCTAssertTrue(text.contains("startupMetadataMode=mediaPrioritySerial"))
+        XCTAssertTrue(text.contains("startupMetadataGateState=open"))
+        XCTAssertTrue(text.contains("activeMetadataOperations=1"))
+        XCTAssertTrue(text.contains("queuedMetadataOperations=3"))
+        XCTAssertTrue(text.contains("activeMetadataOperation=front:availabilityRead"))
         XCTAssertTrue(text.contains("sessionNetworkClass=cellular"))
         XCTAssertTrue(text.contains("currentNetworkClass=cellular"))
         XCTAssertTrue(text.contains("wifiLiveBurstMode=closed:capacity"))
@@ -221,6 +263,14 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("allVisibleFeedsLiveAt=8.0s"))
         XCTAssertTrue(text.contains("startupCoverageResult=completedWithRecovery"))
         XCTAssertTrue(text.contains("peakOutstandingSnapshotRequests=4"))
+        XCTAssertTrue(text.contains("metadataQueuedCount=8"))
+        XCTAssertTrue(text.contains("metadataIssuedCount=5"))
+        XCTAssertTrue(text.contains("metadataCompletedCount=4"))
+        XCTAssertTrue(text.contains("metadataFailureCount=1"))
+        XCTAssertTrue(text.contains("peakActiveMetadataOperations=1"))
+        XCTAssertTrue(text.contains("firstMetadataIssuedAt=0.0s"))
+        XCTAssertTrue(text.contains("lastMetadataCompletedAt=4.2s"))
+        XCTAssertTrue(text.contains("maxMetadataCallbackLatency=1.4s"))
         XCTAssertTrue(text.contains("front | firstTrustedImageAt=12.0s"))
         XCTAssertTrue(text.contains("firstTrustedImageSource=live"))
         XCTAssertTrue(text.contains("firstFreshImageAt=2.0s"))
@@ -237,7 +287,7 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("liveStopRequestedAge=0.5s"))
         XCTAssertTrue(text.contains("liveStopReason=startupTimeout"))
         XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
-        XCTAssertEqual(stableFingerprint(text), 14_726_236_140_874_580_902)
+        XCTAssertEqual(stableFingerprint(text), 5_555_762_793_498_386_261)
     }
 
     private func stableFingerprint(_ text: String) -> UInt64 {

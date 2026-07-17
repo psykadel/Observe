@@ -58,6 +58,10 @@ On cellular or any other connection, Observe starts more cautiously:
 
 - Take up to three ordinary-camera snapshots at a time.
 - At the same time, wake one battery camera that needs a new still.
+- Admit those picture requests before asking HomeKit to refresh secondary camera
+  details. Then refresh camera availability and battery details one request at a
+  time, with availability first. This background work must not delay snapshot
+  retries or open ordinary live video early.
 - If an ordinary camera's first snapshot fails or takes too long, move that
   camera into background snapshot recovery immediately. Keep accepting a useful
   late result from its original request.
@@ -75,6 +79,11 @@ a current picture or has moved into background recovery. This does not open
 ordinary live video: a later successful snapshot must first bring every visible
 camera up to date. If a reachable camera never returns a current picture,
 ordinary live filling remains paused while snapshot recovery continues.
+
+Observe still uses HomeKit's already-known availability values while building
+the initial camera wall. On Wi-Fi, availability notifications, availability
+reads, and battery reads keep their existing immediate behavior. The one-at-a-
+time background rule applies only to cellular and other non-Wi-Fi startup.
 
 ## Restricted Mode
 

@@ -18,6 +18,7 @@ struct CameraStartupTelemetryMilestones: Equatable {
     var recoveringFeedIDs: [String] = []
     var peakActiveSnapshotRequests = 0
     var peakOutstandingSnapshotRequests = 0
+    var metadata = CameraStartupMetadataTelemetryMilestones()
     var feedsByID: [String: CameraStartupTelemetryFeedMilestones] = [:]
 
     mutating func recordEnteredConstrainedMode(liveCapacity: Int, at elapsed: TimeInterval) {
@@ -139,6 +140,51 @@ struct CameraStartupTelemetryMilestones: Equatable {
         var milestones = feedsByID[feedID] ?? CameraStartupTelemetryFeedMilestones(feedID: feedID)
         update(&milestones)
         feedsByID[feedID] = milestones
+    }
+}
+
+struct CameraStartupMetadataTelemetryMilestones: Equatable {
+    var queuedCount = 0
+    var issuedCount = 0
+    var completedCount = 0
+    var failureCount = 0
+    var peakActiveOperations = 0
+    var firstQueuedAt: TimeInterval?
+    var firstIssuedAt: TimeInterval?
+    var firstCompletedAt: TimeInterval?
+    var lastCompletedAt: TimeInterval?
+    var maxCallbackLatency: TimeInterval?
+
+    mutating func recordQueued(count: Int, at elapsed: TimeInterval) {
+        guard count > 0 else { return }
+        queuedCount += count
+        if firstQueuedAt == nil {
+            firstQueuedAt = elapsed
+        }
+    }
+
+    mutating func recordIssued(activeCount: Int, at elapsed: TimeInterval) {
+        issuedCount += 1
+        peakActiveOperations = max(peakActiveOperations, activeCount)
+        if firstIssuedAt == nil {
+            firstIssuedAt = elapsed
+        }
+    }
+
+    mutating func recordCompleted(
+        failed: Bool,
+        callbackLatency: TimeInterval,
+        at elapsed: TimeInterval
+    ) {
+        completedCount += 1
+        if failed {
+            failureCount += 1
+        }
+        if firstCompletedAt == nil {
+            firstCompletedAt = elapsed
+        }
+        lastCompletedAt = elapsed
+        maxCallbackLatency = max(maxCallbackLatency ?? 0, callbackLatency)
     }
 }
 
@@ -354,6 +400,11 @@ struct CameraTelemetryReport: Equatable {
     let startupLiveRampFastThreshold: TimeInterval
     let activeSnapshotRequests: Int
     let outstandingSnapshotRequests: Int
+    let startupMetadataMode: String
+    let startupMetadataGateState: String
+    let activeMetadataOperations: Int
+    let queuedMetadataOperations: Int
+    let activeMetadataOperation: String?
     let liveCapacityExpansionRetryIn: TimeInterval?
     let liveCapacityExpansionCooldownEligible: Bool
     let liveCapacityIncludesUnconfirmedMemory: Bool
@@ -409,6 +460,11 @@ struct CameraTelemetryReport: Equatable {
         lines.append("startupLiveRampFastThreshold=\(formatSeconds(startupLiveRampFastThreshold))")
         lines.append("activeSnapshotRequests=\(activeSnapshotRequests)")
         lines.append("outstandingSnapshotRequests=\(outstandingSnapshotRequests)")
+        lines.append("startupMetadataMode=\(startupMetadataMode)")
+        lines.append("startupMetadataGateState=\(startupMetadataGateState)")
+        lines.append("activeMetadataOperations=\(activeMetadataOperations)")
+        lines.append("queuedMetadataOperations=\(queuedMetadataOperations)")
+        lines.append("activeMetadataOperation=\(activeMetadataOperation ?? "nil")")
         lines.append("liveCapacityExpansionRetryIn=\(optionalSeconds(liveCapacityExpansionRetryIn))")
         lines.append("liveCapacityExpansionCooldownEligible=\(liveCapacityExpansionCooldownEligible)")
         lines.append("liveCapacityIncludesUnconfirmedMemory=\(liveCapacityIncludesUnconfirmedMemory)")
@@ -425,6 +481,16 @@ struct CameraTelemetryReport: Equatable {
         lines.append("recoveringFeedIDs=\(startupMilestones.recoveringFeedIDs.isEmpty ? "none" : startupMilestones.recoveringFeedIDs.joined(separator: ","))")
         lines.append("peakActiveSnapshotRequests=\(startupMilestones.peakActiveSnapshotRequests)")
         lines.append("peakOutstandingSnapshotRequests=\(startupMilestones.peakOutstandingSnapshotRequests)")
+        lines.append("metadataQueuedCount=\(startupMilestones.metadata.queuedCount)")
+        lines.append("metadataIssuedCount=\(startupMilestones.metadata.issuedCount)")
+        lines.append("metadataCompletedCount=\(startupMilestones.metadata.completedCount)")
+        lines.append("metadataFailureCount=\(startupMilestones.metadata.failureCount)")
+        lines.append("peakActiveMetadataOperations=\(startupMilestones.metadata.peakActiveOperations)")
+        lines.append("firstMetadataQueuedAt=\(optionalSeconds(startupMilestones.metadata.firstQueuedAt))")
+        lines.append("firstMetadataIssuedAt=\(optionalSeconds(startupMilestones.metadata.firstIssuedAt))")
+        lines.append("firstMetadataCompletedAt=\(optionalSeconds(startupMilestones.metadata.firstCompletedAt))")
+        lines.append("lastMetadataCompletedAt=\(optionalSeconds(startupMilestones.metadata.lastCompletedAt))")
+        lines.append("maxMetadataCallbackLatency=\(optionalSeconds(startupMilestones.metadata.maxCallbackLatency))")
         lines.append("")
         lines.append("Startup Feed Milestones")
         let feedMilestones = startupMilestones.feedsByID.values.sorted { $0.feedID < $1.feedID }

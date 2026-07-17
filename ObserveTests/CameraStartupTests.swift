@@ -5,6 +5,75 @@ import XCTest
 @testable import Observe
 
 final class CameraStartupTests: ObserveTestCase {
+    func testRestrictedMetadataWaitsForInitialMediaAdmissionThenRunsOneWide() {
+        let mode = StartupMetadataWorkMode.resolve(networkClass: .cellular)
+
+        XCTAssertEqual(mode, .mediaPrioritySerial)
+        XCTAssertEqual(
+            StartupMetadataAdmissionPolicy.maxConcurrentOperations(
+                mode: mode,
+                initialMediaAdmissionCompleted: false
+            ),
+            0
+        )
+        XCTAssertEqual(
+            StartupMetadataAdmissionPolicy.maxConcurrentOperations(
+                mode: mode,
+                initialMediaAdmissionCompleted: true
+            ),
+            1
+        )
+    }
+    func testWiFiMetadataKeepsImmediateParallelBehavior() {
+        let mode = StartupMetadataWorkMode.resolve(networkClass: .wifi)
+
+        XCTAssertEqual(mode, .immediateParallel)
+        XCTAssertEqual(
+            StartupMetadataAdmissionPolicy.maxConcurrentOperations(
+                mode: mode,
+                initialMediaAdmissionCompleted: false
+            ),
+            Int.max
+        )
+    }
+    func testStartupMetadataPrioritizesAvailabilityAheadOfBatteryDetails() {
+        let operations = [
+            StartupMetadataOperationDescriptor(
+                feedID: "battery",
+                characteristicID: "battery-level",
+                characteristicType: "battery",
+                kind: .batteryRead
+            ),
+            StartupMetadataOperationDescriptor(
+                feedID: "front",
+                characteristicID: "active",
+                characteristicType: "active",
+                kind: .availabilityRead
+            ),
+            StartupMetadataOperationDescriptor(
+                feedID: "front",
+                characteristicID: "active",
+                characteristicType: "active",
+                kind: .availabilityNotification
+            ),
+            StartupMetadataOperationDescriptor(
+                feedID: "battery",
+                characteristicID: "battery-level",
+                characteristicType: "battery",
+                kind: .batteryNotification
+            )
+        ]
+
+        XCTAssertEqual(
+            StartupMetadataAdmissionPolicy.ordered(operations).map(\.kind),
+            [
+                .availabilityNotification,
+                .availabilityRead,
+                .batteryNotification,
+                .batteryRead
+            ]
+        )
+    }
     func testRestrictedStartupPhaseIsDerivedFromInitialPassAndTrust() {
         XCTAssertEqual(
             RestrictedStartupPhase.resolve(

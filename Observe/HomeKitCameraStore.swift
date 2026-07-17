@@ -1,6 +1,11 @@
 import Foundation
 import HomeKit
 
+private struct ActiveStartupMetadataOperation {
+    let descriptor: StartupMetadataOperationDescriptor
+    let issuedAt: Date
+}
+
 @MainActor
 final class HomeKitCameraStore: NSObject, ObservableObject {
     @Published private(set) var homes: [HomeOption] = []
@@ -40,6 +45,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var telemetryStartupMilestones = CameraStartupTelemetryMilestones()
     private var nextSnapshotRequestID: SnapshotRequestID = 1
     private var sessionGeneration: UInt64 = 0
+    private var startupMetadataMode: StartupMetadataWorkMode = .immediateParallel
+    private var startupMetadataQueue: [StartupMetadataOperationDescriptor] = []
+    private var activeStartupMetadataOperation: ActiveStartupMetadataOperation?
+    private var initialMediaAdmissionCompleted = false
 
     private let snapshotRequestTimeout = CameraSchedulingDefaults.snapshotRequestTimeout
     private let startupFastLocalLiveThreshold: TimeInterval = 3
@@ -225,6 +234,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             startupLiveRampFastThreshold: startupFastLocalLiveThreshold,
             activeSnapshotRequests: snapshotCapacity.activeCount,
             outstandingSnapshotRequests: snapshotCapacity.outstandingCount,
+            startupMetadataMode: startupMetadataMode.rawValue,
+            startupMetadataGateState: startupMetadataGateState,
+            activeMetadataOperations: activeStartupMetadataOperation == nil ? 0 : 1,
+            queuedMetadataOperations: startupMetadataQueue.count,
+            activeMetadataOperation: activeStartupMetadataOperation?.descriptor.telemetryLabel,
             liveCapacityExpansionRetryIn: liveCapacityExpansionRetryIn,
             liveCapacityExpansionCooldownEligible: sessionMode == .constrained
                 && liveCapacityExpansionRetryIn == nil,
@@ -265,6 +279,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         home.delegate = self
 
+        let metadataMode = StartupMetadataWorkMode.resolve(
+            networkClass: networkPathClassifier.currentClass
+        )
         var discoveredFeeds: [CameraFeedCoordinator] = []
         for accessory in home.accessories {
             accessory.delegate = self
@@ -274,8 +291,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 let feed = CameraFeedCoordinator(accessory: accessory, profile: profile, profileIndex: index)
                 configureCallbacks(on: feed, generation: callbackGeneration)
                 feed.refreshHomeKitCameraActiveState()
-                feed.readHomeKitCameraActiveState()
-                feed.readBatteryPercentage()
+                if metadataMode == .immediateParallel {
+                    feed.readHomeKitCameraActiveState()
+                    feed.readBatteryPercentage()
+                }
                 discoveredFeeds.append(feed)
             }
         }
@@ -318,6 +337,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupLiveRampState = nil
         wifiLiveBurstState = nil
         lastLivePlanTelemetrySignature = nil
+        resetStartupMetadataWork()
         currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
         liveAdmissionController = LiveAdmissionController(
             mode: .adaptive(maxPendingStarts: 1),
@@ -342,6 +362,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupCoverageActive = true
         startupLiveRampState = nil
         wifiLiveBurstState = nil
+        resetStartupMetadataWork()
     }
 
     private func configureCallbacks(on feed: CameraFeedCoordinator, generation: UInt64) {
@@ -397,6 +418,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         lastLivePlanTelemetrySignature = nil
         let networkClass = networkPathClassifier.currentClass
         sessionNetworkClass = networkClass
+        startupMetadataMode = StartupMetadataWorkMode.resolve(networkClass: networkClass)
+        activeStartupMetadataOperation = nil
+        initialMediaAdmissionCompleted = startupMetadataMode == .immediateParallel
+        startupMetadataQueue = startupMetadataMode == .mediaPrioritySerial
+            ? StartupMetadataAdmissionPolicy.ordered(feeds.flatMap { $0.startupMetadataOperations() })
+            : []
         wifiLiveBurstState = WiFiLiveBurstState(
             networkClass: networkClass,
             visibleFeedIDs: Set(wallFeeds.map(\.id)),
@@ -407,6 +434,20 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         recordTelemetry(
             "session start feeds=\(feeds.count) visible=\(wallFeeds.count) liveCapacity=\(liveCapacity) network=\(networkClass.rawValue) wifiBurst=\(wifiLiveBurstModeLabel)"
         )
+        if !startupMetadataQueue.isEmpty {
+            telemetryStartupMilestones.metadata.recordQueued(
+                count: startupMetadataQueue.count,
+                at: elapsedSinceSession(telemetrySessionStartedAt)
+            )
+            recordTelemetry(
+                "metadata queued mode=\(startupMetadataMode.rawValue) count=\(startupMetadataQueue.count) gate=waitingForInitialMediaAdmission"
+            )
+            for operation in startupMetadataQueue {
+                recordTelemetry(
+                    "metadata queued feed=\(operation.feedID) kind=\(operation.kind.rawValue) characteristic=\(operation.characteristicType)"
+                )
+            }
+        }
         refreshPresentation(focusedFeedID: focusedFeedID)
 
         if wifiLiveBurstState?.mode == .headStart {
@@ -482,6 +523,106 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         )
         queuePlannedSnapshots(at: now)
         serviceSnapshotQueue()
+        openStartupMetadataGateAfterInitialMediaAdmission(at: Date())
+        serviceStartupMetadataQueue()
+    }
+
+    private var startupMetadataGateState: String {
+        switch startupMetadataMode {
+        case .immediateParallel:
+            "immediate"
+        case .mediaPrioritySerial:
+            initialMediaAdmissionCompleted ? "open" : "waitingForInitialMediaAdmission"
+        }
+    }
+
+    private func resetStartupMetadataWork() {
+        startupMetadataMode = .immediateParallel
+        startupMetadataQueue = []
+        activeStartupMetadataOperation = nil
+        initialMediaAdmissionCompleted = false
+    }
+
+    private func openStartupMetadataGateAfterInitialMediaAdmission(at date: Date) {
+        guard startupMetadataMode == .mediaPrioritySerial,
+              !initialMediaAdmissionCompleted else { return }
+
+        initialMediaAdmissionCompleted = true
+        recordTelemetry(
+            "metadata gate opened after initial media admission queued=\(startupMetadataQueue.count)",
+            at: date
+        )
+    }
+
+    private func serviceStartupMetadataQueue() {
+        let limit = StartupMetadataAdmissionPolicy.maxConcurrentOperations(
+            mode: startupMetadataMode,
+            initialMediaAdmissionCompleted: initialMediaAdmissionCompleted
+        )
+        guard limit > 0,
+              activeStartupMetadataOperation == nil,
+              !startupMetadataQueue.isEmpty else { return }
+
+        let operation = startupMetadataQueue.removeFirst()
+        let issuedAt = Date()
+        activeStartupMetadataOperation = ActiveStartupMetadataOperation(
+            descriptor: operation,
+            issuedAt: issuedAt
+        )
+        telemetryStartupMilestones.metadata.recordIssued(
+            activeCount: 1,
+            at: elapsedSinceSession(issuedAt)
+        )
+        recordTelemetry(
+            "metadata issued feed=\(operation.feedID) kind=\(operation.kind.rawValue) characteristic=\(operation.characteristicType) queueWait=\(formatPreciseSeconds(elapsedSinceSession(issuedAt))) queuedRemaining=\(startupMetadataQueue.count)",
+            at: issuedAt
+        )
+
+        let generation = sessionGeneration
+        let accepted = feeds.first { $0.id == operation.feedID }?.performStartupMetadataOperation(
+            operation
+        ) { [weak self] error in
+            guard let self, self.acceptsCallback(generation: generation) else { return }
+            self.completeStartupMetadataOperation(operation, error: error, at: Date())
+        } ?? false
+
+        if !accepted {
+            completeStartupMetadataOperation(operation, rejectionReason: "operationRejected", at: Date())
+        }
+    }
+
+    private func completeStartupMetadataOperation(
+        _ operation: StartupMetadataOperationDescriptor,
+        error: CameraTransportError?,
+        at date: Date
+    ) {
+        completeStartupMetadataOperation(
+            operation,
+            rejectionReason: error.map(transportErrorLabel),
+            at: date
+        )
+    }
+
+    private func completeStartupMetadataOperation(
+        _ operation: StartupMetadataOperationDescriptor,
+        rejectionReason: String?,
+        at date: Date
+    ) {
+        guard let active = activeStartupMetadataOperation,
+              active.descriptor.id == operation.id else { return }
+
+        activeStartupMetadataOperation = nil
+        let callbackLatency = max(0, date.timeIntervalSince(active.issuedAt))
+        telemetryStartupMilestones.metadata.recordCompleted(
+            failed: rejectionReason != nil,
+            callbackLatency: callbackLatency,
+            at: elapsedSinceSession(date)
+        )
+        recordTelemetry(
+            "metadata completed feed=\(operation.feedID) kind=\(operation.kind.rawValue) characteristic=\(operation.characteristicType) callbackLatency=\(formatPreciseSeconds(callbackLatency)) error=\(rejectionReason ?? "nil") queuedRemaining=\(startupMetadataQueue.count)",
+            at: date
+        )
+        serviceStartupMetadataQueue()
     }
 
     private func configureFeedsForPresentation() {
