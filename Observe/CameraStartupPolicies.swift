@@ -5,15 +5,36 @@ enum PlannedPresentationMode: Equatable {
     case snapshot
 }
 
+enum RestrictedStartupPhase: String, Equatable {
+    case initialSnapshotPass
+    case snapshotRecovery
+    case liveFill
+
+    var isOrdinaryLiveGateOpen: Bool {
+        self == .liveFill
+    }
+
+    static func resolve(
+        initialSnapshotPassActive: Bool,
+        allVisibleFeedsTrusted: Bool
+    ) -> RestrictedStartupPhase {
+        if allVisibleFeedsTrusted {
+            return .liveFill
+        }
+        return initialSnapshotPassActive ? .initialSnapshotPass : .snapshotRecovery
+    }
+}
+
 enum StartupLivePolicy: Equatable {
     case normal
-    case firstImage(allowWiredFallback: Bool)
+    case restrictedSnapshotOnly
+    case wifiFallback(allowWiredFallback: Bool)
     case liveBurst(liveIDs: Set<String>)
     case capacityRamp(liveIDs: Set<String>, maxPendingStarts: Int)
 
     var pendingStartLimit: Int {
         switch self {
-        case .normal, .firstImage:
+        case .normal, .restrictedSnapshotOnly, .wifiFallback:
             1
         case .liveBurst:
             Int.max
@@ -58,7 +79,7 @@ enum StartupCameraEvent: Equatable {
     case reset
     case snapshotRequested(at: Date)
     case snapshotSucceeded
-    case snapshotFailed
+    case snapshotFailed(entersRecovery: Bool)
     case liveRequested(at: Date)
     case liveStarted
     case plainLiveStarted
@@ -88,10 +109,16 @@ struct StartupCameraState: Equatable {
         case .snapshotSucceeded:
             snapshotPath = .succeeded
             resolution = .trusted
-        case .snapshotFailed:
+        case .snapshotFailed(let entersRecovery):
             guard resolution != .trusted else { return }
             snapshotPath = .failed
-            resolveFailureIfNeeded(isBatteryCamera: isBatteryCamera)
+            if entersRecovery, !isBatteryCamera {
+                resolution = .recovering
+            } else if isBatteryCamera {
+                resolveFailureIfNeeded(isBatteryCamera: true)
+            } else {
+                resolveFailureIfNeeded(isBatteryCamera: false)
+            }
         case .liveRequested(let startedAt):
             guard resolution != .trusted else { return }
             livePath = .inFlight(startedAt: startedAt)
@@ -256,30 +283,6 @@ enum LivePromotionSnapshotPolicy {
         guard priority != .none else { return false }
         if wifiBurstOpen { return true }
         return presentationMode != .live || priority == .urgent
-    }
-}
-
-enum StalledStartupRescuePolicy {
-    static func rescueCandidateID(
-        networkClass: CameraNetworkClass,
-        startupCoverageActive: Bool,
-        rescueAlreadyAttempted: Bool,
-        sessionElapsed: TimeInterval,
-        stallThreshold: TimeInterval,
-        hasAnyTrustedImage: Bool,
-        hasPendingBatteryProbe: Bool,
-        eligibleWiredIDs: [String]
-    ) -> String? {
-        guard networkClass == .cellular,
-              startupCoverageActive,
-              !rescueAlreadyAttempted,
-              sessionElapsed >= max(0, stallThreshold),
-              !hasAnyTrustedImage,
-              hasPendingBatteryProbe else {
-            return nil
-        }
-
-        return eligibleWiredIDs.first
     }
 }
 

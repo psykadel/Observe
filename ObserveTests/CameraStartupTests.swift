@@ -5,106 +5,34 @@ import XCTest
 @testable import Observe
 
 final class CameraStartupTests: ObserveTestCase {
-    func testCellularStallAdmitsOneWiredRescueOnlyAfterTimeout() {
-        let beforeTimeout = StalledStartupRescuePolicy.rescueCandidateID(
-            networkClass: .cellular,
-            startupCoverageActive: true,
-            rescueAlreadyAttempted: false,
-            sessionElapsed: 3.99,
-            stallThreshold: 4,
-            hasAnyTrustedImage: false,
-            hasPendingBatteryProbe: true,
-            eligibleWiredIDs: ["front", "back"]
+    func testRestrictedStartupPhaseIsDerivedFromInitialPassAndTrust() {
+        XCTAssertEqual(
+            RestrictedStartupPhase.resolve(
+                initialSnapshotPassActive: true,
+                allVisibleFeedsTrusted: false
+            ),
+            .initialSnapshotPass
         )
-        let atTimeout = StalledStartupRescuePolicy.rescueCandidateID(
-            networkClass: .cellular,
-            startupCoverageActive: true,
-            rescueAlreadyAttempted: false,
-            sessionElapsed: 4,
-            stallThreshold: 4,
-            hasAnyTrustedImage: false,
-            hasPendingBatteryProbe: true,
-            eligibleWiredIDs: ["front", "back"]
+        XCTAssertEqual(
+            RestrictedStartupPhase.resolve(
+                initialSnapshotPassActive: false,
+                allVisibleFeedsTrusted: false
+            ),
+            .snapshotRecovery
         )
-
-        XCTAssertNil(beforeTimeout)
-        XCTAssertEqual(atTimeout, "front")
+        XCTAssertEqual(
+            RestrictedStartupPhase.resolve(
+                initialSnapshotPassActive: false,
+                allVisibleFeedsTrusted: true
+            ),
+            .liveFill
+        )
+        XCTAssertFalse(RestrictedStartupPhase.initialSnapshotPass.isOrdinaryLiveGateOpen)
+        XCTAssertFalse(RestrictedStartupPhase.snapshotRecovery.isOrdinaryLiveGateOpen)
+        XCTAssertTrue(RestrictedStartupPhase.liveFill.isOrdinaryLiveGateOpen)
     }
-    func testCellularStallRescueRequiresPendingBatteryAndNoTrustedImage() {
-        XCTAssertNil(
-            StalledStartupRescuePolicy.rescueCandidateID(
-                networkClass: .wifi,
-                startupCoverageActive: true,
-                rescueAlreadyAttempted: false,
-                sessionElapsed: 5,
-                stallThreshold: 4,
-                hasAnyTrustedImage: false,
-                hasPendingBatteryProbe: true,
-                eligibleWiredIDs: ["front"]
-            )
-        )
-        XCTAssertNil(
-            StalledStartupRescuePolicy.rescueCandidateID(
-                networkClass: .cellular,
-                startupCoverageActive: true,
-                rescueAlreadyAttempted: false,
-                sessionElapsed: 5,
-                stallThreshold: 4,
-                hasAnyTrustedImage: true,
-                hasPendingBatteryProbe: true,
-                eligibleWiredIDs: ["front"]
-            )
-        )
-        XCTAssertNil(
-            StalledStartupRescuePolicy.rescueCandidateID(
-                networkClass: .cellular,
-                startupCoverageActive: true,
-                rescueAlreadyAttempted: false,
-                sessionElapsed: 5,
-                stallThreshold: 4,
-                hasAnyTrustedImage: false,
-                hasPendingBatteryProbe: false,
-                eligibleWiredIDs: ["front"]
-            )
-        )
-        XCTAssertNil(
-            StalledStartupRescuePolicy.rescueCandidateID(
-                networkClass: .cellular,
-                startupCoverageActive: true,
-                rescueAlreadyAttempted: true,
-                sessionElapsed: 5,
-                stallThreshold: 4,
-                hasAnyTrustedImage: false,
-                hasPendingBatteryProbe: true,
-                eligibleWiredIDs: ["front"]
-            )
-        )
-    }
-    func testStalledRescueContractAdmitsWiredStartAlongsidePendingBattery() {
-        let policy = StartupLivePolicy.capacityRamp(
-            liveIDs: ["battery", "front"],
-            maxPendingStarts: 2
-        )
-        var controller = LiveAdmissionController(
-            mode: .adaptive(maxPendingStarts: policy.pendingStartLimit),
-            sustainableCapacity: 5
-        )
-
-        XCTAssertEqual(policy.pendingStartLimit, 2)
-
-        let decision = controller.reconcile(
-            intents: [
-                LiveIntent(id: "battery", role: .batteryCapture, priorityIndex: 1),
-                LiveIntent(id: "front", role: .firstImageRecovery, priorityIndex: 0)
-            ],
-            transports: ["battery": .starting, "front": .idle],
-            preserveActiveDuringCoverage: false,
-            now: now
-        )
-
-        XCTAssertEqual(decision.targetIDs, ["battery", "front"])
-        XCTAssertEqual(decision.startIDs, ["front"])
-        XCTAssertTrue(decision.queuedStartIDs.isEmpty)
+    func testRestrictedSnapshotOnlyPolicyAllowsOnePendingBatteryStart() {
+        XCTAssertEqual(StartupLivePolicy.restrictedSnapshotOnly.pendingStartLimit, 1)
     }
     func testStartupLiveRampUsesTwoPendingSlotsAfterFastFirstSuccess() {
         var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
@@ -390,22 +318,23 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertTrue(cellular.liveIDs.isEmpty)
         XCTAssertTrue(unknown.allowsSnapshotIssue(at: now))
     }
-    func testStartupCameraStateRequiresBothWiredPathsToFail() {
+    func testRestrictedStartupSnapshotFailureMovesWiredCameraToRecoveryImmediately() {
         var state = StartupCameraState()
 
         state.apply(.snapshotRequested(at: now), isBatteryCamera: false)
-        state.apply(.snapshotFailed, isBatteryCamera: false)
-
-        XCTAssertEqual(state.resolution, .pending)
-        XCTAssertTrue(state.snapshotAttempted)
-        XCTAssertTrue(state.snapshotFailed)
-
-        state.apply(.liveRequested(at: now), isBatteryCamera: false)
-        state.apply(.liveFailed, isBatteryCamera: false)
+        state.apply(.snapshotFailed(entersRecovery: true), isBatteryCamera: false)
 
         XCTAssertEqual(state.resolution, .recovering)
-        XCTAssertTrue(state.liveAttempted)
-        XCTAssertNil(state.liveFallbackStartedAt)
+        XCTAssertTrue(state.snapshotAttempted)
+        XCTAssertTrue(state.snapshotFailed)
+    }
+    func testWiFiSnapshotFailureStillWaitsForLiveBurstResult() {
+        var state = StartupCameraState()
+
+        state.apply(.snapshotRequested(at: now), isBatteryCamera: false)
+        state.apply(.snapshotFailed(entersRecovery: false), isBatteryCamera: false)
+
+        XCTAssertEqual(state.resolution, .pending)
     }
     func testStartupCameraStateKeepsBatteryPendingUntilTrustedStill() {
         var state = StartupCameraState()
@@ -430,7 +359,7 @@ final class CameraStartupTests: ObserveTestCase {
     }
     func testStartupCameraStateAllowsLiveRetryAfterBothPathsFail() {
         var state = StartupCameraState()
-        state.apply(.snapshotFailed, isBatteryCamera: false)
+        state.apply(.snapshotFailed(entersRecovery: false), isBatteryCamera: false)
         state.apply(.liveFailed, isBatteryCamera: false)
 
         let retryAt = now.addingTimeInterval(2)
@@ -455,7 +384,7 @@ final class CameraStartupTests: ObserveTestCase {
     }
     func testStartupCameraStateResetReturnsToWaiting() {
         var state = StartupCameraState()
-        state.apply(.snapshotFailed, isBatteryCamera: false)
+        state.apply(.snapshotFailed(entersRecovery: false), isBatteryCamera: false)
         state.apply(.liveFailed, isBatteryCamera: false)
         XCTAssertEqual(state.resolution, .recovering)
 

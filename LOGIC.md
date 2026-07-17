@@ -56,26 +56,33 @@ back on.
 
 On cellular or any other connection, Observe starts more cautiously:
 
-- Take a few ordinary-camera snapshots at a time.
-- Wake one battery camera that needs a new still. If none does, try one ordinary
-  camera live.
-- If a camera stalls or fails, move on so it cannot hold up the entire view.
-- Add more live feeds gradually as HomeKit accepts them.
+- Take up to three ordinary-camera snapshots at a time.
+- At the same time, wake one battery camera that needs a new still.
+- If an ordinary camera's first snapshot fails or takes too long, move that
+  camera into background snapshot recovery immediately. Keep accepting a useful
+  late result from its original request.
+- Do not use ordinary live video as a fallback, even for the full-screen camera.
+- Wait until every visible camera has a current picture, then add live feeds
+  gradually as HomeKit accepts them.
 - If HomeKit clearly refuses another live feed, keep the feeds that still work
   and switch to Restricted Mode.
 - If HomeKit is merely busy, slow down and try again without treating that as a
   permanent limit.
 
-A camera whose first attempts fail remains visible and keeps trying in the
-background. The initial loading period ends when every camera either has a
-current picture or has moved into background recovery. A later successful
-picture or live connection immediately brings that camera up to date.
+A camera whose first snapshot fails remains visible and keeps trying snapshots
+in the background. The initial loading period ends when every camera either has
+a current picture or has moved into background recovery. This does not open
+ordinary live video: a later successful snapshot must first bring every visible
+camera up to date. If a reachable camera never returns a current picture,
+ordinary live filling remains paused while snapshot recovery continues.
 
 ## Restricted Mode
 
 Restricted Mode means HomeKit will not allow every visible camera to be live at
-the same time. Observe uses the available live connections to get every camera
-up to date before filling the final live view.
+the same time. During startup, Observe uses ordinary-camera snapshots plus one
+battery-camera live capture to get every camera up to date. Ordinary live
+connections are presentation work and begin only after every visible camera has
+a current picture.
 
 ### Ordinary Cameras
 
@@ -104,13 +111,18 @@ wake and capture it.
 
 ### Who Gets Live Video First
 
-When live connections are limited, use them in this order:
+During cellular or other non-Wi-Fi startup, the only live connection allowed
+before every camera has a current picture is one battery-camera capture. An
+ordinary camera never bypasses this rule because it is full screen, stalled, or
+recovering.
+
+After every visible camera has a current picture, use limited live connections
+in this order:
 
 1. The camera the user opened full screen.
 2. Battery cameras already capturing a still.
-3. Cameras still needed to finish the initial view.
-4. Other battery cameras waiting for a new still, in layout order.
-5. Normal live feeds, in layout order.
+3. Other battery cameras waiting for a new still, in layout order.
+4. Normal live feeds, in layout order.
 
 Do not use a waiting battery camera as an ordinary live feed. First give every
 visible battery camera a current still. After every camera has a current picture,

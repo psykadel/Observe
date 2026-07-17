@@ -43,7 +43,10 @@ class ObserveTestCase: XCTestCase {
         case .trusted:
             startupState.apply(.trustedImageObserved, isBatteryCamera: isBatteryWakeCamera)
         case .recovering:
-            startupState.apply(.snapshotFailed, isBatteryCamera: isBatteryWakeCamera)
+            startupState.apply(
+                .snapshotFailed(entersRecovery: !isBatteryWakeCamera),
+                isBatteryCamera: isBatteryWakeCamera
+            )
             startupState.apply(.liveFailed, isBatteryCamera: isBatteryWakeCamera)
         }
 

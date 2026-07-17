@@ -121,10 +121,6 @@ struct CameraStartupTelemetryMilestones: Equatable {
         peakOutstandingSnapshotRequests = max(peakOutstandingSnapshotRequests, outstanding)
     }
 
-    mutating func recordStartupLiveFallback(feedID: String, at elapsed: TimeInterval) {
-        updateFeed(feedID) { $0.recordStartupLiveFallback(at: elapsed) }
-    }
-
     mutating func recordStartupRecovering(feedID: String) {
         updateFeed(feedID) { $0.startupEnteredRecovery = true }
     }
@@ -166,7 +162,6 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
     var lastSnapshotCallbackLatency: TimeInterval?
     var lastLiveStartCallbackLatency: TimeInterval?
     var lastLiveStopCallbackLatency: TimeInterval?
-    var firstStartupLiveFallbackAt: TimeInterval?
     var startupEnteredRecovery = false
     var firstBatteryWakeLeaseStartedAt: TimeInterval?
     var firstBatteryTrustedStillAt: TimeInterval?
@@ -269,11 +264,6 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
         batteryWakeTimeoutCount += 1
     }
 
-    mutating func recordStartupLiveFallback(at elapsed: TimeInterval) {
-        if firstStartupLiveFallbackAt == nil {
-            firstStartupLiveFallbackAt = elapsed
-        }
-    }
 }
 
 struct CameraTelemetryFeed: Equatable {
@@ -306,7 +296,6 @@ struct CameraTelemetryFeed: Equatable {
     let startupSnapshotAttempted: Bool
     let startupSnapshotPath: String
     let startupLivePath: String
-    let startupLiveFallbackAge: TimeInterval?
     let batteryStillAge: TimeInterval?
     let nextBatteryCaptureDueIn: TimeInterval?
     let batteryWakeLeaseAge: TimeInterval?
@@ -352,6 +341,8 @@ struct CameraTelemetryReport: Equatable {
     let batteryWakeLiveStartTimeout: TimeInterval
     let wiredStartupLiveStartTimeout: TimeInterval
     let startupCoverageActive: Bool
+    let restrictedStartupPhase: String
+    let ordinaryLiveGateState: String
     let sessionNetworkClass: String
     let currentNetworkClass: String
     let wifiLiveBurstMode: String
@@ -405,6 +396,8 @@ struct CameraTelemetryReport: Equatable {
         lines.append("batteryWakeLiveStartTimeout=\(formatSeconds(batteryWakeLiveStartTimeout))")
         lines.append("wiredStartupLiveStartTimeout=\(formatSeconds(wiredStartupLiveStartTimeout))")
         lines.append("startupCoverageActive=\(startupCoverageActive)")
+        lines.append("restrictedStartupPhase=\(restrictedStartupPhase)")
+        lines.append("ordinaryLiveGateState=\(ordinaryLiveGateState)")
         lines.append("sessionNetworkClass=\(sessionNetworkClass)")
         lines.append("currentNetworkClass=\(currentNetworkClass)")
         lines.append("wifiLiveBurstMode=\(wifiLiveBurstMode)")
@@ -480,7 +473,6 @@ struct CameraTelemetryReport: Equatable {
             "lastSnapshotCallbackLatency=\(optionalSeconds(milestones.lastSnapshotCallbackLatency))",
             "lastLiveStartCallbackLatency=\(optionalSeconds(milestones.lastLiveStartCallbackLatency))",
             "lastLiveStopCallbackLatency=\(optionalSeconds(milestones.lastLiveStopCallbackLatency))",
-            "firstStartupLiveFallbackAt=\(optionalSeconds(milestones.firstStartupLiveFallbackAt))",
             "startupEnteredRecovery=\(milestones.startupEnteredRecovery)",
             "firstBatteryWakeLeaseStartedAt=\(optionalSeconds(milestones.firstBatteryWakeLeaseStartedAt))",
             "firstBatteryTrustedStillAt=\(optionalSeconds(milestones.firstBatteryTrustedStillAt))",
@@ -520,7 +512,6 @@ struct CameraTelemetryReport: Equatable {
             "startupSnapshotAttempted=\(feed.startupSnapshotAttempted)",
             "startupSnapshotPath=\(feed.startupSnapshotPath)",
             "startupLivePath=\(feed.startupLivePath)",
-            "startupLiveFallbackAge=\(optionalSeconds(feed.startupLiveFallbackAge))",
             "batteryStillAge=\(optionalSeconds(feed.batteryStillAge))",
             "nextBatteryCaptureDueIn=\(optionalSeconds(feed.nextBatteryCaptureDueIn))",
             "batteryWakeLeaseAge=\(optionalSeconds(feed.batteryWakeLeaseAge))",

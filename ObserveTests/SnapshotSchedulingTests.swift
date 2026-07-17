@@ -87,23 +87,10 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             now.addingTimeInterval(5)
         )
     }
-    func testStartupSnapshotRecoveryWaitsForBothPathsToFail() {
+    func testRestrictedStartupSnapshotRecoveryBeginsAfterFirstFailure() {
         var startupState = StartupCameraState()
         startupState.apply(.snapshotRequested(at: now.addingTimeInterval(-4)), isBatteryCamera: false)
-        startupState.apply(.snapshotFailed, isBatteryCamera: false)
-
-        XCTAssertNil(
-            StartupSnapshotRecoveryPolicy.retryEligibleDate(
-                startupCoverageActive: true,
-                startupState: startupState,
-                snapshotFailedAt: now,
-                lastRequestIssuedAt: now.addingTimeInterval(-4),
-                priority: .urgent
-            )
-        )
-
-        startupState.apply(.liveRequested(at: now), isBatteryCamera: false)
-        startupState.apply(.liveFailed, isBatteryCamera: false)
+        startupState.apply(.snapshotFailed(entersRecovery: true), isBatteryCamera: false)
 
         XCTAssertEqual(startupState.resolution, .recovering)
         XCTAssertEqual(
@@ -137,7 +124,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(state.pendingRequest?.timeoutReportedAt, now)
         XCTAssertFalse(state.markOverdue(at: now.addingTimeInterval(1)))
     }
-    func testIdleHomeHubHarnessAttemptsFourWiredPathsBeforeFallbackWithoutDuplicates() {
+    func testRestrictedStartupAttemptsThreeWiredSnapshotsThenFourthWithoutDuplicates() {
         let feedIDs = ["front", "garage", "deck", "side"]
         var nextRequestID: SnapshotRequestID = 1
         var states = Dictionary(
@@ -150,7 +137,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         func issueAvailable(at date: Date) {
             var capacity = SnapshotAdmissionPolicy.capacity(
                 states: Array(states.values),
-                activeLimit: 2,
+                activeLimit: 3,
                 outstandingLimit: 4
             )
             for feedID in feedIDs where capacity.availableActiveSlots > 0
@@ -168,14 +155,14 @@ final class SnapshotSchedulingTests: ObserveTestCase {
                 attemptedIDs.append(feedID)
                 capacity = SnapshotAdmissionPolicy.capacity(
                     states: Array(states.values),
-                    activeLimit: 2,
+                    activeLimit: 3,
                     outstandingLimit: 4
                 )
             }
         }
 
         issueAvailable(at: now)
-        XCTAssertEqual(attemptedIDs, ["front", "garage"])
+        XCTAssertEqual(attemptedIDs, ["front", "garage", "deck"])
 
         let firstTimeoutBoundary = now.addingTimeInterval(4.01)
         for feedID in feedIDs {
@@ -190,7 +177,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         }
         let finalCapacity = SnapshotAdmissionPolicy.capacity(
             states: Array(states.values),
-            activeLimit: 2,
+            activeLimit: 3,
             outstandingLimit: 4
         )
 
@@ -239,7 +226,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             )
         )
     }
-    func testSnapshotFirstStartupRunsOneBatteryCaptureBeforeWiredLiveFallback() {
+    func testRestrictedStartupRunsOneBatteryCaptureAlongsideWiredSnapshots() {
         let feeds = [
             makeFeed(id: "front", priorityIndex: 0),
             makeFeed(id: "garage", priorityIndex: 1),
@@ -250,23 +237,14 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             feeds: feeds,
             sessionMode: .optimistic,
             liveCapacity: 3,
-            startupLivePolicy: .firstImage(allowWiredFallback: false),
+            startupLivePolicy: .restrictedSnapshotOnly,
             now: now
         )
-        let fallbackPlan = planner.makePlan(
-            feeds: feeds,
-            sessionMode: .optimistic,
-            liveCapacity: 3,
-            startupLivePolicy: .firstImage(allowWiredFallback: true),
-            now: now
-        )
-
         XCTAssertEqual(liveIDs(in: snapshotFirstPlan), ["battery"])
         XCTAssertEqual(snapshotFirstPlan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
         XCTAssertEqual(snapshotFirstPlan.orderedSnapshotIDs, ["front", "garage"])
-        XCTAssertEqual(liveIDs(in: fallbackPlan), ["battery"])
     }
-    func testSnapshotFirstStartupAlwaysStartsOneWiredLiveProbeWithoutBatteryCamera() {
+    func testRestrictedStartupNeverStartsWiredLiveWithoutBatteryCamera() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(id: "first", priorityIndex: 0),
@@ -274,11 +252,12 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             ],
             sessionMode: .optimistic,
             liveCapacity: 2,
-            startupLivePolicy: .firstImage(allowWiredFallback: false),
+            startupLivePolicy: .restrictedSnapshotOnly,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["first"])
+        XCTAssertEqual(liveIDs(in: plan), [])
+        XCTAssertEqual(plan.decisionsByID["first"]?.presentationMode, .snapshot)
         XCTAssertEqual(plan.decisionsByID["second"]?.presentationMode, .snapshot)
     }
     func testWiFiLiveBurstOpensAllLiveAndReleasesSnapshotsAfterHeadStart() {
@@ -315,7 +294,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
     func testStartupCameraStateAcceptsLateSnapshotSuccessAfterFailure() {
         var state = StartupCameraState()
 
-        state.apply(.snapshotFailed, isBatteryCamera: false)
+        state.apply(.snapshotFailed(entersRecovery: true), isBatteryCamera: false)
         state.apply(.liveFailed, isBatteryCamera: false)
         XCTAssertEqual(state.resolution, .recovering)
 
@@ -323,7 +302,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
 
         XCTAssertEqual(state.resolution, .trusted)
     }
-    func testSnapshotFirstStartupUsesOnlyOneWiredFallbackWithoutBatteryDemand() {
+    func testRestrictedStartupKeepsAttemptedWiredCamerasSnapshotOnly() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(id: "front", priorityIndex: 0, startupSnapshotAttempted: true),
@@ -331,14 +310,15 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             ],
             sessionMode: .optimistic,
             liveCapacity: 2,
-            startupLivePolicy: .firstImage(allowWiredFallback: true),
+            startupLivePolicy: .restrictedSnapshotOnly,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["front"])
+        XCTAssertEqual(liveIDs(in: plan), [])
+        XCTAssertEqual(plan.decisionsByID["front"]?.presentationMode, .snapshot)
         XCTAssertEqual(plan.decisionsByID["garage"]?.presentationMode, .snapshot)
     }
-    func testSnapshotFirstStartupPreservesAnActiveWiredFallback() {
+    func testRestrictedStartupDoesNotPreserveAnEarlierWiredStart() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(
@@ -351,13 +331,14 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             ],
             sessionMode: .constrained,
             liveCapacity: 1,
-            startupLivePolicy: .firstImage(allowWiredFallback: false),
+            startupLivePolicy: .restrictedSnapshotOnly,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["front"])
+        XCTAssertEqual(liveIDs(in: plan), [])
+        XCTAssertEqual(plan.decisionsByID["front"]?.presentationMode, .snapshot)
     }
-    func testSnapshotFirstStartupKeepsRecoveringFeedsEligible() {
+    func testRestrictedStartupKeepsRecoveringBatteryCaptureEligible() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(
@@ -375,13 +356,13 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             ],
             sessionMode: .constrained,
             liveCapacity: 1,
-            startupLivePolicy: .firstImage(allowWiredFallback: true),
+            startupLivePolicy: .restrictedSnapshotOnly,
             now: now
         )
 
         XCTAssertEqual(liveIDs(in: plan), ["failed-battery"])
     }
-    func testSnapshotFirstStartupPrioritizesPendingCameraOverRecoveringCamera() {
+    func testRestrictedStartupKeepsPendingAndRecoveringWiredCamerasSnapshotOnly() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(
@@ -399,16 +380,43 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             ],
             sessionMode: .constrained,
             liveCapacity: 1,
-            startupLivePolicy: .firstImage(allowWiredFallback: true),
+            startupLivePolicy: .restrictedSnapshotOnly,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["mailbox"])
+        XCTAssertEqual(liveIDs(in: plan), [])
+        XCTAssertEqual(plan.decisionsByID["back"]?.presentationMode, .snapshot)
+        XCTAssertEqual(plan.decisionsByID["mailbox"]?.presentationMode, .snapshot)
+    }
+    func testRestrictedStartupFocusedWiredCameraRemainsSnapshotOnly() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "focused", priorityIndex: 0, isFocused: true),
+                makeFeed(id: "battery", priorityIndex: 1, isBatteryWakeCamera: true)
+            ],
+            sessionMode: .constrained,
+            liveCapacity: 1,
+            startupLivePolicy: .restrictedSnapshotOnly,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery"])
+        XCTAssertEqual(plan.decisionsByID["focused"]?.presentationMode, .snapshot)
     }
     func testStartupSnapshotConcurrencyPolicyCapsFirstFrameRequests() {
         XCTAssertEqual(
             StartupSnapshotConcurrencyPolicy.effectiveLimit(
                 isFirstFramePhaseActive: true,
+                usesRestrictedSnapshotOnlyStrategy: true,
+                nonBatteryTrustedCount: 0,
+                nonBatteryCount: 5
+            ),
+            3
+        )
+        XCTAssertEqual(
+            StartupSnapshotConcurrencyPolicy.effectiveLimit(
+                isFirstFramePhaseActive: true,
+                usesRestrictedSnapshotOnlyStrategy: false,
                 nonBatteryTrustedCount: 0,
                 nonBatteryCount: 5
             ),
@@ -417,6 +425,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(
             StartupSnapshotConcurrencyPolicy.effectiveLimit(
                 isFirstFramePhaseActive: true,
+                usesRestrictedSnapshotOnlyStrategy: false,
                 nonBatteryTrustedCount: 1,
                 nonBatteryCount: 5
             ),
@@ -425,6 +434,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(
             StartupSnapshotConcurrencyPolicy.effectiveLimit(
                 isFirstFramePhaseActive: true,
+                usesRestrictedSnapshotOnlyStrategy: false,
                 nonBatteryTrustedCount: 5,
                 nonBatteryCount: 5
             ),
@@ -433,6 +443,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(
             StartupSnapshotConcurrencyPolicy.effectiveLimit(
                 isFirstFramePhaseActive: false,
+                usesRestrictedSnapshotOnlyStrategy: true,
                 nonBatteryTrustedCount: 0,
                 nonBatteryCount: 5
             ),
@@ -441,6 +452,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
     }
     func testSnapshotRequestTimeoutDefaultsToFourSeconds() {
         XCTAssertEqual(CameraSchedulingDefaults.snapshotRequestTimeout, 4)
+        XCTAssertEqual(CameraSchedulingDefaults.startupMaxOutstandingSnapshotRequests, 4)
     }
     func testSnapshotRequestMatchPolicyIgnoresStaleResults() {
         XCTAssertTrue(

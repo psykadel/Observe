@@ -32,8 +32,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var startupCoverageActive = true
     private var startupLiveRampState: StartupLiveRampState?
     private var wifiLiveBurstState: WiFiLiveBurstState?
-    private var stalledStartupRescueAttempted = false
-    private var stalledStartupRescueLiveIDs: Set<String>?
     private var lastLivePlanTelemetrySignature: String?
     private var sessionNetworkClass: CameraNetworkClass = .unknown
     private var telemetrySessionStartedAt = Date()
@@ -166,10 +164,15 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     func telemetryReportText(at now: Date = Date()) -> String {
+        let planningSnapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
+        let restrictedPhase = restrictedStartupPhase(from: planningSnapshots, at: now)
         let snapshotCapacity = SnapshotAdmissionPolicy.capacity(
             states: feedScheduleStates.values.map(\.snapshotWorkState),
             activeLimit: effectiveMaxConcurrentSnapshotRequests(at: now),
-            outstandingLimit: startupCoverageActive ? 4 : maxConcurrentSnapshotRequests
+            outstandingLimit: effectiveMaxOutstandingSnapshotRequests(
+                from: planningSnapshots,
+                at: now
+            )
         )
         let liveCapacityExpansionRetryIn = liveCapacityExpansionBlockedUntil.flatMap { blockedUntil in
             blockedUntil > now ? blockedUntil.timeIntervalSince(now) : nil
@@ -207,6 +210,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             batteryWakeLiveStartTimeout: batteryWakeLiveStartTimeout,
             wiredStartupLiveStartTimeout: CameraSchedulingDefaults.wiredStartupLiveStartTimeout,
             startupCoverageActive: startupCoverageActive,
+            restrictedStartupPhase: restrictedPhase?.rawValue ?? "inactive",
+            ordinaryLiveGateState: restrictedPhase.map {
+                $0.isOrdinaryLiveGateOpen ? "open" : "waitingForAllTrusted"
+            } ?? "notRestricted",
             sessionNetworkClass: sessionNetworkClass.rawValue,
             currentNetworkClass: networkPathClassifier.currentClass.rawValue,
             wifiLiveBurstMode: wifiLiveBurstModeLabel,
@@ -310,8 +317,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupCoverageActive = true
         startupLiveRampState = nil
         wifiLiveBurstState = nil
-        stalledStartupRescueAttempted = false
-        stalledStartupRescueLiveIDs = nil
         lastLivePlanTelemetrySignature = nil
         currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
         liveAdmissionController = LiveAdmissionController(
@@ -373,8 +378,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupCoverageActive = true
         startupLiveRampState = nil
         wifiLiveBurstState = nil
-        stalledStartupRescueAttempted = false
-        stalledStartupRescueLiveIDs = nil
         lastLivePlanTelemetrySignature = nil
     }
 
@@ -391,8 +394,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         nextSnapshotRequestID = 1
         startupCoverageActive = true
         startupLiveRampState = nil
-        stalledStartupRescueAttempted = false
-        stalledStartupRescueLiveIDs = nil
         lastLivePlanTelemetrySignature = nil
         let networkClass = networkPathClassifier.currentClass
         sessionNetworkClass = networkClass
@@ -541,11 +542,15 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let hasActiveSnapshotRequest = feedScheduleStates.values.contains {
             $0.snapshotWorkState.isActive
         }
-        activateStalledStartupRescueIfNeeded(from: planningSnapshots, at: now)
         if sessionMode == .optimistic,
            let wifiLiveBurstState,
            !wifiLiveBurstState.liveIDs.isEmpty {
             return .liveBurst(liveIDs: wifiLiveBurstState.liveIDs)
+        } else if let restrictedStartupPhase = restrictedStartupPhase(
+            from: planningSnapshots,
+            at: now
+        ), !restrictedStartupPhase.isOrdinaryLiveGateOpen {
+            return .restrictedSnapshotOnly
         } else if sessionMode == .optimistic,
            let startupLiveRampState,
            startupLiveRampState.mode != .completed {
@@ -553,20 +558,25 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 liveIDs: startupLiveRampState.selectedIDs,
                 maxPendingStarts: startupLiveRampState.maxPendingCount
             )
-        } else if sessionMode == .optimistic,
-                  let stalledStartupRescueLiveIDs,
-                  !stalledStartupRescueLiveIDs.isEmpty {
-            return .capacityRamp(
-                liveIDs: stalledStartupRescueLiveIDs,
-                maxPendingStarts: 2
-            )
-        } else if startupCoverageActive {
-            return .firstImage(
+        } else if sessionNetworkClass == .wifi, startupCoverageActive {
+            return .wifiFallback(
                 allowWiredFallback: allWiredSnapshotPathsAttempted && !hasActiveSnapshotRequest
             )
         } else {
             return .normal
         }
+    }
+
+    private func restrictedStartupPhase(
+        from planningSnapshots: [FeedPlanningSnapshot],
+        at now: Date
+    ) -> RestrictedStartupPhase? {
+        guard sessionNetworkClass != .wifi, !planningSnapshots.isEmpty else { return nil }
+
+        return RestrictedStartupPhase.resolve(
+            initialSnapshotPassActive: startupCoverageActive,
+            allVisibleFeedsTrusted: planningSnapshots.allSatisfy { $0.hasTrustedImage(at: now) }
+        )
     }
 
     private func reconcileLiveAdmission(
@@ -623,11 +633,16 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let hasRecoveringCamera = feedScheduleStates.values.contains {
             $0.startupState.resolution == .recovering
         }
+        let restrictedLiveGateClosed = restrictedStartupPhase(
+            from: planningSnapshots(at: now, focusedFeedID: focusedFeedID),
+            at: now
+        ).map { !$0.isOrdinaryLiveGateOpen } ?? false
         let admission = liveAdmissionController.reconcile(
             intents: liveIntents,
             transports: transports,
             preserveActiveDuringCoverage: (startupCoverageActive || hasRecoveringCamera)
-                && sessionMode == .constrained,
+                && sessionMode == .constrained
+                && !restrictedLiveGateClosed,
             plannerCapacity: liveBudget,
             now: now
         )
@@ -661,8 +676,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         if admission.stopIDs.isEmpty {
             for feed in feeds where admission.startIDs.contains(feed.id) && isVisibleOnWall(feed) {
-                guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
-                markStartupLiveFallbackIfNeeded(for: feed.id, decision: decision, at: now)
                 feed.preferLive(at: now)
             }
         }
@@ -689,48 +702,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 feedScheduleStates[feed.id] = state
             }
         }
-    }
-
-    private func activateStalledStartupRescueIfNeeded(
-        from planningSnapshots: [FeedPlanningSnapshot],
-        at now: Date
-    ) {
-        guard stalledStartupRescueLiveIDs == nil,
-              startupLiveRampState == nil,
-              sessionMode == .optimistic else { return }
-
-        let batteryProbeIDs = planningSnapshots.filter {
-            $0.isBatteryWakeCamera
-                && $0.hasActiveBatteryCapture(
-                    at: now,
-                    leaseDuration: batteryWakeLeaseDuration,
-                    warmup: batteryCaptureWarmup,
-                    liveStartTimeout: batteryWakeLiveStartTimeout
-                )
-        }.map(\.id)
-        let eligibleWiredIDs = planningSnapshots.filter {
-            !$0.isBatteryWakeCamera
-                && !$0.hasTrustedImage(at: now)
-                && $0.startupState.resolution == .pending
-                && !$0.startupState.liveAttempted
-        }.sorted { $0.priorityIndex < $1.priorityIndex }.map(\.id)
-        let rescueID = StalledStartupRescuePolicy.rescueCandidateID(
-            networkClass: sessionNetworkClass,
-            startupCoverageActive: startupCoverageActive,
-            rescueAlreadyAttempted: stalledStartupRescueAttempted,
-            sessionElapsed: elapsedSinceSession(now),
-            stallThreshold: snapshotRequestTimeout,
-            hasAnyTrustedImage: planningSnapshots.contains { $0.hasTrustedImage(at: now) },
-            hasPendingBatteryProbe: !batteryProbeIDs.isEmpty,
-            eligibleWiredIDs: eligibleWiredIDs
-        )
-        guard let rescueID else { return }
-
-        stalledStartupRescueAttempted = true
-        stalledStartupRescueLiveIDs = Set(batteryProbeIDs + [rescueID])
-        recordTelemetry(
-            "cellular stalled-start rescue admitted \(rescueID) alongside=\(batteryProbeIDs.sorted().joined(separator: ","))"
-        )
     }
 
     private func recordLivePlanTransitionIfNeeded(
@@ -799,7 +770,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                now.timeIntervalSince(fallbackStartedAt) >= liveStartTimeout,
                feed.stopLiveIfNeeded(reason: .startupTimeout) {
                 recordTelemetry(
-                    "startup live fallback timed out \(feed.id) elapsed=\(formatSeconds(now.timeIntervalSince(fallbackStartedAt)))"
+                    "startup live start timed out \(feed.id) elapsed=\(formatSeconds(now.timeIntervalSince(fallbackStartedAt)))"
                 )
             }
 
@@ -1046,7 +1017,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let feedLookup = Dictionary(uniqueKeysWithValues: wallFeeds.map { ($0.id, $0) })
         let snapshotFeeds = currentRecoveryPlan.orderedSnapshotIDs.compactMap { feedLookup[$0] }
         let activeLimit = effectiveMaxConcurrentSnapshotRequests(at: now)
-        let outstandingLimit = startupCoverageActive ? 4 : maxConcurrentSnapshotRequests
+        let planningSnapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
+        let outstandingLimit = effectiveMaxOutstandingSnapshotRequests(
+            from: planningSnapshots,
+            at: now
+        )
         var capacity = SnapshotAdmissionPolicy.capacity(
             states: feedScheduleStates.values.map(\.snapshotWorkState),
             activeLimit: activeLimit,
@@ -1108,7 +1083,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         } else {
             recordTelemetry("snapshot request rejected \(feed.id)")
             applyStartupEvent(.snapshotRequested(at: date), feedID: feed.id, state: &state)
-            applyStartupEvent(.snapshotFailed, feedID: feed.id, state: &state)
+            applyStartupEvent(
+                .snapshotFailed(entersRecovery: restrictedSnapshotFailureEntersRecovery),
+                feedID: feed.id,
+                state: &state
+            )
             state.lastSnapshotFailureAt = date
             if let eligibleAt = StartupSnapshotRecoveryPolicy.retryEligibleDate(
                 startupCoverageActive: startupCoverageActive,
@@ -1286,13 +1265,21 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
     }
 
+    private var restrictedSnapshotFailureEntersRecovery: Bool {
+        sessionNetworkClass != .wifi
+    }
+
     private func handleSnapshotFailure(for feedID: String, at date: Date) {
         guard var state = feedScheduleStates[feedID] else { return }
         let priority = state.snapshotWorkState.pendingRequest?.priority
             ?? currentRecoveryPlan.decisionsByID[feedID]?.snapshotPriority
             ?? .refresh
         state.lastSnapshotFailureAt = date
-        applyStartupEvent(.snapshotFailed, feedID: feedID, state: &state)
+        applyStartupEvent(
+            .snapshotFailed(entersRecovery: restrictedSnapshotFailureEntersRecovery),
+            feedID: feedID,
+            state: &state
+        )
         if let eligibleAt = StartupSnapshotRecoveryPolicy.retryEligibleDate(
             startupCoverageActive: startupCoverageActive,
             startupState: state.startupState,
@@ -1315,7 +1302,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                   now.timeIntervalSince(request.issuedAt) > snapshotRequestTimeout,
                   state.snapshotWorkState.markOverdue(at: now) else { continue }
 
-            applyStartupEvent(.snapshotFailed, feedID: feedID, state: &state)
+            applyStartupEvent(
+                .snapshotFailed(entersRecovery: restrictedSnapshotFailureEntersRecovery),
+                feedID: feedID,
+                state: &state
+            )
             feedScheduleStates[feedID] = state
             telemetryStartupMilestones.recordSnapshotTimeout(feedID: feedID, at: elapsedSinceSession(now))
             recordTelemetry("snapshot overdue \(feedID) request=\(request.id) ownership=retained")
@@ -1653,25 +1644,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
     }
 
-    private func markStartupLiveFallbackIfNeeded(
-        for feedID: String,
-        decision: PresentationDecision,
-        at now: Date
-    ) {
-        guard startupCoverageActive,
-              feedID != focusedFeedID,
-              !preferences.isBatteryWakeCamera(id: feedID),
-              decision.presentationMode == .live,
-              var state = feedScheduleStates[feedID],
-              state.startupState.resolution == .pending,
-              state.startupState.liveFallbackStartedAt == nil else { return }
-
-        applyStartupEvent(.liveRequested(at: now), feedID: feedID, state: &state)
-        feedScheduleStates[feedID] = state
-        telemetryStartupMilestones.recordStartupLiveFallback(feedID: feedID, at: elapsedSinceSession(now))
-        recordTelemetry("startup live fallback started \(feedID)")
-    }
-
     private func handleLiveTransportEvent(for feedID: String, event: CameraLiveTransportEvent) {
         switch event {
         case .startRequested(let requestedAt, let restarted):
@@ -1699,7 +1671,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 case .inactive, .closed: false
                 }
             } ?? false
-            if sessionMode == .optimistic, !burstOwnsLiveSelection {
+            let restrictedPhase = restrictedStartupPhase(
+                from: planningSnapshots(at: startedAt, focusedFeedID: focusedFeedID),
+                at: startedAt
+            )
+            if sessionMode == .optimistic,
+               !burstOwnsLiveSelection,
+               restrictedPhase == nil || restrictedPhase?.isOrdinaryLiveGateOpen == true {
                 var ramp = startupLiveRampState ?? StartupLiveRampState(
                     initialSelectedIDs: Set(currentRecoveryPlan.decisionsByID.compactMap { id, decision in
                         decision.presentationMode == .live ? id : nil
@@ -1727,7 +1705,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 )
                 feedScheduleStates[feedID] = state
             }
-            stalledStartupRescueLiveIDs = nil
             telemetryStartupMilestones.recordLiveStarted(
                 feedID: feedID,
                 callbackLatency: callbackLatency,
@@ -1748,9 +1725,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 feedID: feedID,
                 callbackLatency: callbackLatency
             )
-            if stalledStartupRescueLiveIDs?.contains(feedID) == true {
-                stalledStartupRescueLiveIDs = nil
-            }
             let shouldFailCameraPath: Bool = switch disposition {
             case .startupTimedOut, .retryableTransport, .cameraFailure, .ended: true
             case .requestedStop, .softContention, .hardCapacity, .infrastructureUnavailable: false
@@ -1895,9 +1869,23 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let trustedCount = nonBatterySnapshots.filter { $0.hasTrustedImage(at: now) }.count
         return StartupSnapshotConcurrencyPolicy.effectiveLimit(
             isFirstFramePhaseActive: startupCoverageActive,
+            usesRestrictedSnapshotOnlyStrategy: sessionNetworkClass != .wifi,
             nonBatteryTrustedCount: trustedCount,
             nonBatteryCount: nonBatterySnapshots.count
         )
+    }
+
+    private func effectiveMaxOutstandingSnapshotRequests(
+        from planningSnapshots: [FeedPlanningSnapshot],
+        at now: Date
+    ) -> Int {
+        let restrictedLiveGateClosed = restrictedStartupPhase(
+            from: planningSnapshots,
+            at: now
+        ).map { !$0.isOrdinaryLiveGateOpen } ?? false
+        return startupCoverageActive || restrictedLiveGateClosed
+            ? CameraSchedulingDefaults.startupMaxOutstandingSnapshotRequests
+            : maxConcurrentSnapshotRequests
     }
 
     private func elapsedSinceSession(_ date: Date) -> TimeInterval {
@@ -1957,7 +1945,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 startupSnapshotAttempted: state?.startupState.snapshotAttempted ?? false,
                 startupSnapshotPath: state?.startupState.snapshotPath.label ?? "unknown",
                 startupLivePath: state?.startupState.livePath.label ?? "unknown",
-                startupLiveFallbackAge: age(of: state?.startupState.liveFallbackStartedAt, at: now),
                 batteryStillAge: age(of: feed.batteryStillDate, at: now),
                 nextBatteryCaptureDueIn: preferences.isBatteryWakeCamera(id: feed.id)
                     ? feed.batteryStillDate.map {

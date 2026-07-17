@@ -140,8 +140,13 @@ struct CameraRecoveryPlanner {
 
         let liveSelection: ConstrainedLiveSelection
         switch startupLivePolicy {
-        case .firstImage(let allowWiredFallback):
-            liveSelection = firstImageLiveSelection(
+        case .restrictedSnapshotOnly:
+            liveSelection = restrictedSnapshotOnlyLiveSelection(
+                feeds: prioritizedFeeds,
+                now: now
+            )
+        case .wifiFallback(let allowWiredFallback):
+            liveSelection = wifiFallbackLiveSelection(
                 feeds: prioritizedFeeds,
                 allowWiredFallback: allowWiredFallback,
                 now: now
@@ -239,7 +244,79 @@ struct CameraRecoveryPlanner {
         )
     }
 
-    private func firstImageLiveSelection(
+    private func restrictedSnapshotOnlyLiveSelection(
+        feeds: [FeedPlanningSnapshot],
+        now: Date
+    ) -> ConstrainedLiveSelection {
+        let batteryNeedingTrustedStillIDs = Set(
+            feeds
+                .filter {
+                    $0.isBatteryWakeCamera
+                        && !$0.hasTrustedImage(at: now)
+                        && $0.startupState.resolution != .trusted
+                }
+                .map(\.id)
+        )
+
+        if let activeBattery = feeds.first(where: {
+            $0.isBatteryWakeCamera
+                && $0.startupState.resolution != .trusted
+                && $0.hasActiveBatteryCapture(
+                    at: now,
+                    leaseDuration: batteryWakeLeaseDuration,
+                    warmup: batteryCaptureWarmup,
+                    liveStartTimeout: batteryWakeLiveStartTimeout
+                )
+        }) {
+            return ConstrainedLiveSelection(
+                liveIDs: [activeBattery.id],
+                batteryCaptureIDs: [activeBattery.id],
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting([activeBattery.id])
+            )
+        }
+
+        if let focusedBattery = feeds.first(where: {
+            $0.isFocused
+                && $0.isBatteryWakeCamera
+                && $0.startupState.resolution != .trusted
+                && $0.needsBatteryCapture(
+                    at: now,
+                    leaseDuration: batteryWakeLeaseDuration,
+                    warmup: batteryCaptureWarmup,
+                    liveStartTimeout: batteryWakeLiveStartTimeout
+                )
+        }) {
+            return ConstrainedLiveSelection(
+                liveIDs: [focusedBattery.id],
+                batteryCaptureIDs: [focusedBattery.id],
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting([focusedBattery.id])
+            )
+        }
+
+        if let battery = feeds.first(where: {
+            $0.startupState.resolution != .trusted
+                && $0.needsBatteryCapture(
+                at: now,
+                leaseDuration: batteryWakeLeaseDuration,
+                warmup: batteryCaptureWarmup,
+                liveStartTimeout: batteryWakeLiveStartTimeout
+            )
+        }) {
+            return ConstrainedLiveSelection(
+                liveIDs: [battery.id],
+                batteryCaptureIDs: [battery.id],
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting([battery.id])
+            )
+        }
+
+        return ConstrainedLiveSelection(
+            liveIDs: [],
+            batteryCaptureIDs: [],
+            batteryWaitingIDs: batteryNeedingTrustedStillIDs
+        )
+    }
+
+    private func wifiFallbackLiveSelection(
         feeds: [FeedPlanningSnapshot],
         allowWiredFallback: Bool,
         now: Date
@@ -300,11 +377,11 @@ struct CameraRecoveryPlanner {
         if let battery = feeds.first(where: {
             $0.startupState.resolution != .trusted
                 && $0.needsBatteryCapture(
-                at: now,
-                leaseDuration: batteryWakeLeaseDuration,
-                warmup: batteryCaptureWarmup,
-                liveStartTimeout: batteryWakeLiveStartTimeout
-            )
+                    at: now,
+                    leaseDuration: batteryWakeLeaseDuration,
+                    warmup: batteryCaptureWarmup,
+                    liveStartTimeout: batteryWakeLiveStartTimeout
+                )
         }) {
             return ConstrainedLiveSelection(
                 liveIDs: [battery.id],
