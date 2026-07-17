@@ -24,6 +24,100 @@ final class CameraStartupTests: ObserveTestCase {
             1
         )
     }
+    func testRestrictedMetadataKeepsReadsBehindTrustAndMediaWork() {
+        let mode = StartupMetadataWorkMode.mediaPrioritySerial
+
+        XCTAssertTrue(
+            StartupMetadataAdmissionPolicy.shouldIssue(
+                kind: .availabilityNotification,
+                mode: mode,
+                initialMediaAdmissionCompleted: true,
+                allVisibleFeedsTrusted: false,
+                criticalMediaWorkActive: true
+            )
+        )
+        XCTAssertTrue(
+            StartupMetadataAdmissionPolicy.shouldIssue(
+                kind: .batteryNotification,
+                mode: mode,
+                initialMediaAdmissionCompleted: true,
+                allVisibleFeedsTrusted: false,
+                criticalMediaWorkActive: true
+            )
+        )
+        XCTAssertFalse(
+            StartupMetadataAdmissionPolicy.shouldIssue(
+                kind: .availabilityRead,
+                mode: mode,
+                initialMediaAdmissionCompleted: true,
+                allVisibleFeedsTrusted: false,
+                criticalMediaWorkActive: false
+            )
+        )
+        XCTAssertFalse(
+            StartupMetadataAdmissionPolicy.shouldIssue(
+                kind: .batteryRead,
+                mode: mode,
+                initialMediaAdmissionCompleted: true,
+                allVisibleFeedsTrusted: true,
+                criticalMediaWorkActive: true
+            )
+        )
+        XCTAssertTrue(
+            StartupMetadataAdmissionPolicy.shouldIssue(
+                kind: .availabilityRead,
+                mode: mode,
+                initialMediaAdmissionCompleted: true,
+                allVisibleFeedsTrusted: true,
+                criticalMediaWorkActive: false
+            )
+        )
+    }
+    func testWiFiMetadataReadsRemainImmediate() {
+        XCTAssertTrue(
+            StartupMetadataAdmissionPolicy.shouldIssue(
+                kind: .batteryRead,
+                mode: .immediateParallel,
+                initialMediaAdmissionCompleted: false,
+                allVisibleFeedsTrusted: false,
+                criticalMediaWorkActive: true
+            )
+        )
+    }
+    func testRestrictedTrustGateSuppressesRefreshesForAlreadyTrustedFeeds() {
+        XCTAssertFalse(
+            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
+                isTrusted: true,
+                startupCoverageActive: false,
+                startupLiveRampActive: false,
+                restrictedLiveGateClosed: true
+            )
+        )
+        XCTAssertTrue(
+            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
+                isTrusted: false,
+                startupCoverageActive: false,
+                startupLiveRampActive: false,
+                restrictedLiveGateClosed: true
+            )
+        )
+        XCTAssertTrue(
+            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
+                isTrusted: true,
+                startupCoverageActive: false,
+                startupLiveRampActive: false,
+                restrictedLiveGateClosed: false
+            )
+        )
+        XCTAssertFalse(
+            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
+                isTrusted: true,
+                startupCoverageActive: false,
+                startupLiveRampActive: true,
+                restrictedLiveGateClosed: false
+            )
+        )
+    }
     func testWiFiMetadataKeepsImmediateParallelBehavior() {
         let mode = StartupMetadataWorkMode.resolve(networkClass: .wifi)
 
@@ -36,7 +130,7 @@ final class CameraStartupTests: ObserveTestCase {
             Int.max
         )
     }
-    func testStartupMetadataPrioritizesAvailabilityAheadOfBatteryDetails() {
+    func testStartupMetadataRegistersAllNotificationsBeforeExplicitReads() {
         let operations = [
             StartupMetadataOperationDescriptor(
                 feedID: "battery",
@@ -68,8 +162,8 @@ final class CameraStartupTests: ObserveTestCase {
             StartupMetadataAdmissionPolicy.ordered(operations).map(\.kind),
             [
                 .availabilityNotification,
-                .availabilityRead,
                 .batteryNotification,
+                .availabilityRead,
                 .batteryRead
             ]
         )

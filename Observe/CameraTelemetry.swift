@@ -151,6 +151,8 @@ struct CameraStartupMetadataTelemetryMilestones: Equatable {
     var peakActiveOperations = 0
     var firstQueuedAt: TimeInterval?
     var firstIssuedAt: TimeInterval?
+    var firstNotificationIssuedAt: TimeInterval?
+    var firstReadIssuedAt: TimeInterval?
     var firstCompletedAt: TimeInterval?
     var lastCompletedAt: TimeInterval?
     var maxCallbackLatency: TimeInterval?
@@ -163,11 +165,22 @@ struct CameraStartupMetadataTelemetryMilestones: Equatable {
         }
     }
 
-    mutating func recordIssued(activeCount: Int, at elapsed: TimeInterval) {
+    mutating func recordIssued(
+        kind: StartupMetadataOperationKind,
+        activeCount: Int,
+        at elapsed: TimeInterval
+    ) {
         issuedCount += 1
         peakActiveOperations = max(peakActiveOperations, activeCount)
         if firstIssuedAt == nil {
             firstIssuedAt = elapsed
+        }
+        if kind.isNotificationRegistration {
+            if firstNotificationIssuedAt == nil {
+                firstNotificationIssuedAt = elapsed
+            }
+        } else if firstReadIssuedAt == nil {
+            firstReadIssuedAt = elapsed
         }
     }
 
@@ -488,6 +501,8 @@ struct CameraTelemetryReport: Equatable {
         lines.append("peakActiveMetadataOperations=\(startupMilestones.metadata.peakActiveOperations)")
         lines.append("firstMetadataQueuedAt=\(optionalSeconds(startupMilestones.metadata.firstQueuedAt))")
         lines.append("firstMetadataIssuedAt=\(optionalSeconds(startupMilestones.metadata.firstIssuedAt))")
+        lines.append("firstMetadataNotificationIssuedAt=\(optionalSeconds(startupMilestones.metadata.firstNotificationIssuedAt))")
+        lines.append("firstMetadataReadIssuedAt=\(optionalSeconds(startupMilestones.metadata.firstReadIssuedAt))")
         lines.append("firstMetadataCompletedAt=\(optionalSeconds(startupMilestones.metadata.firstCompletedAt))")
         lines.append("lastMetadataCompletedAt=\(optionalSeconds(startupMilestones.metadata.lastCompletedAt))")
         lines.append("maxMetadataCallbackLatency=\(optionalSeconds(startupMilestones.metadata.maxCallbackLatency))")

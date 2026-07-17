@@ -532,7 +532,17 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         case .immediateParallel:
             "immediate"
         case .mediaPrioritySerial:
-            initialMediaAdmissionCompleted ? "open" : "waitingForInitialMediaAdmission"
+            if !initialMediaAdmissionCompleted {
+                "waitingForInitialMediaAdmission"
+            } else if activeStartupMetadataOperation?.descriptor.kind.isNotificationRegistration == false {
+                "readInFlight"
+            } else if !allVisibleFeedsTrusted(at: Date()) {
+                "notificationsOnlyWaitingForAllTrusted"
+            } else if criticalMediaWorkActive {
+                "waitingForMediaIdle"
+            } else {
+                "open"
+            }
         }
     }
 
@@ -559,20 +569,40 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             mode: startupMetadataMode,
             initialMediaAdmissionCompleted: initialMediaAdmissionCompleted
         )
-        guard limit > 0,
-              activeStartupMetadataOperation == nil,
-              !startupMetadataQueue.isEmpty else { return }
+        guard limit > 0, activeStartupMetadataOperation == nil else { return }
 
-        let operation = startupMetadataQueue.removeFirst()
-        let issuedAt = Date()
+        let now = Date()
+        let allVisibleFeedsTrusted = allVisibleFeedsTrusted(at: now)
+        let hasCriticalMediaWork = criticalMediaWorkActive
+        guard let operationIndex = startupMetadataQueue.firstIndex(where: { operation in
+            StartupMetadataAdmissionPolicy.shouldIssue(
+                kind: operation.kind,
+                mode: startupMetadataMode,
+                initialMediaAdmissionCompleted: initialMediaAdmissionCompleted,
+                allVisibleFeedsTrusted: allVisibleFeedsTrusted,
+                criticalMediaWorkActive: hasCriticalMediaWork
+            )
+        }) else { return }
+
+        let operation = startupMetadataQueue.remove(at: operationIndex)
+        let issuedAt = now
         activeStartupMetadataOperation = ActiveStartupMetadataOperation(
             descriptor: operation,
             issuedAt: issuedAt
         )
+        let isFirstRead = !operation.kind.isNotificationRegistration
+            && telemetryStartupMilestones.metadata.firstReadIssuedAt == nil
         telemetryStartupMilestones.metadata.recordIssued(
+            kind: operation.kind,
             activeCount: 1,
             at: elapsedSinceSession(issuedAt)
         )
+        if isFirstRead {
+            recordTelemetry(
+                "metadata explicit reads opened allVisibleTrusted=true criticalMediaWorkActive=false",
+                at: issuedAt
+            )
+        }
         recordTelemetry(
             "metadata issued feed=\(operation.feedID) kind=\(operation.kind.rawValue) characteristic=\(operation.characteristicType) queueWait=\(formatPreciseSeconds(elapsedSinceSession(issuedAt))) queuedRemaining=\(startupMetadataQueue.count)",
             at: issuedAt
@@ -1074,8 +1104,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         ) else {
             return
         }
-        if (startupCoverageActive || (startupLiveRampState.map { $0.mode != .completed } ?? false)),
-           state.startupState.resolution == .trusted {
+        guard TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
+            isTrusted: hasTrustedImage(feedID: feedID, at: date),
+            startupCoverageActive: startupCoverageActive,
+            startupLiveRampActive: startupLiveRampActive,
+            restrictedLiveGateClosed: restrictedLiveGateClosed(at: date)
+        ) else {
             return
         }
         let eligibleAt: Date
@@ -1179,7 +1213,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             .filter { feed in
                 guard let state = feedScheduleStates[feed.id] else { return false }
                 guard case .queued(_, let eligibleAt) = state.snapshotWorkState else { return false }
-                return eligibleAt <= now
+                return eligibleAt <= now && TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
+                    isTrusted: hasTrustedImage(feedID: feed.id, at: now),
+                    startupCoverageActive: startupCoverageActive,
+                    startupLiveRampActive: startupLiveRampActive,
+                    restrictedLiveGateClosed: restrictedLiveGateClosed(at: now)
+                )
             }
 
         for feed in dueFeeds {
@@ -1387,6 +1426,40 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
 
         return max(0, now.timeIntervalSince(stillDate)) <= preferences.staleVisualHighlightThreshold
+    }
+
+    private func allVisibleFeedsTrusted(at date: Date) -> Bool {
+        let snapshots = planningSnapshots(at: date, focusedFeedID: focusedFeedID)
+        return !snapshots.isEmpty && snapshots.allSatisfy { $0.hasTrustedImage(at: date) }
+    }
+
+    private func restrictedLiveGateClosed(at date: Date) -> Bool {
+        restrictedStartupPhase(
+            from: planningSnapshots(at: date, focusedFeedID: focusedFeedID),
+            at: date
+        ).map { !$0.isOrdinaryLiveGateOpen } ?? false
+    }
+
+    private var startupLiveRampActive: Bool {
+        if wallFeeds.contains(where: { feed in
+            feed.liveTransportPhase == .starting || feed.liveTransportPhase == .stopping
+        }) {
+            return true
+        }
+        guard let mode = startupLiveRampState?.mode else { return false }
+        switch mode {
+        case .probing, .conservative, .fast:
+            return true
+        case .stopped, .completed:
+            return false
+        }
+    }
+
+    private var criticalMediaWorkActive: Bool {
+        feedScheduleStates.values.contains { $0.snapshotWorkState.isActive }
+            || wallFeeds.contains { feed in
+                feed.liveTransportPhase == .starting || feed.liveTransportPhase == .stopping
+            }
     }
 
     private func applyStartupEvent(

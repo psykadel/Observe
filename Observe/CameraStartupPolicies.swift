@@ -43,9 +43,18 @@ enum StartupMetadataOperationKind: String, Equatable {
     fileprivate var priority: Int {
         switch self {
         case .availabilityNotification: 0
-        case .availabilityRead: 1
-        case .batteryNotification: 2
+        case .batteryNotification: 1
+        case .availabilityRead: 2
         case .batteryRead: 3
+        }
+    }
+
+    var isNotificationRegistration: Bool {
+        switch self {
+        case .availabilityNotification, .batteryNotification:
+            true
+        case .availabilityRead, .batteryRead:
+            false
         }
     }
 }
@@ -66,6 +75,25 @@ struct StartupMetadataOperationDescriptor: Equatable, Identifiable {
 }
 
 enum StartupMetadataAdmissionPolicy {
+    static func shouldIssue(
+        kind: StartupMetadataOperationKind,
+        mode: StartupMetadataWorkMode,
+        initialMediaAdmissionCompleted: Bool,
+        allVisibleFeedsTrusted: Bool,
+        criticalMediaWorkActive: Bool
+    ) -> Bool {
+        switch mode {
+        case .immediateParallel:
+            return true
+        case .mediaPrioritySerial:
+            guard initialMediaAdmissionCompleted else { return false }
+            if kind.isNotificationRegistration {
+                return true
+            }
+            return allVisibleFeedsTrusted && !criticalMediaWorkActive
+        }
+    }
+
     static func maxConcurrentOperations(
         mode: StartupMetadataWorkMode,
         initialMediaAdmissionCompleted: Bool
@@ -90,6 +118,17 @@ enum StartupMetadataAdmissionPolicy {
             }
             return lhs.characteristicID < rhs.characteristicID
         }
+    }
+}
+
+enum TrustedFrameSnapshotAdmissionPolicy {
+    static func shouldQueue(
+        isTrusted: Bool,
+        startupCoverageActive: Bool,
+        startupLiveRampActive: Bool,
+        restrictedLiveGateClosed: Bool
+    ) -> Bool {
+        !isTrusted || !(startupCoverageActive || startupLiveRampActive || restrictedLiveGateClosed)
     }
 }
 

@@ -9,9 +9,9 @@ final class CameraTelemetryTests: ObserveTestCase {
         var milestones = CameraStartupMetadataTelemetryMilestones()
 
         milestones.recordQueued(count: 4, at: 0)
-        milestones.recordIssued(activeCount: 1, at: 0.1)
+        milestones.recordIssued(kind: .availabilityNotification, activeCount: 1, at: 0.1)
         milestones.recordCompleted(failed: false, callbackLatency: 0.8, at: 0.9)
-        milestones.recordIssued(activeCount: 1, at: 1)
+        milestones.recordIssued(kind: .availabilityRead, activeCount: 1, at: 1)
         milestones.recordCompleted(failed: true, callbackLatency: 1.4, at: 2.4)
 
         XCTAssertEqual(milestones.queuedCount, 4)
@@ -21,6 +21,8 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertEqual(milestones.peakActiveOperations, 1)
         XCTAssertEqual(milestones.firstQueuedAt, 0)
         XCTAssertEqual(milestones.firstIssuedAt, 0.1)
+        XCTAssertEqual(milestones.firstNotificationIssuedAt, 0.1)
+        XCTAssertEqual(milestones.firstReadIssuedAt, 1)
         XCTAssertEqual(milestones.firstCompletedAt, 0.9)
         XCTAssertEqual(milestones.lastCompletedAt, 2.4)
         XCTAssertEqual(milestones.maxCallbackLatency, 1.4)
@@ -142,6 +144,8 @@ final class CameraTelemetryTests: ObserveTestCase {
                     peakActiveOperations: 1,
                     firstQueuedAt: 0,
                     firstIssuedAt: 0.02,
+                    firstNotificationIssuedAt: 0.02,
+                    firstReadIssuedAt: 12.5,
                     firstCompletedAt: 0.6,
                     lastCompletedAt: 4.2,
                     maxCallbackLatency: 1.4
@@ -269,6 +273,8 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("metadataFailureCount=1"))
         XCTAssertTrue(text.contains("peakActiveMetadataOperations=1"))
         XCTAssertTrue(text.contains("firstMetadataIssuedAt=0.0s"))
+        XCTAssertTrue(text.contains("firstMetadataNotificationIssuedAt=0.0s"))
+        XCTAssertTrue(text.contains("firstMetadataReadIssuedAt=12.5s"))
         XCTAssertTrue(text.contains("lastMetadataCompletedAt=4.2s"))
         XCTAssertTrue(text.contains("maxMetadataCallbackLatency=1.4s"))
         XCTAssertTrue(text.contains("front | firstTrustedImageAt=12.0s"))
@@ -287,7 +293,7 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("liveStopRequestedAge=0.5s"))
         XCTAssertTrue(text.contains("liveStopReason=startupTimeout"))
         XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
-        XCTAssertEqual(stableFingerprint(text), 5_555_762_793_498_386_261)
+        XCTAssertEqual(stableFingerprint(text), 1_768_063_454_449_670_230)
     }
 
     private func stableFingerprint(_ text: String) -> UInt64 {
