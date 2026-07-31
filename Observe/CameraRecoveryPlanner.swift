@@ -280,6 +280,14 @@ struct CameraRecoveryPlanner {
             )
         }
 
+        guard hasFinishedRestrictedBatteryHeadStart(feeds: feeds, now: now) else {
+            return ConstrainedLiveSelection(
+                liveIDs: [],
+                batteryCaptureIDs: [],
+                batteryWaitingIDs: batteryNeedingTrustedStillIDs
+            )
+        }
+
         if let focusedBattery = feeds.first(where: {
             $0.isFocused
                 && $0.isBatteryWakeCamera
@@ -319,6 +327,28 @@ struct CameraRecoveryPlanner {
             batteryCaptureIDs: [],
             batteryWaitingIDs: batteryNeedingTrustedStillIDs
         )
+    }
+
+    private func hasFinishedRestrictedBatteryHeadStart(
+        feeds: [FeedPlanningSnapshot],
+        now: Date
+    ) -> Bool {
+        let wiredFeeds = feeds.filter { !$0.isBatteryWakeCamera }
+        guard !wiredFeeds.isEmpty else { return true }
+
+        if wiredFeeds.allSatisfy({ $0.hasTrustedImage(at: now) }) {
+            return true
+        }
+
+        if wiredFeeds.contains(where: { $0.startupState.snapshotPath == .succeeded }) {
+            return true
+        }
+
+        guard let firstRequestDate = wiredFeeds.compactMap(\.startupState.firstSnapshotRequestedAt).min() else {
+            return false
+        }
+
+        return now.timeIntervalSince(firstRequestDate) >= CameraSchedulingDefaults.snapshotRequestTimeout
     }
 
     private func wifiFallbackLiveSelection(

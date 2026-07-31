@@ -226,7 +226,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             )
         )
     }
-    func testRestrictedStartupRunsOneBatteryCaptureAlongsideWiredSnapshots() {
+    func testRestrictedStartupGivesWiredSnapshotsHeadStartBeforeBatteryCapture() {
         let feeds = [
             makeFeed(id: "front", priorityIndex: 0),
             makeFeed(id: "garage", priorityIndex: 1),
@@ -240,14 +240,122 @@ final class SnapshotSchedulingTests: ObserveTestCase {
             startupLivePolicy: .restrictedSnapshotOnly,
             now: now
         )
-        XCTAssertEqual(liveIDs(in: snapshotFirstPlan), ["battery"])
-        XCTAssertEqual(snapshotFirstPlan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
+        XCTAssertEqual(liveIDs(in: snapshotFirstPlan), [])
+        XCTAssertEqual(snapshotFirstPlan.decisionsByID["battery"]?.recoveryPhase, .batteryWaiting)
         XCTAssertEqual(snapshotFirstPlan.orderedSnapshotIDs, ["front", "garage"])
     }
-    func testRestrictedStartupChoosesBatteryCaptureByLiveOrder() {
+    func testRestrictedStartupStartsBatteryCaptureAfterFirstWiredSnapshotSucceeds() {
+        var successfulSnapshotState = StartupCameraState()
+        successfulSnapshotState.apply(.snapshotRequested(at: now), isBatteryCamera: false)
+        successfulSnapshotState.apply(.snapshotSucceeded, isBatteryCamera: false)
+
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(id: "front", priorityIndex: 0, livePriorityIndex: 3),
+                makeFeed(
+                    id: "front",
+                    priorityIndex: 0,
+                    startupState: successfulSnapshotState
+                ),
+                makeFeed(id: "garage", priorityIndex: 1),
+                makeFeed(id: "battery", priorityIndex: 2, isBatteryWakeCamera: true)
+            ],
+            sessionMode: .optimistic,
+            liveCapacity: 3,
+            startupLivePolicy: .restrictedSnapshotOnly,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery"])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
+    }
+    func testRestrictedStartupStartsBatteryCaptureWhenWiredHeadStartTimesOut() {
+        var retriedSnapshotState = StartupCameraState()
+        retriedSnapshotState.apply(
+            .snapshotRequested(at: now.addingTimeInterval(-CameraSchedulingDefaults.snapshotRequestTimeout)),
+            isBatteryCamera: false
+        )
+        retriedSnapshotState.apply(.snapshotFailed(entersRecovery: true), isBatteryCamera: false)
+        retriedSnapshotState.apply(.snapshotRequested(at: now), isBatteryCamera: false)
+
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(
+                    id: "front",
+                    priorityIndex: 0,
+                    startupState: retriedSnapshotState
+                ),
+                makeFeed(id: "battery", priorityIndex: 1, isBatteryWakeCamera: true)
+            ],
+            sessionMode: .optimistic,
+            liveCapacity: 2,
+            startupLivePolicy: .restrictedSnapshotOnly,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery"])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
+    }
+    func testRestrictedStartupStartsBatteryCaptureImmediatelyWithoutWiredFeeds() {
+        let plan = planner.makePlan(
+            feeds: [makeFeed(id: "battery", priorityIndex: 0, isBatteryWakeCamera: true)],
+            sessionMode: .optimistic,
+            liveCapacity: 1,
+            startupLivePolicy: .restrictedSnapshotOnly,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery"])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
+    }
+    func testRestrictedStartupStartsBatteryCaptureWhenWiredFeedsAreAlreadyTrusted() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "front", priorityIndex: 0, lastSnapshotAge: 1),
+                makeFeed(id: "garage", priorityIndex: 1, lastSnapshotAge: 1),
+                makeFeed(id: "battery", priorityIndex: 2, isBatteryWakeCamera: true)
+            ],
+            sessionMode: .optimistic,
+            liveCapacity: 3,
+            startupLivePolicy: .restrictedSnapshotOnly,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery"])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
+    }
+    func testRestrictedStartupPreservesActiveBatteryCaptureDuringWiredHeadStart() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "front", priorityIndex: 0),
+                makeFeed(
+                    id: "battery",
+                    priorityIndex: 1,
+                    isBatteryWakeCamera: true,
+                    batteryWakeLeaseStartedAt: now
+                )
+            ],
+            sessionMode: .optimistic,
+            liveCapacity: 2,
+            startupLivePolicy: .restrictedSnapshotOnly,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery"])
+        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
+    }
+    func testRestrictedStartupChoosesBatteryCaptureByLiveOrder() {
+        var successfulSnapshotState = StartupCameraState()
+        successfulSnapshotState.apply(.snapshotRequested(at: now), isBatteryCamera: false)
+        successfulSnapshotState.apply(.snapshotSucceeded, isBatteryCamera: false)
+
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(
+                    id: "front",
+                    priorityIndex: 0,
+                    livePriorityIndex: 3,
+                    startupState: successfulSnapshotState
+                ),
                 makeFeed(id: "garage", priorityIndex: 1, livePriorityIndex: 2),
                 makeFeed(
                     id: "battery-first",
@@ -366,13 +474,19 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(plan.decisionsByID["front"]?.presentationMode, .snapshot)
     }
     func testRestrictedStartupKeepsRecoveringBatteryCaptureEligible() {
+        var timedOutSnapshotState = StartupCameraState()
+        timedOutSnapshotState.apply(
+            .snapshotRequested(at: now.addingTimeInterval(-CameraSchedulingDefaults.snapshotRequestTimeout)),
+            isBatteryCamera: false
+        )
+        timedOutSnapshotState.apply(.snapshotFailed(entersRecovery: true), isBatteryCamera: false)
+
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(
                     id: "failed-wired",
                     priorityIndex: 0,
-                    startupSnapshotAttempted: true,
-                    startupCoverageResolution: .recovering
+                    startupState: timedOutSnapshotState
                 ),
                 makeFeed(
                     id: "failed-battery",
@@ -416,9 +530,20 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(plan.decisionsByID["mailbox"]?.presentationMode, .snapshot)
     }
     func testRestrictedStartupFocusedWiredCameraRemainsSnapshotOnly() {
+        var timedOutSnapshotState = StartupCameraState()
+        timedOutSnapshotState.apply(
+            .snapshotRequested(at: now.addingTimeInterval(-CameraSchedulingDefaults.snapshotRequestTimeout)),
+            isBatteryCamera: false
+        )
+
         let plan = planner.makePlan(
             feeds: [
-                makeFeed(id: "focused", priorityIndex: 0, isFocused: true),
+                makeFeed(
+                    id: "focused",
+                    priorityIndex: 0,
+                    isFocused: true,
+                    startupState: timedOutSnapshotState
+                ),
                 makeFeed(id: "battery", priorityIndex: 1, isBatteryWakeCamera: true)
             ],
             sessionMode: .constrained,

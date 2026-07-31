@@ -61,7 +61,11 @@ back on.
 On cellular or any other connection, Observe starts more cautiously:
 
 - Take up to three ordinary-camera snapshots at a time.
-- At the same time, wake one battery camera that needs a new still.
+- Give those ordinary-camera snapshots a short head start before waking one
+  battery camera that needs a new still. Wake it as soon as an ordinary snapshot
+  succeeds, or after the short wait if none has succeeded. If no ordinary
+  snapshot is needed, wake the battery camera immediately. Do not interrupt a
+  battery wake already in progress.
 - Admit those picture requests before asking HomeKit to refresh secondary camera
   details. Register availability and battery change notifications after that
   first admission pass, but postpone explicit availability and battery reads

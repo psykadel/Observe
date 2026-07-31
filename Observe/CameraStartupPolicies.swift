@@ -199,6 +199,7 @@ struct StartupCameraState: Equatable {
     private(set) var snapshotPath: StartupCameraPathState = .notAttempted
     private(set) var livePath: StartupCameraPathState = .notAttempted
     private(set) var resolution: StartupCoverageResolution = .pending
+    private(set) var firstSnapshotRequestedAt: Date?
 
     var snapshotAttempted: Bool { snapshotPath.wasAttempted }
     var snapshotFailed: Bool { snapshotPath == .failed }
@@ -213,6 +214,9 @@ struct StartupCameraState: Equatable {
             self = StartupCameraState()
         case .snapshotRequested(let startedAt):
             guard resolution != .trusted else { return }
+            if firstSnapshotRequestedAt == nil {
+                firstSnapshotRequestedAt = startedAt
+            }
             snapshotPath = .inFlight(startedAt: startedAt)
         case .snapshotSucceeded:
             snapshotPath = .succeeded
