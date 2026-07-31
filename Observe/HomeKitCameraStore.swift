@@ -17,6 +17,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     @Published private(set) var isAppActive = true
     @Published private(set) var focusedFeedID: String?
     @Published private(set) var liveCapacity = 0
+    @Published private(set) var lockOptions: [HomeSecurityOption] = []
+    @Published private(set) var temperatureSensorOptions: [HomeSecurityOption] = []
+    @Published private(set) var lockIndicatorState: LockIndicatorState = .loading
+    @Published private(set) var temperatureIndicatorState: TemperatureIndicatorState = .loading
 
     let preferences: ObservePreferences
 
@@ -49,6 +53,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var startupMetadataQueue: [StartupMetadataOperationDescriptor] = []
     private var activeStartupMetadataOperation: ActiveStartupMetadataOperation?
     private var initialMediaAdmissionCompleted = false
+    private var lockCharacteristicsByID: [String: HMCharacteristic] = [:]
+    private var temperatureCharacteristicsByID: [String: HMCharacteristic] = [:]
+    private var lockValuesByID: [String: Int] = [:]
+    private var temperatureValuesByID: [String: Double] = [:]
+    private var pendingLockReadIDs: Set<String>?
+    private var pendingTemperatureReadIDs: Set<String>?
+    private var lockLoadGeneration: UInt64 = 0
+    private var temperatureLoadGeneration: UInt64 = 0
 
     private let snapshotRequestTimeout = CameraSchedulingDefaults.snapshotRequestTimeout
     private let startupFastLocalLiveThreshold: TimeInterval = 3
@@ -116,6 +128,40 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     func selectHome(id: String) {
         preferences.selectedHomeID = id
         rebuildHomesAndFeeds()
+    }
+
+    func setLockStatusEnabled(_ enabled: Bool) {
+        preferences.setLockStatusEnabled(enabled)
+        resetLockStatus()
+        serviceHomeSecurity()
+    }
+
+    func setHomeTemperatureEnabled(_ enabled: Bool) {
+        preferences.setHomeTemperatureEnabled(enabled)
+        resetTemperatureStatus()
+        serviceHomeSecurity()
+    }
+
+    func setLockSelected(_ selected: Bool, for id: String) {
+        preferences.setLockSelected(selected, for: id)
+        resetLockStatus()
+        serviceHomeSecurity()
+    }
+
+    func setTemperatureSensorSelected(_ selected: Bool, for id: String) {
+        preferences.setTemperatureSensorSelected(selected, for: id)
+        resetTemperatureStatus()
+        serviceHomeSecurity()
+    }
+
+    func setHomeTemperatureLowFahrenheit(_ value: Int) {
+        preferences.setHomeTemperatureLowFahrenheit(value)
+        refreshTemperatureIndicator()
+    }
+
+    func setHomeTemperatureHighFahrenheit(_ value: Int) {
+        preferences.setHomeTemperatureHighFahrenheit(value)
+        refreshTemperatureIndicator()
     }
 
     func movePriority(from source: IndexSet, to destination: Int) {
@@ -283,8 +329,45 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             networkClass: networkPathClassifier.currentClass
         )
         var discoveredFeeds: [CameraFeedCoordinator] = []
+        var discoveredLocks: [HomeSecurityOption] = []
+        var discoveredTemperatureSensors: [HomeSecurityOption] = []
+        lockCharacteristicsByID = [:]
+        temperatureCharacteristicsByID = [:]
         for accessory in home.accessories {
             accessory.delegate = self
+
+            for service in accessory.services {
+                if service.serviceType == HMServiceTypeLockMechanism,
+                   let characteristic = service.characteristics.first(where: {
+                       $0.characteristicType == HMCharacteristicTypeCurrentLockMechanismState
+                   }) {
+                    let id = service.uniqueIdentifier.uuidString
+                    lockCharacteristicsByID[id] = characteristic
+                    discoveredLocks.append(
+                        HomeSecurityOption(id: id, name: accessory.name, roomName: accessory.room?.name)
+                    )
+                }
+
+                let currentTemperature = service.characteristics.first(where: {
+                    $0.characteristicType == HMCharacteristicTypeCurrentTemperature
+                })
+                if HomeTemperatureDiscoveryPolicy.includes(
+                    hasCurrentTemperature: currentTemperature != nil
+                ), let characteristic = currentTemperature {
+                    let id = service.uniqueIdentifier.uuidString
+                    temperatureCharacteristicsByID[id] = characteristic
+                    discoveredTemperatureSensors.append(
+                        HomeSecurityOption(
+                            id: id,
+                            name: HomeTemperatureDiscoveryPolicy.optionName(
+                                serviceName: service.name,
+                                accessoryName: accessory.name
+                            ),
+                            roomName: accessory.room?.name
+                        )
+                    )
+                }
+            }
 
             let profiles = accessory.cameraProfiles ?? []
             for (index, profile) in profiles.enumerated() {
@@ -298,6 +381,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 discoveredFeeds.append(feed)
             }
         }
+        lockOptions = discoveredLocks.sorted(by: homeSecurityOptionSort)
+        temperatureSensorOptions = discoveredTemperatureSensors.sorted(by: homeSecurityOptionSort)
+        resetHomeSecurityStatus()
 
         let priorityIDs = preferences.normalizedPriority(availableIDs: discoveredFeeds.map(\.id))
         let feedLookup = Dictionary(uniqueKeysWithValues: discoveredFeeds.map { ($0.id, $0) })
@@ -345,10 +431,16 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         )
         lastLiveAdmissionDecision = nil
         feeds.forEach { $0.resetSessionState() }
+        resetHomeSecurityStatus()
     }
 
     private func clearMissingHomeState() {
         feeds = []
+        lockOptions = []
+        temperatureSensorOptions = []
+        lockCharacteristicsByID = [:]
+        temperatureCharacteristicsByID = [:]
+        resetHomeSecurityStatus()
         feedScheduleStates = [:]
         currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
         liveAdmissionController = LiveAdmissionController(
@@ -400,13 +492,18 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupLiveRampState = nil
         wifiLiveBurstState = nil
         lastLivePlanTelemetrySignature = nil
+        resetHomeSecurityStatus()
     }
 
     private func startSession() {
         snapshotSchedulerTask?.cancel()
         wifiLiveBurstHeadStartTask?.cancel()
 
-        guard isAppActive, !feeds.isEmpty else { return }
+        guard isAppActive else { return }
+        guard !feeds.isEmpty else {
+            serviceHomeSecurity()
+            return
+        }
 
         telemetrySessionStartedAt = Date()
         telemetryEvents = []
@@ -525,6 +622,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         serviceSnapshotQueue()
         openStartupMetadataGateAfterInitialMediaAdmission(at: Date())
         serviceStartupMetadataQueue()
+        serviceHomeSecurity()
     }
 
     private var startupMetadataGateState: String {
@@ -2194,6 +2292,190 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             telemetryEvents.removeFirst(telemetryEvents.count - maxTelemetryEvents)
         }
     }
+
+    private func homeSecurityOptionSort(_ lhs: HomeSecurityOption, _ rhs: HomeSecurityOption) -> Bool {
+        let nameOrder = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+        return lhs.id < rhs.id
+    }
+
+    private var selectedCurrentHomeLockIDs: Set<String> {
+        Set(preferences.selectedLockIDs).intersection(lockCharacteristicsByID.keys)
+    }
+
+    private var selectedCurrentHomeTemperatureIDs: Set<String> {
+        Set(preferences.selectedTemperatureSensorIDs).intersection(temperatureCharacteristicsByID.keys)
+    }
+
+    private func resetHomeSecurityStatus() {
+        resetLockStatus()
+        resetTemperatureStatus()
+    }
+
+    private func resetLockStatus() {
+        lockLoadGeneration &+= 1
+        pendingLockReadIDs = nil
+        lockValuesByID = [:]
+        lockIndicatorState = .loading
+    }
+
+    private func resetTemperatureStatus() {
+        temperatureLoadGeneration &+= 1
+        pendingTemperatureReadIDs = nil
+        temperatureValuesByID = [:]
+        temperatureIndicatorState = .loading
+    }
+
+    private func serviceHomeSecurity() {
+        let canLoad = HomeSecurityReadPolicy.shouldLoad(
+            hasVisibleCameras: !wallFeeds.isEmpty,
+            allVisibleCamerasTrusted: allVisibleFeedsTrusted(at: Date()),
+            allVisibleCamerasLiveInWiFiBurst: wifiLiveBurstState?.mode == .completed
+        )
+        guard canLoad else { return }
+
+        if preferences.isLockStatusEnabled, pendingLockReadIDs == nil {
+            beginLockStatusLoad()
+        }
+        if preferences.isHomeTemperatureEnabled, pendingTemperatureReadIDs == nil {
+            beginTemperatureLoad()
+        }
+    }
+
+    private func beginLockStatusLoad() {
+        let selectedIDs = selectedCurrentHomeLockIDs
+        pendingLockReadIDs = selectedIDs
+        lockValuesByID = [:]
+        refreshLockIndicator()
+
+        for id in selectedIDs {
+            guard let characteristic = lockCharacteristicsByID[id] else { continue }
+            observe(characteristic)
+            let sessionGeneration = self.sessionGeneration
+            let loadGeneration = lockLoadGeneration
+            characteristic.readValue { [weak self, weak characteristic] error in
+                let succeeded = error == nil
+                Task { @MainActor [weak self, weak characteristic] in
+                    guard let self,
+                          let characteristic,
+                          self.acceptsCallback(generation: sessionGeneration),
+                          self.lockLoadGeneration == loadGeneration,
+                          self.lockCharacteristicsByID[id] === characteristic,
+                          self.pendingLockReadIDs?.contains(id) == true else { return }
+
+                    if succeeded, let value = characteristic.value as? NSNumber {
+                        self.lockValuesByID[id] = value.intValue
+                    } else {
+                        self.lockValuesByID.removeValue(forKey: id)
+                    }
+                    self.pendingLockReadIDs?.remove(id)
+                    self.refreshLockIndicator()
+                }
+            }
+        }
+    }
+
+    private func beginTemperatureLoad() {
+        let selectedIDs = selectedCurrentHomeTemperatureIDs
+        pendingTemperatureReadIDs = selectedIDs
+        temperatureValuesByID = [:]
+        refreshTemperatureIndicator()
+
+        for id in selectedIDs {
+            guard let characteristic = temperatureCharacteristicsByID[id] else { continue }
+            observe(characteristic)
+            let sessionGeneration = self.sessionGeneration
+            let loadGeneration = temperatureLoadGeneration
+            characteristic.readValue { [weak self, weak characteristic] error in
+                let succeeded = error == nil
+                Task { @MainActor [weak self, weak characteristic] in
+                    guard let self,
+                          let characteristic,
+                          self.acceptsCallback(generation: sessionGeneration),
+                          self.temperatureLoadGeneration == loadGeneration,
+                          self.temperatureCharacteristicsByID[id] === characteristic,
+                          self.pendingTemperatureReadIDs?.contains(id) == true else { return }
+
+                    if succeeded, let value = characteristic.value as? NSNumber {
+                        self.temperatureValuesByID[id] = value.doubleValue
+                    } else {
+                        self.temperatureValuesByID.removeValue(forKey: id)
+                    }
+                    self.pendingTemperatureReadIDs?.remove(id)
+                    self.refreshTemperatureIndicator()
+                }
+            }
+        }
+    }
+
+    private func observe(_ characteristic: HMCharacteristic) {
+        guard characteristic.properties.contains(HMCharacteristicPropertySupportsEventNotification),
+              !characteristic.isNotificationEnabled else { return }
+        characteristic.enableNotification(true) { _ in }
+    }
+
+    private func refreshLockIndicator() {
+        guard preferences.isLockStatusEnabled else {
+            lockIndicatorState = .loading
+            return
+        }
+        lockIndicatorState = HomeSecurityStatusPolicy.lockState(
+            isLoading: pendingLockReadIDs == nil || pendingLockReadIDs?.isEmpty == false,
+            selectedIDs: selectedCurrentHomeLockIDs,
+            valuesByID: lockValuesByID
+        )
+    }
+
+    private func refreshTemperatureIndicator() {
+        guard preferences.isHomeTemperatureEnabled else {
+            temperatureIndicatorState = .loading
+            return
+        }
+        temperatureIndicatorState = HomeSecurityStatusPolicy.temperatureState(
+            isLoading: pendingTemperatureReadIDs == nil || pendingTemperatureReadIDs?.isEmpty == false,
+            selectedIDs: selectedCurrentHomeTemperatureIDs,
+            celsiusValuesByID: temperatureValuesByID,
+            lowFahrenheit: preferences.homeTemperatureLowFahrenheit,
+            highFahrenheit: preferences.homeTemperatureHighFahrenheit
+        )
+    }
+
+    @discardableResult
+    private func refreshHomeSecurityValue(for characteristic: HMCharacteristic) -> Bool {
+        if let id = lockCharacteristicsByID.first(where: { $0.value === characteristic })?.key,
+           pendingLockReadIDs != nil {
+            if let value = characteristic.value as? NSNumber {
+                lockValuesByID[id] = value.intValue
+            } else {
+                lockValuesByID.removeValue(forKey: id)
+            }
+            refreshLockIndicator()
+            return true
+        }
+
+        if let id = temperatureCharacteristicsByID.first(where: { $0.value === characteristic })?.key,
+           pendingTemperatureReadIDs != nil {
+            if let value = characteristic.value as? NSNumber {
+                temperatureValuesByID[id] = value.doubleValue
+            } else {
+                temperatureValuesByID.removeValue(forKey: id)
+            }
+            refreshTemperatureIndicator()
+            return true
+        }
+
+        return false
+    }
+
+    private func resetSelectedHomeSecurityStatus(for accessory: HMAccessory) {
+        let serviceIDs = Set(accessory.services.map { $0.uniqueIdentifier.uuidString })
+        if !serviceIDs.isDisjoint(with: selectedCurrentHomeLockIDs) {
+            resetLockStatus()
+        }
+        if !serviceIDs.isDisjoint(with: selectedCurrentHomeTemperatureIDs) {
+            resetTemperatureStatus()
+        }
+    }
 }
 
 extension HomeKitCameraStore: HMHomeManagerDelegate {
@@ -2234,17 +2516,22 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
     nonisolated func accessory(_ accessory: HMAccessory, service: HMService, didUpdateValueFor characteristic: HMCharacteristic) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach {
+            self.refreshHomeSecurityValue(for: characteristic)
+            let matchingFeeds = self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }
+            matchingFeeds.forEach {
                 $0.refreshHomeKitCameraActiveStateIfNeeded(for: characteristic)
                 $0.refreshBatteryPercentageIfNeeded(for: characteristic)
             }
-            self.refreshPresentation(focusedFeedID: self.focusedFeedID)
+            if !matchingFeeds.isEmpty {
+                self.refreshPresentation(focusedFeedID: self.focusedFeedID)
+            }
         }
     }
 
     nonisolated func accessoryDidUpdateReachability(_ accessory: HMAccessory) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            self.resetSelectedHomeSecurityStatus(for: accessory)
             self.feeds.filter { $0.accessoryID == accessory.uniqueIdentifier.uuidString }.forEach { feed in
                 feed.refreshSessionAvailabilityFromAccessory()
                 guard var state = self.feedScheduleStates[feed.id] else { return }

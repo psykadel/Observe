@@ -71,6 +71,52 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Home Security") {
+                    Toggle("Lock Status", isOn: lockStatusEnabledBinding)
+
+                    if preferences.isLockStatusEnabled {
+                        if store.lockOptions.isEmpty {
+                            Text("No HomeKit locks available in this home.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(store.lockOptions) { option in
+                                Toggle(isOn: lockSelectionBinding(for: option.id)) {
+                                    homeSecurityOptionLabel(option)
+                                }
+                            }
+                        }
+                    }
+
+                    Toggle("Home Temperature", isOn: homeTemperatureEnabledBinding)
+
+                    if preferences.isHomeTemperatureEnabled {
+                        if store.temperatureSensorOptions.isEmpty {
+                            Text("No HomeKit temperature sensors available in this home.")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(store.temperatureSensorOptions) { option in
+                                Toggle(isOn: temperatureSelectionBinding(for: option.id)) {
+                                    homeSecurityOptionLabel(option)
+                                }
+                            }
+                        }
+
+                        Stepper(value: homeTemperatureLowBinding, step: 1) {
+                            LabeledContent("Acceptable Low") {
+                                Text("\(preferences.homeTemperatureLowFahrenheit)°F")
+                                    .monospacedDigit()
+                            }
+                        }
+
+                        Stepper(value: homeTemperatureHighBinding, step: 1) {
+                            LabeledContent("Acceptable High") {
+                                Text("\(preferences.homeTemperatureHighFahrenheit)°F")
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+
                 if !store.priorityOrderedFeeds.isEmpty {
                     Section("Battery Cameras") {
                         Text(
@@ -225,6 +271,59 @@ struct SettingsView: View {
             get: { preferences.cameraNameVisibility },
             set: { preferences.cameraNameVisibility = $0 }
         )
+    }
+
+    private var lockStatusEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.isLockStatusEnabled },
+            set: { store.setLockStatusEnabled($0) }
+        )
+    }
+
+    private var homeTemperatureEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.isHomeTemperatureEnabled },
+            set: { store.setHomeTemperatureEnabled($0) }
+        )
+    }
+
+    private func lockSelectionBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { preferences.isLockSelected(id: id) },
+            set: { store.setLockSelected($0, for: id) }
+        )
+    }
+
+    private func temperatureSelectionBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { preferences.isTemperatureSensorSelected(id: id) },
+            set: { store.setTemperatureSensorSelected($0, for: id) }
+        )
+    }
+
+    private var homeTemperatureLowBinding: Binding<Int> {
+        Binding(
+            get: { preferences.homeTemperatureLowFahrenheit },
+            set: { store.setHomeTemperatureLowFahrenheit($0) }
+        )
+    }
+
+    private var homeTemperatureHighBinding: Binding<Int> {
+        Binding(
+            get: { preferences.homeTemperatureHighFahrenheit },
+            set: { store.setHomeTemperatureHighFahrenheit($0) }
+        )
+    }
+
+    private func homeSecurityOptionLabel(_ option: HomeSecurityOption) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(option.name)
+            if let roomName = option.roomName {
+                Text(roomName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var staleThresholdBinding: Binding<Int> {

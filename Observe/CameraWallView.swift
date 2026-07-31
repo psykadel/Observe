@@ -13,7 +13,7 @@ struct CameraWallView: View {
     private var wallPlatform: CameraWallPlatform { .current }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
 
             content
@@ -23,15 +23,23 @@ struct CameraWallView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack(spacing: 8) {
+                if preferences.isLockStatusEnabled {
+                    lockStatusIndicator
+                }
+
+                if preferences.isHomeTemperatureEnabled {
+                    temperatureStatusIndicator
+                }
+
+                Spacer(minLength: 8)
+
                 if showsBatteryCameraToggle {
                     Button {
                         store.setBatteryCameraVisibilityEnabled(!preferences.isBatteryCameraVisibilityEnabled)
                     } label: {
                         Image(systemName: preferences.isBatteryCameraVisibilityEnabled ? "video.fill" : "video.slash.fill")
-                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(preferences.isBatteryCameraVisibilityEnabled ? .white : .white.opacity(0.58))
-                            .padding(12)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .wallStatusControlStyle()
                     }
                     .accessibilityLabel(
                         preferences.isBatteryCameraVisibilityEnabled
@@ -45,15 +53,13 @@ struct CameraWallView: View {
                     showsSettings = true
                 } label: {
                     Image(systemName: "gearshape.fill")
-                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
-                        .padding(12)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .wallStatusControlStyle()
                 }
                 .accessibilityLabel("Settings")
             }
             .padding(.top, 8)
-            .padding(.trailing, 10)
+            .padding(.horizontal, 10)
         }
         .sheet(isPresented: $showsSettings) {
             settingsSheet
@@ -175,6 +181,49 @@ struct CameraWallView: View {
             showsSetting: preferences.showsBatteryCameraVisibilityToggle,
             hasBatteryCameras: store.hasBatteryWakeCameras
         )
+    }
+
+    private var lockStatusIndicator: some View {
+        let presentation: (systemName: String, color: Color, value: String) = switch store.lockIndicatorState {
+        case .loading:
+            ("lock.fill", .gray, "Loading")
+        case .locked:
+            ("lock.fill", .green, "All Selected Locks Are Locked")
+        case .alert:
+            ("lock.open.fill", .red, "A Selected Lock Is Not Confirmed Locked")
+        }
+
+        return Image(systemName: presentation.systemName)
+            .foregroundStyle(presentation.color)
+            .wallStatusControlStyle()
+            .accessibilityElement()
+            .accessibilityLabel("Lock Status")
+            .accessibilityValue(presentation.value)
+    }
+
+    private var temperatureStatusIndicator: some View {
+        let presentation: (text: String, color: Color, value: String) = switch store.temperatureIndicatorState {
+        case .loading:
+            ("—°", .gray, "Loading")
+        case .alert:
+            ("—°", .red, "Temperature Unavailable")
+        case .value(let temperature, let isInRange):
+            (
+                "\(temperature)°",
+                isInRange ? .green : .red,
+                "\(temperature) Degrees Fahrenheit, \(isInRange ? "Within Range" : "Outside Range")"
+            )
+        }
+
+        return Text(presentation.text)
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .foregroundStyle(presentation.color)
+            .wallStatusControlStyle()
+            .accessibilityElement()
+            .accessibilityLabel("Home Temperature")
+            .accessibilityValue(presentation.value)
     }
 
     private var noActiveCamerasSubtitle: String {
@@ -323,5 +372,13 @@ struct CameraWallView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private extension View {
+    func wallStatusControlStyle() -> some View {
+        font(.subheadline.weight(.semibold))
+            .frame(width: 44, height: 44)
+            .background(.ultraThinMaterial, in: Circle())
     }
 }

@@ -71,6 +71,12 @@ struct HomeOption: Identifiable, Hashable {
     let isPrimary: Bool
 }
 
+struct HomeSecurityOption: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let roomName: String?
+}
+
 struct CameraStatusSnapshot: Equatable {
     let label: String
     let recencyTier: FeedRecencyTier

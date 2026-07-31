@@ -45,6 +45,10 @@ request failed.
 Observe first tries to get a current picture for every visible camera. Only then
 does it concentrate on showing as many live feeds as HomeKit will allow.
 
+If a Home Security indicator is enabled, it stays gray until every visible
+camera has a current picture. Observe then reads the selected locks or
+temperature sensors without controlling or changing anything in the home.
+
 On Wi-Fi, Observe makes one quick attempt to start every camera live. It also
 begins taking snapshots shortly afterward so the view still fills in when Wi-Fi
 is not actually connected to the home network.

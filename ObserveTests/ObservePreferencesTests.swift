@@ -5,6 +5,202 @@ import XCTest
 @testable import Observe
 
 final class ObservePreferencesTests: ObserveTestCase {
+    func testHomeSecurityReadWaitsForVisibleCamerasButNotAnEmptyWall() {
+        XCTAssertFalse(
+            HomeSecurityReadPolicy.shouldLoad(
+                hasVisibleCameras: true,
+                allVisibleCamerasTrusted: false,
+                allVisibleCamerasLiveInWiFiBurst: false
+            )
+        )
+        XCTAssertTrue(
+            HomeSecurityReadPolicy.shouldLoad(
+                hasVisibleCameras: true,
+                allVisibleCamerasTrusted: true,
+                allVisibleCamerasLiveInWiFiBurst: false
+            )
+        )
+        XCTAssertTrue(
+            HomeSecurityReadPolicy.shouldLoad(
+                hasVisibleCameras: false,
+                allVisibleCamerasTrusted: false,
+                allVisibleCamerasLiveInWiFiBurst: false
+            )
+        )
+    }
+
+    func testHomeSecurityReadStartsAfterEveryCameraIsLiveInWiFiBurst() {
+        XCTAssertTrue(
+            HomeSecurityReadPolicy.shouldLoad(
+                hasVisibleCameras: true,
+                allVisibleCamerasTrusted: false,
+                allVisibleCamerasLiveInWiFiBurst: true
+            )
+        )
+    }
+
+    func testTemperatureDiscoveryIncludesEveryCurrentTemperatureService() {
+        XCTAssertTrue(
+            HomeTemperatureDiscoveryPolicy.includes(
+                hasCurrentTemperature: true
+            )
+        )
+        XCTAssertFalse(
+            HomeTemperatureDiscoveryPolicy.includes(
+                hasCurrentTemperature: false
+            )
+        )
+    }
+
+    func testTemperatureDiscoveryUsesServiceNameInsteadOfAccessoryName() {
+        XCTAssertEqual(
+            HomeTemperatureDiscoveryPolicy.optionName(
+                serviceName: "Hall Temperature",
+                accessoryName: "Hall Motion Sensor"
+            ),
+            "Hall Temperature"
+        )
+    }
+
+    func testLockStatusIsGrayWhileLoadingAndGreenOnlyWhenEveryLockIsSecured() {
+        let selectedIDs = Set(["front", "back"])
+
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.lockState(
+                isLoading: true,
+                selectedIDs: selectedIDs,
+                valuesByID: [:]
+            ),
+            .loading
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.lockState(
+                isLoading: false,
+                selectedIDs: selectedIDs,
+                valuesByID: ["front": 1, "back": 1]
+            ),
+            .locked
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.lockState(
+                isLoading: false,
+                selectedIDs: selectedIDs,
+                valuesByID: ["front": 1, "back": 0]
+            ),
+            .alert
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.lockState(
+                isLoading: false,
+                selectedIDs: selectedIDs,
+                valuesByID: ["front": 1]
+            ),
+            .alert
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.lockState(
+                isLoading: false,
+                selectedIDs: [],
+                valuesByID: [:]
+            ),
+            .alert
+        )
+    }
+
+    func testTemperatureStatusAveragesSelectedSensorsAndUsesInclusiveFahrenheitRange() {
+        let selectedIDs = Set(["upstairs", "downstairs"])
+
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.temperatureState(
+                isLoading: true,
+                selectedIDs: selectedIDs,
+                celsiusValuesByID: [:],
+                lowFahrenheit: 60,
+                highFahrenheit: 80
+            ),
+            .loading
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.temperatureState(
+                isLoading: false,
+                selectedIDs: selectedIDs,
+                celsiusValuesByID: ["upstairs": 10, "downstairs": 30],
+                lowFahrenheit: 60,
+                highFahrenheit: 80
+            ),
+            .value(68, isInRange: true)
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.temperatureState(
+                isLoading: false,
+                selectedIDs: ["sensor"],
+                celsiusValuesByID: ["sensor": 26.666_666_7],
+                lowFahrenheit: 60,
+                highFahrenheit: 80
+            ),
+            .value(80, isInRange: true)
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.temperatureState(
+                isLoading: false,
+                selectedIDs: ["sensor"],
+                celsiusValuesByID: ["sensor": 30],
+                lowFahrenheit: 60,
+                highFahrenheit: 80
+            ),
+            .value(86, isInRange: false)
+        )
+        XCTAssertEqual(
+            HomeSecurityStatusPolicy.temperatureState(
+                isLoading: false,
+                selectedIDs: selectedIDs,
+                celsiusValuesByID: ["upstairs": 20],
+                lowFahrenheit: 60,
+                highFahrenheit: 80
+            ),
+            .alert
+        )
+    }
+
+    @MainActor
+    func testHomeSecurityPreferencesDefaultAndRoundTrip() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertFalse(preferences.isLockStatusEnabled)
+        XCTAssertFalse(preferences.isHomeTemperatureEnabled)
+        XCTAssertEqual(preferences.homeTemperatureLowFahrenheit, 60)
+        XCTAssertEqual(preferences.homeTemperatureHighFahrenheit, 80)
+
+        preferences.setLockStatusEnabled(true)
+        preferences.setHomeTemperatureEnabled(true)
+        preferences.setLockSelected(true, for: "front")
+        preferences.setTemperatureSensorSelected(true, for: "hall")
+        preferences.setHomeTemperatureLowFahrenheit(65)
+        preferences.setHomeTemperatureHighFahrenheit(75)
+
+        let reloaded = ObservePreferences(userDefaults: defaults)
+        XCTAssertTrue(reloaded.isLockStatusEnabled)
+        XCTAssertTrue(reloaded.isHomeTemperatureEnabled)
+        XCTAssertTrue(reloaded.isLockSelected(id: "front"))
+        XCTAssertTrue(reloaded.isTemperatureSensorSelected(id: "hall"))
+        XCTAssertEqual(reloaded.homeTemperatureLowFahrenheit, 65)
+        XCTAssertEqual(reloaded.homeTemperatureHighFahrenheit, 75)
+
+        reloaded.setHomeTemperatureLowFahrenheit(90)
+        XCTAssertEqual(reloaded.homeTemperatureLowFahrenheit, 75)
+        reloaded.setHomeTemperatureHighFahrenheit(50)
+        XCTAssertEqual(reloaded.homeTemperatureHighFahrenheit, 75)
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
     func testBatteryCameraVisibilityPolicyHidesOnlyBatteryCamerasWhenDisabled() {
         XCTAssertTrue(
             BatteryCameraVisibilityPolicy.isVisible(

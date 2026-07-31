@@ -16,6 +16,12 @@ final class ObservePreferences: ObservableObject {
         static let batteryCaptureWarmupSeconds = "observe.batteryCaptureWarmupSeconds"
         static let batteryStaleSeconds = "observe.batteryStaleSeconds"
         static let restrictedLiveCapacities = "observe.restrictedLiveCapacities"
+        static let lockStatusEnabled = "observe.lockStatusEnabled"
+        static let homeTemperatureEnabled = "observe.homeTemperatureEnabled"
+        static let selectedLockIDs = "observe.selectedLockIDs"
+        static let selectedTemperatureSensorIDs = "observe.selectedTemperatureSensorIDs"
+        static let homeTemperatureLowFahrenheit = "observe.homeTemperatureLowFahrenheit"
+        static let homeTemperatureHighFahrenheit = "observe.homeTemperatureHighFahrenheit"
     }
 
     @Published var selectedHomeID: String? {
@@ -42,6 +48,12 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var batteryWakeTriggerSeconds: Int
     @Published private(set) var batteryCaptureWarmupSeconds: Int
     @Published private(set) var batteryStaleSeconds: Int
+    @Published private(set) var isLockStatusEnabled: Bool
+    @Published private(set) var isHomeTemperatureEnabled: Bool
+    @Published private(set) var selectedLockIDs: [String]
+    @Published private(set) var selectedTemperatureSensorIDs: [String]
+    @Published private(set) var homeTemperatureLowFahrenheit: Int
+    @Published private(set) var homeTemperatureHighFahrenheit: Int
 
     private let userDefaults: UserDefaults
 
@@ -119,6 +131,16 @@ final class ObservePreferences: ObservableObject {
             1,
             storedBatteryStaleSeconds ?? Int(CameraSchedulingDefaults.batteryStaleThreshold)
         )
+        self.isLockStatusEnabled = userDefaults.object(forKey: Keys.lockStatusEnabled) as? Bool ?? false
+        self.isHomeTemperatureEnabled = userDefaults.object(forKey: Keys.homeTemperatureEnabled) as? Bool ?? false
+        self.selectedLockIDs = userDefaults.stringArray(forKey: Keys.selectedLockIDs) ?? []
+        self.selectedTemperatureSensorIDs = userDefaults.stringArray(
+            forKey: Keys.selectedTemperatureSensorIDs
+        ) ?? []
+        let storedLow = userDefaults.object(forKey: Keys.homeTemperatureLowFahrenheit) as? Int ?? 60
+        let storedHigh = userDefaults.object(forKey: Keys.homeTemperatureHighFahrenheit) as? Int ?? 80
+        self.homeTemperatureLowFahrenheit = min(storedLow, storedHigh)
+        self.homeTemperatureHighFahrenheit = max(storedLow, storedHigh)
     }
 
     func normalizedPriority(availableIDs: [String]) -> [String] {
@@ -297,6 +319,64 @@ final class ObservePreferences: ObservableObject {
         guard ids != batteryWakeCameraIDs else { return }
         batteryWakeCameraIDs = ids
         userDefaults.set(ids, forKey: Keys.batteryWakeCameraIDs)
+    }
+
+    func setLockStatusEnabled(_ enabled: Bool) {
+        guard isLockStatusEnabled != enabled else { return }
+        isLockStatusEnabled = enabled
+        userDefaults.set(enabled, forKey: Keys.lockStatusEnabled)
+    }
+
+    func setHomeTemperatureEnabled(_ enabled: Bool) {
+        guard isHomeTemperatureEnabled != enabled else { return }
+        isHomeTemperatureEnabled = enabled
+        userDefaults.set(enabled, forKey: Keys.homeTemperatureEnabled)
+    }
+
+    func isLockSelected(id: String) -> Bool {
+        selectedLockIDs.contains(id)
+    }
+
+    func setLockSelected(_ selected: Bool, for id: String) {
+        var ids = selectedLockIDs
+        if selected, !ids.contains(id) {
+            ids.append(id)
+        } else if !selected {
+            ids.removeAll { $0 == id }
+        }
+        guard ids != selectedLockIDs else { return }
+        selectedLockIDs = ids
+        userDefaults.set(ids, forKey: Keys.selectedLockIDs)
+    }
+
+    func isTemperatureSensorSelected(id: String) -> Bool {
+        selectedTemperatureSensorIDs.contains(id)
+    }
+
+    func setTemperatureSensorSelected(_ selected: Bool, for id: String) {
+        var ids = selectedTemperatureSensorIDs
+        if selected, !ids.contains(id) {
+            ids.append(id)
+        } else if !selected {
+            ids.removeAll { $0 == id }
+        }
+        guard ids != selectedTemperatureSensorIDs else { return }
+        selectedTemperatureSensorIDs = ids
+        userDefaults.set(ids, forKey: Keys.selectedTemperatureSensorIDs)
+    }
+
+    func setHomeTemperatureLowFahrenheit(_ value: Int) {
+        let clamped = min(value, homeTemperatureHighFahrenheit)
+        guard clamped != homeTemperatureLowFahrenheit else { return }
+        homeTemperatureLowFahrenheit = clamped
+        userDefaults.set(clamped, forKey: Keys.homeTemperatureLowFahrenheit)
+    }
+
+    func setHomeTemperatureHighFahrenheit(_ value: Int) {
+        let clamped = max(value, homeTemperatureLowFahrenheit)
+        guard clamped != homeTemperatureHighFahrenheit else { return }
+        homeTemperatureHighFahrenheit = clamped
+        userDefaults.set(clamped, forKey: Keys.homeTemperatureHighFahrenheit)
     }
 
     private func restrictedLiveCapacities() -> [String: Int] {

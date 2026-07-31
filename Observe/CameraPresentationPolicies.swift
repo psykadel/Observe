@@ -90,6 +90,80 @@ enum SettingsDoneButtonPlacement {
     case trailing
 }
 
+enum LockIndicatorState: Equatable {
+    case loading
+    case locked
+    case alert
+}
+
+enum TemperatureIndicatorState: Equatable {
+    case loading
+    case value(Int, isInRange: Bool)
+    case alert
+}
+
+enum HomeSecurityReadPolicy {
+    static func shouldLoad(
+        hasVisibleCameras: Bool,
+        allVisibleCamerasTrusted: Bool,
+        allVisibleCamerasLiveInWiFiBurst: Bool
+    ) -> Bool {
+        !hasVisibleCameras || allVisibleCamerasTrusted || allVisibleCamerasLiveInWiFiBurst
+    }
+}
+
+enum HomeTemperatureDiscoveryPolicy {
+    static func includes(hasCurrentTemperature: Bool) -> Bool {
+        hasCurrentTemperature
+    }
+
+    static func optionName(serviceName: String, accessoryName: String) -> String {
+        serviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? accessoryName
+            : serviceName
+    }
+}
+
+enum HomeSecurityStatusPolicy {
+    static func lockState(
+        isLoading: Bool,
+        selectedIDs: Set<String>,
+        valuesByID: [String: Int]
+    ) -> LockIndicatorState {
+        guard !isLoading else { return .loading }
+        guard !selectedIDs.isEmpty else { return .alert }
+        return selectedIDs.allSatisfy { valuesByID[$0] == 1 } ? .locked : .alert
+    }
+
+    static func temperatureState(
+        isLoading: Bool,
+        selectedIDs: Set<String>,
+        celsiusValuesByID: [String: Double],
+        lowFahrenheit: Int,
+        highFahrenheit: Int
+    ) -> TemperatureIndicatorState {
+        guard !isLoading else { return .loading }
+        let values = selectedIDs.compactMap { celsiusValuesByID[$0] }
+        guard !selectedIDs.isEmpty,
+              values.count == selectedIDs.count,
+              values.allSatisfy(\.isFinite) else {
+            return .alert
+        }
+
+        let averageCelsius = values.reduce(0, +) / Double(values.count)
+        let fahrenheit = Int(
+            Measurement(value: averageCelsius, unit: UnitTemperature.celsius)
+                .converted(to: .fahrenheit)
+                .value
+                .rounded()
+        )
+        return .value(
+            fahrenheit,
+            isInRange: (lowFahrenheit...highFahrenheit).contains(fahrenheit)
+        )
+    }
+}
+
 enum MainWindowPresentation {
     static func shouldMaximizeOnLaunch(for platform: CameraWallPlatform) -> Bool {
         switch platform {
