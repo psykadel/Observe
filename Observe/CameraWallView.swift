@@ -1,3 +1,4 @@
+import HomeKit
 import SwiftUI
 
 struct CameraWallView: View {
@@ -9,6 +10,7 @@ struct CameraWallView: View {
     @State private var selectedFeed: CameraFeedCoordinator?
     @State private var showsSettings = false
     @State private var hasRequestedLaunchMaximize = false
+    @State private var showsRestrictedStartupOverlay = false
 
     private var wallPlatform: CameraWallPlatform { .current }
 
@@ -21,6 +23,16 @@ struct CameraWallView: View {
                 .padding(.top, 2)
                 .padding(.bottom, 6)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if showsRestrictedStartupOverlay,
+               let presentation = store.restrictedStartupOverlayPresentation {
+                RestrictedStartupOverlay(
+                    presentation: presentation,
+                    homeHubState: store.homeHubState
+                )
+                .transition(.opacity)
+                .allowsHitTesting(false)
+            }
 
             HStack(spacing: 8) {
                 if preferences.isLockStatusEnabled {
@@ -73,6 +85,25 @@ struct CameraWallView: View {
                 hasSelectedFeed: selectedFeed != nil
             ) {
                 selectedFeed = nil
+            }
+        }
+        .task(id: store.restrictedStartupOverlayPresentation != nil) {
+            guard store.restrictedStartupOverlayPresentation != nil else {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    showsRestrictedStartupOverlay = false
+                }
+                return
+            }
+
+            do {
+                try await Task.sleep(for: .milliseconds(350))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  store.restrictedStartupOverlayPresentation != nil else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                showsRestrictedStartupOverlay = true
             }
         }
         .maximizeMainWindowOnLaunch(
@@ -374,6 +405,111 @@ struct CameraWallView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+
+struct RestrictedStartupOverlay: View {
+    let presentation: RestrictedStartupOverlayPresentation
+    let homeHubState: HMHomeHubState
+
+    private var hubPresentation: (icon: String, color: Color, text: String) {
+        switch homeHubState {
+        case .connected:
+            ("checkmark.circle.fill", .green, "Home Hub Connected")
+        case .disconnected:
+            ("exclamationmark.circle.fill", .yellow, "Home Hub Disconnected")
+        case .notAvailable:
+            ("minus.circle.fill", .white.opacity(0.48), "Home Hub Not Available")
+        @unknown default:
+            ("questionmark.circle.fill", .white.opacity(0.48), "Home Hub Status Unknown")
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.44)
+                .ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 22) {
+                statusRow(
+                    icon: "checkmark.circle.fill",
+                    color: .green,
+                    text: "Home Found"
+                )
+                statusRow(
+                    icon: hubPresentation.icon,
+                    color: hubPresentation.color,
+                    text: hubPresentation.text
+                )
+
+                Divider()
+                    .overlay(.white.opacity(0.14))
+
+                HStack(alignment: .top, spacing: 13) {
+                    ProgressView()
+                        .controlSize(.regular)
+                        .tint(.white.opacity(0.68))
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(presentation.cameraCountText)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white)
+
+                        Text(presentation.activityText)
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.62))
+                    }
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 26)
+            .frame(maxWidth: 390, alignment: .leading)
+            .background(
+                .ultraThinMaterial,
+                in: RoundedRectangle(cornerRadius: 30, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .stroke(.white.opacity(0.18), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.4), radius: 24, y: 12)
+            .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Restricted Mode Startup")
+        .accessibilityValue(
+            "Home Found. \(hubPresentation.text). \(presentation.cameraCountText). \(presentation.activityText)."
+        )
+    }
+
+    private func statusRow(icon: String, color: Color, text: String) -> some View {
+        HStack(spacing: 13) {
+            Image(systemName: icon)
+                .font(.title2.weight(.semibold))
+                .foregroundStyle(color)
+                .frame(width: 26)
+
+            Text(text)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.white)
+        }
+    }
+}
+
+#if DEBUG
+#Preview("Restricted Startup") {
+    RestrictedStartupOverlay(
+        presentation: RestrictedStartupOverlayPresentation(
+            cameraCount: 7,
+            checkingCount: 3,
+            waitingCount: 4,
+            retryingCount: 0
+        ),
+        homeHubState: .connected
+    )
+    .background(Color.black)
+}
+#endif
 
 private extension View {
     func wallStatusControlStyle() -> some View {

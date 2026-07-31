@@ -182,6 +182,17 @@ When something goes wrong:
 
 ## What the User Sees
 
+During Restricted Mode startup, when no camera has a current picture yet,
+Observe shows a centered loading panel. It confirms **Home Found**, reports the
+Home Hub as connected, disconnected, or not available, and shows how many
+visible cameras were found. Each camera is counted once as **Checking**,
+**Waiting**, or **Retrying**; empty groups are omitted.
+
+The panel appears only if startup lasts long enough to be noticeable and stays
+visible while recovery continues. It disappears immediately when any camera
+has a current still picture or actual video to display. The panel does not
+distinguish camera types, and the controls above it remain available.
+
 At first, show a saved picture only when it is still recent. Otherwise show the
 black camera placeholder, camera name, optional battery percentage, and red
 border. Hide the status row until a new picture or live video arrives.

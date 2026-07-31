@@ -21,6 +21,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     @Published private(set) var temperatureSensorOptions: [HomeSecurityOption] = []
     @Published private(set) var lockIndicatorState: LockIndicatorState = .loading
     @Published private(set) var temperatureIndicatorState: TemperatureIndicatorState = .loading
+    @Published private(set) var restrictedStartupOverlayPresentation: RestrictedStartupOverlayPresentation?
 
     let preferences: ObservePreferences
 
@@ -314,6 +315,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
     private func rebuildHomesAndFeeds() {
         sessionGeneration &+= 1
+        restrictedStartupOverlayPresentation = nil
         let callbackGeneration = sessionGeneration
         homes = homeManager.homes
             .map { HomeOption(id: $0.uniqueIdentifier.uuidString, name: $0.name, isPrimary: $0.isPrimary) }
@@ -448,6 +450,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             sustainableCapacity: 0
         )
         lastLiveAdmissionDecision = nil
+        restrictedStartupOverlayPresentation = nil
         feeds.forEach { $0.resetSessionState() }
         resetHomeSecurityStatus()
     }
@@ -472,6 +475,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupCoverageActive = true
         startupLiveRampState = nil
         wifiLiveBurstState = nil
+        restrictedStartupOverlayPresentation = nil
         resetStartupMetadataWork()
     }
 
@@ -641,6 +645,37 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         openStartupMetadataGateAfterInitialMediaAdmission(at: Date())
         serviceStartupMetadataQueue()
         serviceHomeSecurity()
+        updateRestrictedStartupOverlay(at: now)
+    }
+
+    private func updateRestrictedStartupOverlay(at now: Date) {
+        let snapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
+        let restrictedPhase = restrictedStartupPhase(from: snapshots, at: now)
+        let isRestrictedStartup = restrictedPhase.map { !$0.isOrdinaryLiveGateOpen }
+            ?? (
+                sessionNetworkClass == .wifi
+                    && sessionMode == .constrained
+                    && (startupCoverageActive || restrictedStartupOverlayPresentation != nil)
+            )
+        let cameras = wallFeeds.map { feed in
+            let state = feedScheduleStates[feed.id]
+            return RestrictedStartupCameraActivity(
+                hasCurrentPicture: hasTrustedImage(feedID: feed.id, at: now),
+                hasActiveWork: state?.snapshotWorkState.isOutstanding == true
+                    || state?.batteryWakeLeaseStartedAt != nil
+                    || feed.hasActiveLiveTransport,
+                isRecovering: state?.startupState.resolution == .recovering
+            )
+        }
+        let presentation = RestrictedStartupOverlayPolicy.presentation(
+            isRestrictedStartup: isRestrictedStartup,
+            hasHome: selectedHome != nil,
+            cameras: cameras
+        )
+
+        if restrictedStartupOverlayPresentation != presentation {
+            restrictedStartupOverlayPresentation = presentation
+        }
     }
 
     private var startupMetadataGateState: String {

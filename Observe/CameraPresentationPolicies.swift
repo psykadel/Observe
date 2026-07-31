@@ -195,6 +195,59 @@ enum CameraWallInteraction {
     }
 }
 
+struct RestrictedStartupCameraActivity: Equatable {
+    let hasCurrentPicture: Bool
+    let hasActiveWork: Bool
+    let isRecovering: Bool
+}
+
+struct RestrictedStartupOverlayPresentation: Equatable {
+    let cameraCount: Int
+    let checkingCount: Int
+    let waitingCount: Int
+    let retryingCount: Int
+
+    var cameraCountText: String {
+        "\(cameraCount) \(cameraCount == 1 ? "Camera" : "Cameras") Found"
+    }
+
+    var activityText: String {
+        [
+            checkingCount > 0 ? "Checking \(checkingCount)" : nil,
+            waitingCount > 0 ? "Waiting \(waitingCount)" : nil,
+            retryingCount > 0 ? "Retrying \(retryingCount)" : nil
+        ]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+    }
+}
+
+enum RestrictedStartupOverlayPolicy {
+    static func presentation(
+        isRestrictedStartup: Bool,
+        hasHome: Bool,
+        cameras: [RestrictedStartupCameraActivity]
+    ) -> RestrictedStartupOverlayPresentation? {
+        guard isRestrictedStartup,
+              hasHome,
+              !cameras.isEmpty,
+              !cameras.contains(where: \.hasCurrentPicture) else {
+            return nil
+        }
+
+        let retryingCount = cameras.count(where: \.isRecovering)
+        let checkingCount = cameras.count { !$0.isRecovering && $0.hasActiveWork }
+        let waitingCount = cameras.count - retryingCount - checkingCount
+
+        return RestrictedStartupOverlayPresentation(
+            cameraCount: cameras.count,
+            checkingCount: checkingCount,
+            waitingCount: waitingCount,
+            retryingCount: retryingCount
+        )
+    }
+}
+
 enum BatteryCameraVisibilityPolicy {
     static func isVisible(
         isHomeKitVisible: Bool,

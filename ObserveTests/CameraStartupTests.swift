@@ -653,4 +653,120 @@ final class CameraStartupTests: ObserveTestCase {
             30
         )
     }
+    func testRestrictedStartupOverlayCountsEachCameraOnceWithRecoveryTakingPriority() {
+        let presentation = RestrictedStartupOverlayPolicy.presentation(
+            isRestrictedStartup: true,
+            hasHome: true,
+            cameras: [
+                RestrictedStartupCameraActivity(
+                    hasCurrentPicture: false,
+                    hasActiveWork: true,
+                    isRecovering: false
+                ),
+                RestrictedStartupCameraActivity(
+                    hasCurrentPicture: false,
+                    hasActiveWork: false,
+                    isRecovering: false
+                ),
+                RestrictedStartupCameraActivity(
+                    hasCurrentPicture: false,
+                    hasActiveWork: true,
+                    isRecovering: true
+                )
+            ]
+        )
+
+        XCTAssertEqual(
+            presentation,
+            RestrictedStartupOverlayPresentation(
+                cameraCount: 3,
+                checkingCount: 1,
+                waitingCount: 1,
+                retryingCount: 1
+            )
+        )
+    }
+    func testRestrictedStartupOverlayHidesAsSoonAsAnyCameraHasCurrentPicture() {
+        let presentation = RestrictedStartupOverlayPolicy.presentation(
+            isRestrictedStartup: true,
+            hasHome: true,
+            cameras: [
+                RestrictedStartupCameraActivity(
+                    hasCurrentPicture: false,
+                    hasActiveWork: true,
+                    isRecovering: false
+                ),
+                RestrictedStartupCameraActivity(
+                    hasCurrentPicture: true,
+                    hasActiveWork: false,
+                    isRecovering: false
+                )
+            ]
+        )
+
+        XCTAssertNil(presentation)
+    }
+    func testRestrictedStartupOverlayRequiresRestrictedStartupHomeAndCameras() {
+        let waitingCamera = RestrictedStartupCameraActivity(
+            hasCurrentPicture: false,
+            hasActiveWork: false,
+            isRecovering: false
+        )
+
+        XCTAssertNil(
+            RestrictedStartupOverlayPolicy.presentation(
+                isRestrictedStartup: false,
+                hasHome: true,
+                cameras: [waitingCamera]
+            )
+        )
+        XCTAssertNil(
+            RestrictedStartupOverlayPolicy.presentation(
+                isRestrictedStartup: true,
+                hasHome: false,
+                cameras: [waitingCamera]
+            )
+        )
+        XCTAssertNil(
+            RestrictedStartupOverlayPolicy.presentation(
+                isRestrictedStartup: true,
+                hasHome: true,
+                cameras: []
+            )
+        )
+    }
+    func testRestrictedStartupOverlayRemainsVisibleWhenEveryCameraIsRetrying() {
+        let presentation = RestrictedStartupOverlayPolicy.presentation(
+            isRestrictedStartup: true,
+            hasHome: true,
+            cameras: [
+                RestrictedStartupCameraActivity(
+                    hasCurrentPicture: false,
+                    hasActiveWork: false,
+                    isRecovering: true
+                ),
+                RestrictedStartupCameraActivity(
+                    hasCurrentPicture: false,
+                    hasActiveWork: true,
+                    isRecovering: true
+                )
+            ]
+        )
+
+        XCTAssertEqual(presentation?.cameraCount, 2)
+        XCTAssertEqual(presentation?.retryingCount, 2)
+        XCTAssertEqual(presentation?.checkingCount, 0)
+        XCTAssertEqual(presentation?.waitingCount, 0)
+    }
+    func testRestrictedStartupOverlayCopyOmitsEmptyActivityGroups() {
+        let presentation = RestrictedStartupOverlayPresentation(
+            cameraCount: 1,
+            checkingCount: 0,
+            waitingCount: 0,
+            retryingCount: 1
+        )
+
+        XCTAssertEqual(presentation.cameraCountText, "1 Camera Found")
+        XCTAssertEqual(presentation.activityText, "Retrying 1")
+    }
 }
