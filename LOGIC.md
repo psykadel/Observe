@@ -139,6 +139,10 @@ in this order:
 3. Other battery cameras waiting for a new still, in layout order.
 4. Normal live feeds, in layout order.
 
+Once this startup gate opens, an aging picture does not reopen startup recovery.
+Normal Restricted Mode refresh and battery-capture priorities handle later
+updates while preserving the other live feeds that still fit.
+
 Do not use a waiting battery camera as an ordinary live feed. First give every
 visible battery camera a current still. After every camera has a current picture,
 carefully try to add more live feeds one at a time.

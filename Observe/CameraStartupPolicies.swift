@@ -16,9 +16,10 @@ enum RestrictedStartupPhase: String, Equatable {
 
     static func resolve(
         initialSnapshotPassActive: Bool,
-        allVisibleFeedsTrusted: Bool
+        allVisibleFeedsTrusted: Bool,
+        allVisibleFeedsCompletedStartupCoverage: Bool
     ) -> RestrictedStartupPhase {
-        if allVisibleFeedsTrusted {
+        if allVisibleFeedsTrusted || allVisibleFeedsCompletedStartupCoverage {
             return .liveFill
         }
         return initialSnapshotPassActive ? .initialSnapshotPass : .snapshotRecovery

@@ -746,7 +746,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         return RestrictedStartupPhase.resolve(
             initialSnapshotPassActive: startupCoverageActive,
-            allVisibleFeedsTrusted: planningSnapshots.allSatisfy { $0.hasTrustedImage(at: now) }
+            allVisibleFeedsTrusted: planningSnapshots.allSatisfy { $0.hasTrustedImage(at: now) },
+            allVisibleFeedsCompletedStartupCoverage: planningSnapshots.allSatisfy {
+                $0.startupState.resolution == .trusted
+            }
         )
     }
 

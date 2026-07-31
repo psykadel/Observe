@@ -172,27 +172,40 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertEqual(
             RestrictedStartupPhase.resolve(
                 initialSnapshotPassActive: true,
-                allVisibleFeedsTrusted: false
+                allVisibleFeedsTrusted: false,
+                allVisibleFeedsCompletedStartupCoverage: false
             ),
             .initialSnapshotPass
         )
         XCTAssertEqual(
             RestrictedStartupPhase.resolve(
                 initialSnapshotPassActive: false,
-                allVisibleFeedsTrusted: false
+                allVisibleFeedsTrusted: false,
+                allVisibleFeedsCompletedStartupCoverage: false
             ),
             .snapshotRecovery
         )
         XCTAssertEqual(
             RestrictedStartupPhase.resolve(
                 initialSnapshotPassActive: false,
-                allVisibleFeedsTrusted: true
+                allVisibleFeedsTrusted: true,
+                allVisibleFeedsCompletedStartupCoverage: true
             ),
             .liveFill
         )
         XCTAssertFalse(RestrictedStartupPhase.initialSnapshotPass.isOrdinaryLiveGateOpen)
         XCTAssertFalse(RestrictedStartupPhase.snapshotRecovery.isOrdinaryLiveGateOpen)
         XCTAssertTrue(RestrictedStartupPhase.liveFill.isOrdinaryLiveGateOpen)
+    }
+    func testRestrictedStartupPhaseDoesNotReopenAfterCompletedCoverageBecomesOld() {
+        XCTAssertEqual(
+            RestrictedStartupPhase.resolve(
+                initialSnapshotPassActive: false,
+                allVisibleFeedsTrusted: false,
+                allVisibleFeedsCompletedStartupCoverage: true
+            ),
+            .liveFill
+        )
     }
     func testRestrictedSnapshotOnlyPolicyAllowsOnePendingBatteryStart() {
         XCTAssertEqual(StartupLivePolicy.restrictedSnapshotOnly.pendingStartLimit, 1)
