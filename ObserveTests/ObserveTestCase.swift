@@ -11,6 +11,7 @@ class ObserveTestCase: XCTestCase {
     func makeFeed(
         id: String,
         priorityIndex: Int,
+        livePriorityIndex: Int? = nil,
         isFocused: Bool = false,
         isStreaming: Bool = false,
         liveStartedAt: Date? = nil,
@@ -53,6 +54,7 @@ class ObserveTestCase: XCTestCase {
         return FeedPlanningSnapshot(
             id: id,
             priorityIndex: priorityIndex,
+            livePriorityIndex: livePriorityIndex ?? priorityIndex,
             isFocused: isFocused,
             isStreaming: isStreaming,
             liveStartedAt: liveStartedAt,

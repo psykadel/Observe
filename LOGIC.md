@@ -9,9 +9,9 @@ in the code and tests.
 
 ## Which Cameras Appear
 
-Observe remembers the user's home, camera order, layout, and settings. Each time
-a new camera view begins, it asks HomeKit for the current cameras and starts
-fresh.
+Observe remembers the user's home, camera order, live order, layout, and
+settings. Each time a new camera view begins, it asks HomeKit for the current
+cameras and starts fresh.
 
 - Show every camera that HomeKit says is on and reachable.
 - Do not remove a camera just because a picture or live-video request failed.
@@ -29,10 +29,10 @@ hidden, keep battery cameras visible.
 
 For an ordinary camera, either live video or a recent snapshot is current.
 
-For a battery camera, Observe normally needs to capture its own recent still
-from a live connection. Battery cameras do not provide ordinary HomeKit
-snapshots. If a battery camera is already live, Observe uses that connection
-instead of opening another one.
+For a battery camera, either live video or a recent still captured by Observe is
+current. Battery cameras do not provide ordinary HomeKit snapshots. If a
+battery camera is already live, Observe keeps it live without running a separate
+live capture.
 
 During the initial Wi-Fi attempt, live video is enough to show the battery camera
 right away. It does not count as a saved battery still for later use.
@@ -98,10 +98,10 @@ startup.
 ## Restricted Mode
 
 Restricted Mode means HomeKit will not allow every visible camera to be live at
-the same time. During startup, Observe uses ordinary-camera snapshots plus one
-battery-camera live capture to get every camera up to date. Ordinary live
-connections are presentation work and begin only after every visible camera has
-a current picture.
+the same time. During startup, Observe uses ordinary-camera snapshots plus, when
+needed, one battery-camera live capture to get every camera up to date. Ordinary
+live connections are presentation work and begin only after every visible
+camera has a current picture.
 
 ### Ordinary Cameras
 
@@ -117,8 +117,8 @@ Snapshots do not use one of HomeKit's limited live connections.
 
 ### Battery Cameras
 
-A battery camera that needs a new still must briefly use a live connection to
-wake and capture it.
+A battery camera that is not already live and needs a new still must briefly use
+a live connection to wake and capture it.
 
 - Let an active capture finish instead of continually rotating cameras.
 - Count the capture wait from when live video actually begins, not while the
@@ -140,8 +140,8 @@ in this order:
 
 1. The camera the user opened full screen.
 2. Battery cameras already capturing a still.
-3. Other battery cameras waiting for a new still, in layout order.
-4. Normal live feeds, in layout order.
+3. Other battery cameras waiting for a new still, in Live Order.
+4. Normal live feeds, in Live Order.
 
 Once this startup gate opens, an aging picture does not reopen startup recovery.
 Normal Restricted Mode refresh and battery-capture priorities handle later

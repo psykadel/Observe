@@ -244,6 +244,33 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(snapshotFirstPlan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
         XCTAssertEqual(snapshotFirstPlan.orderedSnapshotIDs, ["front", "garage"])
     }
+    func testRestrictedStartupChoosesBatteryCaptureByLiveOrder() {
+        let plan = planner.makePlan(
+            feeds: [
+                makeFeed(id: "front", priorityIndex: 0, livePriorityIndex: 3),
+                makeFeed(id: "garage", priorityIndex: 1, livePriorityIndex: 2),
+                makeFeed(
+                    id: "battery-first",
+                    priorityIndex: 2,
+                    livePriorityIndex: 1,
+                    isBatteryWakeCamera: true
+                ),
+                makeFeed(
+                    id: "battery-second",
+                    priorityIndex: 3,
+                    livePriorityIndex: 0,
+                    isBatteryWakeCamera: true
+                )
+            ],
+            sessionMode: .optimistic,
+            liveCapacity: 4,
+            startupLivePolicy: .restrictedSnapshotOnly,
+            now: now
+        )
+
+        XCTAssertEqual(liveIDs(in: plan), ["battery-second"])
+        XCTAssertEqual(plan.orderedSnapshotIDs, ["front", "garage"])
+    }
     func testRestrictedStartupNeverStartsWiredLiveWithoutBatteryCamera() {
         let plan = planner.makePlan(
             feeds: [

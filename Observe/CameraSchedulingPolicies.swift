@@ -181,12 +181,11 @@ enum BatteryTrustedStillCapturePolicy {
         liveStartedAt: Date?,
         batteryStillDate: Date?,
         batteryWakeLeaseStartedAt: Date?,
-        allowsUnleasedCapture: Bool,
         warmup: TimeInterval,
         now: Date
     ) -> Bool {
         guard isBatteryCamera, isStreaming, let liveStartedAt else { return false }
-        guard allowsUnleasedCapture || batteryWakeLeaseStartedAt != nil else { return false }
+        guard batteryWakeLeaseStartedAt != nil else { return false }
 
         guard now.timeIntervalSince(liveStartedAt) >= warmup else { return false }
 

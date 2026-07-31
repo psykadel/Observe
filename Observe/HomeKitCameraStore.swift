@@ -103,6 +103,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         return normalized.compactMap { feedLookup[$0] }
     }
 
+    var livePriorityOrderedFeeds: [CameraFeedCoordinator] {
+        let cameraOrderedFeeds = priorityOrderedFeeds
+        let normalized = preferences.normalizedLivePriority(availableIDs: cameraOrderedFeeds.map(\.id))
+        let feedLookup = Dictionary(uniqueKeysWithValues: cameraOrderedFeeds.map { ($0.id, $0) })
+        return normalized.compactMap { feedLookup[$0] }
+    }
+
     var wallFeeds: [CameraFeedCoordinator] {
         priorityOrderedFeeds.filter { isVisibleOnWall($0) }
     }
@@ -166,6 +173,16 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
     func movePriority(from source: IndexSet, to destination: Int) {
         preferences.movePriority(from: source, to: destination, availableIDs: feeds.map(\.id))
+        objectWillChange.send()
+        refreshPresentation(focusedFeedID: focusedFeedID)
+    }
+
+    func moveLivePriority(from source: IndexSet, to destination: Int) {
+        preferences.moveLivePriority(
+            from: source,
+            to: destination,
+            availableIDs: priorityOrderedFeeds.map(\.id)
+        )
         objectWillChange.send()
         refreshPresentation(focusedFeedID: focusedFeedID)
     }
@@ -388,6 +405,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let priorityIDs = preferences.normalizedPriority(availableIDs: discoveredFeeds.map(\.id))
         let feedLookup = Dictionary(uniqueKeysWithValues: discoveredFeeds.map { ($0.id, $0) })
         feeds = priorityIDs.compactMap { feedLookup[$0] }
+        _ = preferences.normalizedLivePriority(availableIDs: priorityIDs)
 
         feedScheduleStates = Dictionary(
             uniqueKeysWithValues: feeds.map { feed in
@@ -871,7 +889,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveAdmissionController.update(mode: admissionMode, sustainableCapacity: liveCapacity)
 
         let visibleFeeds = wallFeeds
-        let priorityByID = Dictionary(uniqueKeysWithValues: visibleFeeds.enumerated().map { ($0.element.id, $0.offset) })
+        let usesLivePriority = sessionMode == .constrained || startupLivePolicy == .restrictedSnapshotOnly
+        let admissionOrderedFeeds = usesLivePriority
+            ? livePriorityOrderedFeeds.filter { isVisibleOnWall($0) }
+            : visibleFeeds
+        let priorityByID = Dictionary(
+            uniqueKeysWithValues: admissionOrderedFeeds.enumerated().map { ($0.element.id, $0.offset) }
+        )
         var liveIntents = visibleFeeds.compactMap { feed -> LiveIntent? in
             guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { return nil }
             let isDesired = desiredLiveIDs.contains(feed.id)
@@ -1001,7 +1025,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func planningSnapshots(at now: Date, focusedFeedID: String?) -> [FeedPlanningSnapshot] {
-        wallFeeds.enumerated().map { index, feed in
+        let livePriorityByID = Dictionary(
+            uniqueKeysWithValues: livePriorityOrderedFeeds
+                .filter { isVisibleOnWall($0) }
+                .enumerated()
+                .map { ($0.element.id, $0.offset) }
+        )
+        return wallFeeds.enumerated().map { index, feed in
             let state = feedScheduleStates[feed.id]
             let isBatteryWakeCamera = preferences.isBatteryWakeCamera(id: feed.id)
             let lastSnapshotDate = if isBatteryWakeCamera {
@@ -1012,6 +1042,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             return FeedPlanningSnapshot(
                 id: feed.id,
                 priorityIndex: index,
+                livePriorityIndex: livePriorityByID[feed.id] ?? Int.max,
                 isFocused: feed.id == focusedFeedID,
                 isStreaming: feed.isStreaming,
                 liveStartedAt: feed.liveStartedAt,
@@ -1119,7 +1150,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveStartedAt: feed.liveStartedAt,
             batteryStillDate: feed.batteryStillDate,
             batteryWakeLeaseStartedAt: state.batteryWakeLeaseStartedAt,
-            allowsUnleasedCapture: sessionMode == .constrained,
             warmup: batteryCaptureWarmup,
             now: now
         ) else {

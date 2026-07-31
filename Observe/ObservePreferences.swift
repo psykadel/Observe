@@ -7,6 +7,7 @@ final class ObservePreferences: ObservableObject {
         static let density = "observe.wallDensity"
         static let cameraNameVisibility = "observe.cameraNameVisibility"
         static let remotePriority = "observe.remotePriority"
+        static let livePriority = "observe.livePriority"
         static let staleVisualHighlightSeconds = "observe.staleVisualHighlightSeconds"
         static let batteryWakeCameraIDs = "observe.batteryWakeCameraIDs"
         static let batteryCameraVisibilityEnabled = "observe.batteryCameraVisibilityEnabled"
@@ -38,6 +39,10 @@ final class ObservePreferences: ObservableObject {
 
     @Published var remotePriorityIDs: [String] {
         didSet { userDefaults.set(remotePriorityIDs, forKey: Keys.remotePriority) }
+    }
+
+    @Published private(set) var livePriorityIDs: [String] {
+        didSet { userDefaults.set(livePriorityIDs, forKey: Keys.livePriority) }
     }
 
     @Published private(set) var staleVisualHighlightSeconds: Int
@@ -94,6 +99,7 @@ final class ObservePreferences: ObservableObject {
         let storedCameraNameVisibility = userDefaults.string(forKey: Keys.cameraNameVisibility) ?? ""
         self.cameraNameVisibility = CameraNameVisibility(rawValue: storedCameraNameVisibility) ?? .show
         self.remotePriorityIDs = userDefaults.stringArray(forKey: Keys.remotePriority) ?? []
+        self.livePriorityIDs = userDefaults.stringArray(forKey: Keys.livePriority) ?? []
         self.batteryWakeCameraIDs = userDefaults.stringArray(forKey: Keys.batteryWakeCameraIDs) ?? []
         let storedBatteryCameraVisibilityEnabled = userDefaults.object(
             forKey: Keys.batteryCameraVisibilityEnabled
@@ -144,15 +150,7 @@ final class ObservePreferences: ObservableObject {
     }
 
     func normalizedPriority(availableIDs: [String]) -> [String] {
-        var normalized: [String] = []
-
-        for id in remotePriorityIDs where availableIDs.contains(id) && !normalized.contains(id) {
-            normalized.append(id)
-        }
-
-        for id in availableIDs where !normalized.contains(id) {
-            normalized.append(id)
-        }
+        let normalized = normalizedOrder(remotePriorityIDs, availableIDs: availableIDs)
 
         if normalized != remotePriorityIDs {
             remotePriorityIDs = normalized
@@ -165,6 +163,37 @@ final class ObservePreferences: ObservableObject {
         var ids = normalizedPriority(availableIDs: availableIDs)
         ids.move(fromOffsets: source, toOffset: destination)
         remotePriorityIDs = ids
+    }
+
+    func normalizedLivePriority(availableIDs: [String]) -> [String] {
+        let storedIDs = livePriorityIDs.isEmpty ? availableIDs : livePriorityIDs
+        let normalized = normalizedOrder(storedIDs, availableIDs: availableIDs)
+
+        if normalized != livePriorityIDs {
+            livePriorityIDs = normalized
+        }
+
+        return normalized
+    }
+
+    func moveLivePriority(from source: IndexSet, to destination: Int, availableIDs: [String]) {
+        var ids = normalizedLivePriority(availableIDs: availableIDs)
+        ids.move(fromOffsets: source, toOffset: destination)
+        livePriorityIDs = ids
+    }
+
+    private func normalizedOrder(_ storedIDs: [String], availableIDs: [String]) -> [String] {
+        var normalized: [String] = []
+
+        for id in storedIDs where availableIDs.contains(id) && !normalized.contains(id) {
+            normalized.append(id)
+        }
+
+        for id in availableIDs where !normalized.contains(id) {
+            normalized.append(id)
+        }
+
+        return normalized
     }
 
     func adjustDensity(with scale: CGFloat) {

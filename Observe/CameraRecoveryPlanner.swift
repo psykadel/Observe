@@ -3,6 +3,7 @@ import Foundation
 struct FeedPlanningSnapshot: Equatable {
     let id: String
     let priorityIndex: Int
+    let livePriorityIndex: Int
     let isFocused: Bool
     let isStreaming: Bool
     let liveStartedAt: Date?
@@ -29,6 +30,9 @@ struct FeedPlanningSnapshot: Equatable {
 
     func hasTrustedImage(at now: Date) -> Bool {
         if isBatteryWakeCamera {
+            if isStreaming, batteryWakeLeaseStartedAt == nil {
+                return true
+            }
             guard let lastSnapshotDate else { return false }
             return max(0, now.timeIntervalSince(lastSnapshotDate)) <= batteryWakeTriggerThreshold
         }
@@ -132,6 +136,7 @@ struct CameraRecoveryPlanner {
         now: Date
     ) -> CameraRecoveryPlan {
         let prioritizedFeeds = feeds.sorted { $0.priorityIndex < $1.priorityIndex }
+        let livePrioritizedFeeds = feeds.sorted { $0.livePriorityIndex < $1.livePriorityIndex }
         let recencyByID = Dictionary(
             uniqueKeysWithValues: prioritizedFeeds.map {
                 ($0.id, $0.recencyTier(at: now))
@@ -142,7 +147,7 @@ struct CameraRecoveryPlanner {
         switch startupLivePolicy {
         case .restrictedSnapshotOnly:
             liveSelection = restrictedSnapshotOnlyLiveSelection(
-                feeds: prioritizedFeeds,
+                feeds: livePrioritizedFeeds,
                 now: now
             )
         case .wifiFallback(let allowWiredFallback):
@@ -451,7 +456,7 @@ struct CameraRecoveryPlanner {
             )
         }
 
-        let orderedFeeds = feeds.sorted { $0.priorityIndex < $1.priorityIndex }
+        let orderedFeeds = feeds.sorted { $0.livePriorityIndex < $1.livePriorityIndex }
 
         var selectedIDs: [String] = []
         var batteryCaptureIDs: [String] = []

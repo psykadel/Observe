@@ -5,6 +5,52 @@ import XCTest
 @testable import Observe
 
 final class ObservePreferencesTests: ObserveTestCase {
+    @MainActor
+    func testLiveOrderDefaultsToCameraOrderThenPersistsIndependently() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        preferences.remotePriorityIDs = ["garage", "front"]
+        let cameraOrder = preferences.normalizedPriority(
+            availableIDs: ["front", "garage", "side"]
+        )
+
+        XCTAssertEqual(cameraOrder, ["garage", "front", "side"])
+        XCTAssertEqual(
+            preferences.normalizedLivePriority(availableIDs: cameraOrder),
+            cameraOrder
+        )
+
+        preferences.moveLivePriority(
+            from: IndexSet(integer: 2),
+            to: 0,
+            availableIDs: cameraOrder
+        )
+        preferences.movePriority(
+            from: IndexSet(integer: 0),
+            to: 3,
+            availableIDs: cameraOrder
+        )
+
+        XCTAssertEqual(preferences.livePriorityIDs, ["side", "garage", "front"])
+        XCTAssertEqual(preferences.remotePriorityIDs, ["front", "side", "garage"])
+
+        let reloaded = ObservePreferences(userDefaults: defaults)
+        XCTAssertEqual(reloaded.livePriorityIDs, ["side", "garage", "front"])
+        XCTAssertEqual(
+            reloaded.normalizedLivePriority(availableIDs: ["garage", "side", "new"]),
+            ["side", "garage", "new"]
+        )
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
     func testHomeSecurityReadWaitsForVisibleCamerasButNotAnEmptyWall() {
         XCTAssertFalse(
             HomeSecurityReadPolicy.shouldLoad(

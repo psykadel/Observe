@@ -185,20 +185,24 @@ struct SettingsView: View {
                 if !store.priorityOrderedFeeds.isEmpty {
                     Section("Camera Order") {
                         ForEach(store.priorityOrderedFeeds) { feed in
-                            HStack {
-                                Image(systemName: "line.3.horizontal")
-                                    .foregroundStyle(.secondary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(feed.name)
-                                    if let roomName = feed.roomName {
-                                        Text(roomName)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
+                            cameraOrderRow(feed)
                         }
                         .onMove(perform: store.movePriority)
+                    }
+                }
+
+                if !store.livePriorityOrderedFeeds.isEmpty {
+                    Section("Live Order") {
+                        Text(
+                            "When the connection is constrained, Observe uses this order to decide which cameras receive available live-stream slots first."
+                        )
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                        ForEach(store.livePriorityOrderedFeeds) { feed in
+                            cameraOrderRow(feed)
+                        }
+                        .onMove(perform: store.moveLivePriority)
                     }
                 }
 
@@ -322,6 +326,21 @@ struct SettingsView: View {
                 Text(roomName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func cameraOrderRow(_ feed: CameraFeedCoordinator) -> some View {
+        HStack {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(feed.name)
+                if let roomName = feed.roomName {
+                    Text(roomName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

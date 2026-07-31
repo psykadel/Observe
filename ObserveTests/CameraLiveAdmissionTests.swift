@@ -286,11 +286,11 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
         XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: network, stopReason: .startupTimeout), .infrastructureUnavailable(network))
         XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: camera, stopReason: .startupTimeout), .cameraFailure(camera))
     }
-    func testConstrainedAdmissionSerializesColdStarts() {
+    func testConstrainedAdmissionSerializesColdStartsInLiveOrder() {
         var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
         let intents = [
-            LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
-            LiveIntent(id: "back", role: .steadyState, priorityIndex: 1)
+            LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
+            LiveIntent(id: "front", role: .steadyState, priorityIndex: 0)
         ]
 
         let first = controller.reconcile(
