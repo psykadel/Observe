@@ -73,6 +73,20 @@ final class CameraStartupTests: ObserveTestCase {
             )
         )
     }
+    func testCompletedRestrictedMetadataReportsCompleteEvenWhenMediaBecomesBusyAgain() {
+        XCTAssertEqual(
+            StartupMetadataGateStatePolicy.resolve(
+                mode: .mediaPrioritySerial,
+                initialMediaAdmissionCompleted: true,
+                hasQueuedOperations: false,
+                activeOperationKind: nil,
+                completedOperationCount: 8,
+                allVisibleFeedsTrusted: true,
+                criticalMediaWorkActive: true
+            ),
+            "complete"
+        )
+    }
     func testWiFiMetadataReadsRemainImmediate() {
         XCTAssertTrue(
             StartupMetadataAdmissionPolicy.shouldIssue(
@@ -213,7 +227,7 @@ final class CameraStartupTests: ObserveTestCase {
     func testStartupLiveRampUsesTwoPendingSlotsAfterFastFirstSuccess() {
         var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
 
-        ramp.recordLiveStarted(feedID: "one", elapsed: 0.8, fastThreshold: 3)
+        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.8, fastSessionThreshold: 3)
         let firstWave = ramp.reconcile(
             priorityIDs: ["one", "two", "three", "four", "five"],
             streamingIDs: ["one"],
@@ -226,8 +240,8 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertEqual(firstWave, ["one", "two", "three"])
         XCTAssertEqual(ramp.pendingIDs, ["two", "three"])
 
-        ramp.recordLiveStarted(feedID: "two", elapsed: 1.1, fastThreshold: 3)
-        ramp.recordLiveStarted(feedID: "three", elapsed: 1.2, fastThreshold: 3)
+        ramp.recordLiveStarted(feedID: "two", sessionElapsed: 1.1, fastSessionThreshold: 3)
+        ramp.recordLiveStarted(feedID: "three", sessionElapsed: 1.2, fastSessionThreshold: 3)
         let secondWave = ramp.reconcile(
             priorityIDs: ["one", "two", "three", "four", "five"],
             streamingIDs: ["one", "two", "three"],
@@ -241,7 +255,7 @@ final class CameraStartupTests: ObserveTestCase {
     func testStartupLiveRampStaysOneWideAfterSlowFirstSuccess() {
         var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
 
-        ramp.recordLiveStarted(feedID: "one", elapsed: 3, fastThreshold: 3)
+        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 3, fastSessionThreshold: 3)
         let selection = ramp.reconcile(
             priorityIDs: ["one", "two", "three"],
             streamingIDs: ["one"],
@@ -256,7 +270,7 @@ final class CameraStartupTests: ObserveTestCase {
     }
     func testStartupLiveRampSkipsFailedCameraUntilCooldownExpires() {
         var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-        ramp.recordLiveStarted(feedID: "one", elapsed: 0.5, fastThreshold: 3)
+        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.5, fastSessionThreshold: 3)
         _ = ramp.reconcile(
             priorityIDs: ["one", "two", "three", "four"],
             streamingIDs: ["one"],
@@ -282,7 +296,7 @@ final class CameraStartupTests: ObserveTestCase {
     }
     func testStartupLiveRampStopsAdmittingAfterCapacitySignal() {
         var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-        ramp.recordLiveStarted(feedID: "one", elapsed: 0.5, fastThreshold: 3)
+        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.5, fastSessionThreshold: 3)
         _ = ramp.reconcile(
             priorityIDs: ["one", "two", "three"],
             streamingIDs: ["one"],
@@ -309,7 +323,7 @@ final class CameraStartupTests: ObserveTestCase {
     }
     func testStartupLiveRampFocusedCameraPreemptsLowestPriorityPendingProbe() {
         var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-        ramp.recordLiveStarted(feedID: "one", elapsed: 0.5, fastThreshold: 3)
+        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.5, fastSessionThreshold: 3)
         _ = ramp.reconcile(
             priorityIDs: ["one", "two", "three", "four"],
             streamingIDs: ["one"],

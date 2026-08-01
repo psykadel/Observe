@@ -443,6 +443,75 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
 
         XCTAssertEqual(nextProbe.startIDs, ["garage"])
     }
+    func testCapacityProbeSkipsFeedWithOutstandingSnapshotAndUsesEligibleCandidate() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
+        _ = controller.recordSoftContention(
+            feedID: "initial-probe",
+            survivingStreamCount: 2,
+            at: now
+        )
+
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
+                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
+                LiveIntent(
+                    id: "mailbox",
+                    role: .capacityProbe,
+                    priorityIndex: 2,
+                    hasOutstandingSnapshot: true
+                ),
+                LiveIntent(id: "garage", role: .capacityProbe, priorityIndex: 3)
+            ],
+            transports: [
+                "front": .streaming,
+                "back": .streaming,
+                "mailbox": .idle,
+                "garage": .idle
+            ],
+            preserveActiveDuringCoverage: false,
+            plannerCapacity: 3,
+            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
+        )
+
+        XCTAssertEqual(decision.targetIDs, ["front", "back", "garage"])
+        XCTAssertEqual(decision.startIDs, ["garage"])
+        XCTAssertEqual(controller.deferredCapacityProbeIDs, ["mailbox"])
+        XCTAssertEqual(controller.activeCapacityProbeFeedID, "garage")
+    }
+    func testCapacityProbeWithOutstandingSnapshotPreservesActiveTransport() {
+        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
+        _ = controller.recordSoftContention(
+            feedID: "initial-probe",
+            survivingStreamCount: 2,
+            at: now
+        )
+
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
+                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
+                LiveIntent(
+                    id: "mailbox",
+                    role: .capacityProbe,
+                    priorityIndex: 2,
+                    hasOutstandingSnapshot: true
+                )
+            ],
+            transports: [
+                "front": .streaming,
+                "back": .streaming,
+                "mailbox": .streaming
+            ],
+            preserveActiveDuringCoverage: false,
+            plannerCapacity: 3,
+            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
+        )
+
+        XCTAssertEqual(decision.targetIDs, ["front", "back", "mailbox"])
+        XCTAssertTrue(decision.stopIDs.isEmpty)
+        XCTAssertTrue(controller.deferredCapacityProbeIDs.isEmpty)
+    }
     func testSoftContentionCeilingDoesNotAdmitOrdinaryWorkAboveCeiling() {
         var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 5)
         _ = controller.recordSoftContention(

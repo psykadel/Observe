@@ -122,6 +122,39 @@ enum StartupMetadataAdmissionPolicy {
     }
 }
 
+enum StartupMetadataGateStatePolicy {
+    static func resolve(
+        mode: StartupMetadataWorkMode,
+        initialMediaAdmissionCompleted: Bool,
+        hasQueuedOperations: Bool,
+        activeOperationKind: StartupMetadataOperationKind?,
+        completedOperationCount: Int,
+        allVisibleFeedsTrusted: Bool,
+        criticalMediaWorkActive: Bool
+    ) -> String {
+        guard mode == .mediaPrioritySerial else { return "immediate" }
+
+        if !hasQueuedOperations,
+           activeOperationKind == nil,
+           completedOperationCount > 0 {
+            return "complete"
+        }
+        if !initialMediaAdmissionCompleted {
+            return "waitingForInitialMediaAdmission"
+        }
+        if activeOperationKind?.isNotificationRegistration == false {
+            return "readInFlight"
+        }
+        if !allVisibleFeedsTrusted {
+            return "notificationsOnlyWaitingForAllTrusted"
+        }
+        if criticalMediaWorkActive {
+            return "waitingForMediaIdle"
+        }
+        return "open"
+    }
+}
+
 enum TrustedFrameSnapshotAdmissionPolicy {
     static func shouldQueue(
         isTrusted: Bool,
@@ -556,15 +589,17 @@ struct StartupLiveRampState: Equatable {
 
     mutating func recordLiveStarted(
         feedID: String,
-        elapsed: TimeInterval,
-        fastThreshold: TimeInterval
+        sessionElapsed: TimeInterval,
+        fastSessionThreshold: TimeInterval
     ) {
         selectedIDs.insert(feedID)
         confirmedIDs.insert(feedID)
         retryAfterByID.removeValue(forKey: feedID)
 
         if mode == .probing {
-            mode = elapsed >= 0 && elapsed < fastThreshold ? .fast : .conservative
+            mode = sessionElapsed >= 0 && sessionElapsed < fastSessionThreshold
+                ? .fast
+                : .conservative
         }
     }
 

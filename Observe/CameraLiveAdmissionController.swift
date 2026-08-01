@@ -23,12 +23,20 @@ struct LiveIntent: Equatable {
     let role: LiveIntentRole
     let priorityIndex: Int
     let isDesired: Bool
+    let hasOutstandingSnapshot: Bool
 
-    init(id: String, role: LiveIntentRole, priorityIndex: Int, isDesired: Bool = true) {
+    init(
+        id: String,
+        role: LiveIntentRole,
+        priorityIndex: Int,
+        isDesired: Bool = true,
+        hasOutstandingSnapshot: Bool = false
+    ) {
         self.id = id
         self.role = role
         self.priorityIndex = priorityIndex
         self.isDesired = isDesired
+        self.hasOutstandingSnapshot = hasOutstandingSnapshot
     }
 }
 
@@ -83,6 +91,7 @@ struct LiveAdmissionController {
     private(set) var lastPlannerCapacity: Int?
     private(set) var lastEffectiveCapacity: Int?
     private(set) var lastCapacityLimitReason = "notEvaluated"
+    private(set) var deferredCapacityProbeIDs: [String] = []
 
     private var contentionCountsByFeedID: [String: Int] = [:]
     private var failureCountsByFeedID: [String: Int] = [:]
@@ -179,10 +188,22 @@ struct LiveAdmissionController {
     ) -> LiveAdmissionDecision {
         let sortedIntents = intents.sorted(by: Self.intentPrecedes)
         let desired = sortedIntents.filter(\.isDesired)
+        deferredCapacityProbeIDs = desired.compactMap { intent in
+            intent.role == .capacityProbe
+                && intent.hasOutstandingSnapshot
+                && (transports[intent.id] ?? .idle) == .idle
+                ? intent.id
+                : nil
+        }
         let infrastructureIsEligible = infrastructureRetryAfter.map { now >= $0 } ?? true
         let targetEligibleDesired = desired.filter { intent in
-            (transports[intent.id] ?? .idle) != .idle
-                || (infrastructureIsEligible && isRetryEligible(feedID: intent.id, at: now))
+            if (transports[intent.id] ?? .idle) != .idle {
+                return true
+            }
+            guard intent.role != .capacityProbe || !intent.hasOutstandingSnapshot else {
+                return false
+            }
+            return infrastructureIsEligible && isRetryEligible(feedID: intent.id, at: now)
         }
         let plannedCapacity = mode == .wifiBurst
             ? desired.count
