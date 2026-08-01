@@ -117,6 +117,16 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Success Indicator") {
+                    Text(
+                        "Displays a temporary green confirmation around the camera wall when every visible camera and each enabled Home Security check is healthy."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    Toggle("Success Indicator", isOn: successIndicatorEnabledBinding)
+                }
+
                 if !store.priorityOrderedFeeds.isEmpty {
                     Section("Battery Cameras") {
                         Text(
@@ -288,6 +298,13 @@ struct SettingsView: View {
         Binding(
             get: { preferences.isHomeTemperatureEnabled },
             set: { store.setHomeTemperatureEnabled($0) }
+        )
+    }
+
+    private var successIndicatorEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.isSuccessIndicatorEnabled },
+            set: { preferences.setSuccessIndicatorEnabled($0) }
         )
     }
 

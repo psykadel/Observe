@@ -186,6 +186,14 @@ When something goes wrong:
 
 ## What the User Sees
 
+When Success Indicator is on, Observe briefly draws a green glow around the
+camera wall once each time the app is opened or returned to and every visible
+camera has a current picture and every enabled Home Security indicator is
+green. Disabled Home Security indicators do not count. Turning the indicator
+on while the wall is already healthy can show it for the current open. It does
+not repeat until Observe is left and opened again, even if a status changes and
+recovers.
+
 During Restricted Mode startup, when no camera has a current picture yet,
 Observe shows a centered loading panel. It confirms **Home Found**, reports the
 Home Hub as connected, disconnected, or not available, and shows how many

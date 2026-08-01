@@ -19,6 +19,7 @@ final class ObservePreferences: ObservableObject {
         static let restrictedLiveCapacities = "observe.restrictedLiveCapacities"
         static let lockStatusEnabled = "observe.lockStatusEnabled"
         static let homeTemperatureEnabled = "observe.homeTemperatureEnabled"
+        static let successIndicatorEnabled = "observe.successIndicatorEnabled"
         static let selectedLockIDs = "observe.selectedLockIDs"
         static let selectedTemperatureSensorIDs = "observe.selectedTemperatureSensorIDs"
         static let homeTemperatureLowFahrenheit = "observe.homeTemperatureLowFahrenheit"
@@ -55,6 +56,7 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var batteryStaleSeconds: Int
     @Published private(set) var isLockStatusEnabled: Bool
     @Published private(set) var isHomeTemperatureEnabled: Bool
+    @Published private(set) var isSuccessIndicatorEnabled: Bool
     @Published private(set) var selectedLockIDs: [String]
     @Published private(set) var selectedTemperatureSensorIDs: [String]
     @Published private(set) var homeTemperatureLowFahrenheit: Int
@@ -139,6 +141,9 @@ final class ObservePreferences: ObservableObject {
         )
         self.isLockStatusEnabled = userDefaults.object(forKey: Keys.lockStatusEnabled) as? Bool ?? false
         self.isHomeTemperatureEnabled = userDefaults.object(forKey: Keys.homeTemperatureEnabled) as? Bool ?? false
+        self.isSuccessIndicatorEnabled = userDefaults.object(
+            forKey: Keys.successIndicatorEnabled
+        ) as? Bool ?? false
         self.selectedLockIDs = userDefaults.stringArray(forKey: Keys.selectedLockIDs) ?? []
         self.selectedTemperatureSensorIDs = userDefaults.stringArray(
             forKey: Keys.selectedTemperatureSensorIDs
@@ -360,6 +365,12 @@ final class ObservePreferences: ObservableObject {
         guard isHomeTemperatureEnabled != enabled else { return }
         isHomeTemperatureEnabled = enabled
         userDefaults.set(enabled, forKey: Keys.homeTemperatureEnabled)
+    }
+
+    func setSuccessIndicatorEnabled(_ enabled: Bool) {
+        guard isSuccessIndicatorEnabled != enabled else { return }
+        isSuccessIndicatorEnabled = enabled
+        userDefaults.set(enabled, forKey: Keys.successIndicatorEnabled)
     }
 
     func isLockSelected(id: String) -> Bool {

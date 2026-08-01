@@ -164,6 +164,114 @@ enum HomeSecurityStatusPolicy {
     }
 }
 
+enum SuccessIndicatorPolicy {
+    static func isHealthy(
+        hasVisibleCameras: Bool,
+        allVisibleCamerasReady: Bool,
+        isLockStatusEnabled: Bool,
+        lockState: LockIndicatorState,
+        isHomeTemperatureEnabled: Bool,
+        temperatureState: TemperatureIndicatorState
+    ) -> Bool {
+        guard hasVisibleCameras, allVisibleCamerasReady else { return false }
+        guard !isLockStatusEnabled || lockState == .locked else { return false }
+
+        if isHomeTemperatureEnabled {
+            guard case .value(_, isInRange: true) = temperatureState else { return false }
+        }
+
+        return true
+    }
+}
+
+struct SuccessIndicatorOpenState {
+    private(set) var hasAnimatedThisOpen = false
+
+    mutating func beginOpen() {
+        hasAnimatedThisOpen = false
+    }
+
+    mutating func shouldAnimate(isEnabled: Bool, isHealthy: Bool) -> Bool {
+        guard isEnabled, isHealthy, !hasAnimatedThisOpen else { return false }
+        hasAnimatedThisOpen = true
+        return true
+    }
+}
+
+struct SuccessIndicatorAnimationPresentation {
+    let drawProgress: Double
+    let coreOpacity: Double
+    let radiance: Double
+    let trailPhase: Double
+    let trailOpacity: Double
+    let sparkleIntensity: Double
+    let isComplete: Bool
+}
+
+enum SuccessIndicatorAnimationTimeline {
+    static let duration: TimeInterval = 3.2
+
+    static func presentation(
+        at elapsedTime: TimeInterval,
+        reduceMotion: Bool
+    ) -> SuccessIndicatorAnimationPresentation {
+        let elapsed = max(0, elapsedTime)
+        guard elapsed < duration else {
+            return SuccessIndicatorAnimationPresentation(
+                drawProgress: 1,
+                coreOpacity: 0,
+                radiance: 0,
+                trailPhase: 0,
+                trailOpacity: 0,
+                sparkleIntensity: 0,
+                isComplete: true
+            )
+        }
+
+        let fade = elapsed <= 2.35 ? 1 : clamp(1 - ((elapsed - 2.35) / 0.85))
+
+        if reduceMotion {
+            let intro = clamp(elapsed / 0.22)
+            let breath = 0.78 + (0.16 * sin(elapsed * .pi * 1.4))
+            return SuccessIndicatorAnimationPresentation(
+                drawProgress: 1,
+                coreOpacity: intro * fade,
+                radiance: max(0, breath) * intro * fade,
+                trailPhase: 0,
+                trailOpacity: 0,
+                sparkleIntensity: 0.38 * intro * fade,
+                isComplete: false
+            )
+        }
+
+        let intro = clamp(elapsed / 0.18)
+        let drawProgress = clamp(elapsed / 0.9)
+        let radiancePulse = 0.78 + (0.22 * sin(.pi * clamp(elapsed / 1.6)))
+        let sparkleIntensity: Double
+        if elapsed < 0.55 {
+            sparkleIntensity = 0
+        } else if elapsed < 1 {
+            sparkleIntensity = clamp((elapsed - 0.55) / 0.45)
+        } else {
+            sparkleIntensity = clamp(1 - ((elapsed - 1) / 1.35))
+        }
+
+        return SuccessIndicatorAnimationPresentation(
+            drawProgress: drawProgress,
+            coreOpacity: intro * fade,
+            radiance: radiancePulse * intro * fade,
+            trailPhase: elapsed * 0.34,
+            trailOpacity: clamp(elapsed / 0.25) * fade,
+            sparkleIntensity: sparkleIntensity * fade,
+            isComplete: false
+        )
+    }
+
+    private static func clamp(_ value: Double) -> Double {
+        min(max(value, 0), 1)
+    }
+}
+
 enum MainWindowPresentation {
     static func shouldMaximizeOnLaunch(for platform: CameraWallPlatform) -> Bool {
         switch platform {

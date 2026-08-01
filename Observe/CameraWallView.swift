@@ -11,6 +11,8 @@ struct CameraWallView: View {
     @State private var showsSettings = false
     @State private var hasRequestedLaunchMaximize = false
     @State private var showsRestrictedStartupOverlay = false
+    @State private var successIndicatorOpenState = SuccessIndicatorOpenState()
+    @State private var successIndicatorAnimationID: UUID?
 
     private var wallPlatform: CameraWallPlatform { .current }
 
@@ -32,6 +34,13 @@ struct CameraWallView: View {
                 )
                 .transition(.opacity)
                 .allowsHitTesting(false)
+            }
+
+            if let successIndicatorAnimationID {
+                SuccessIndicatorGlow(cornerRadius: successIndicatorCornerRadius)
+                    .id(successIndicatorAnimationID)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
 
             HStack(spacing: 8) {
@@ -79,7 +88,31 @@ struct CameraWallView: View {
         .fullScreenCover(item: $selectedFeed) { feed in
             CameraDetailView(feed: feed, store: store)
         }
+        .onAppear {
+            beginSuccessIndicatorOpen()
+        }
+        .onChange(of: store.isSuccessIndicatorHealthy) { _, isHealthy in
+            evaluateSuccessIndicator(isHealthy: isHealthy)
+        }
+        .onChange(of: preferences.isSuccessIndicatorEnabled) { _, isEnabled in
+            if isEnabled {
+                evaluateSuccessIndicator(isHealthy: store.isSuccessIndicatorHealthy)
+            } else {
+                successIndicatorAnimationID = nil
+            }
+        }
+        .onChange(of: showsSettings) { _, isPresented in
+            guard !isPresented else { return }
+            evaluateSuccessIndicator(isHealthy: store.isSuccessIndicatorHealthy)
+        }
+        .onChange(of: selectedFeed?.id) { _, selectedFeedID in
+            guard selectedFeedID == nil else { return }
+            evaluateSuccessIndicator(isHealthy: store.isSuccessIndicatorHealthy)
+        }
         .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                beginSuccessIndicatorOpen()
+            }
             if CameraWallPresentation.shouldClearSelection(
                 scenePhase: phase,
                 hasSelectedFeed: selectedFeed != nil
@@ -106,10 +139,43 @@ struct CameraWallView: View {
                 showsRestrictedStartupOverlay = true
             }
         }
+        .task(id: successIndicatorAnimationID) {
+            guard let animationID = successIndicatorAnimationID else { return }
+            do {
+                try await Task.sleep(for: .seconds(SuccessIndicatorAnimationTimeline.duration))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, successIndicatorAnimationID == animationID else { return }
+            successIndicatorAnimationID = nil
+        }
         .maximizeMainWindowOnLaunch(
             platform: wallPlatform,
             hasRequestedMaximize: $hasRequestedLaunchMaximize
         )
+    }
+
+    private var successIndicatorCornerRadius: CGFloat {
+        switch wallPlatform {
+        case .iPhone: 34
+        case .mac: 14
+        }
+    }
+
+    private func evaluateSuccessIndicator(isHealthy: Bool) {
+        guard !showsSettings, selectedFeed == nil else { return }
+        guard successIndicatorOpenState.shouldAnimate(
+            isEnabled: preferences.isSuccessIndicatorEnabled,
+            isHealthy: isHealthy
+        ) else { return }
+
+        successIndicatorAnimationID = UUID()
+    }
+
+    private func beginSuccessIndicatorOpen() {
+        successIndicatorAnimationID = nil
+        successIndicatorOpenState.beginOpen()
+        evaluateSuccessIndicator(isHealthy: store.isSuccessIndicatorHealthy)
     }
 
     @ViewBuilder
@@ -496,6 +562,236 @@ struct RestrictedStartupOverlay: View {
     }
 }
 
+private struct SuccessIndicatorGlow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let cornerRadius: CGFloat
+    let reduceMotionOverride: Bool?
+
+    @State private var startedAt: Date?
+
+    private let glowColor = Color(red: 0.18, green: 1, blue: 0.34)
+    private let electricGreen = Color(red: 0.4, green: 1, blue: 0.58)
+
+    init(cornerRadius: CGFloat, reduceMotionOverride: Bool? = nil) {
+        self.cornerRadius = cornerRadius
+        self.reduceMotionOverride = reduceMotionOverride
+    }
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let elapsed = startedAt.map { context.date.timeIntervalSince($0) } ?? 0
+            let usesReducedMotion = reduceMotionOverride ?? reduceMotion
+            let presentation = SuccessIndicatorAnimationTimeline.presentation(
+                at: elapsed,
+                reduceMotion: usesReducedMotion
+            )
+
+            GeometryReader { proxy in
+                ZStack {
+                    radiantAura(presentation: presentation)
+                    resolvedCore(presentation: presentation)
+
+                    if !usesReducedMotion {
+                        travelingCurrent(presentation: presentation)
+                        chasingTrails(presentation: presentation)
+                    }
+
+                    SuccessIndicatorSparkles(
+                        elapsed: elapsed,
+                        intensity: presentation.sparkleIntensity,
+                        color: electricGreen
+                    )
+                    .padding(6)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .compositingGroup()
+                .blendMode(.screen)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea()
+        .onAppear {
+            startedAt = Date()
+        }
+    }
+
+    private func rimShape(inset: CGFloat = 5) -> some InsettableShape {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .inset(by: inset)
+    }
+
+    private func radiantAura(
+        presentation: SuccessIndicatorAnimationPresentation
+    ) -> some View {
+        ZStack {
+            rimShape()
+                .stroke(glowColor.opacity(0.4), lineWidth: 13)
+                .blur(radius: 7 + (8 * presentation.radiance))
+
+            rimShape()
+                .stroke(electricGreen.opacity(0.22), lineWidth: 24)
+                .blur(radius: 15 + (10 * presentation.radiance))
+
+            rimShape(inset: 7)
+                .stroke(glowColor.opacity(0.16), lineWidth: 34)
+                .blur(radius: 24)
+        }
+        .opacity(presentation.radiance * presentation.drawProgress)
+    }
+
+    private func resolvedCore(
+        presentation: SuccessIndicatorAnimationPresentation
+    ) -> some View {
+        rimShape()
+            .trim(from: 0, to: presentation.drawProgress)
+            .stroke(
+                AngularGradient(
+                    colors: [
+                        glowColor.opacity(0.62),
+                        electricGreen,
+                        .white.opacity(0.94),
+                        glowColor,
+                        glowColor.opacity(0.62)
+                    ],
+                    center: .center,
+                    angle: .degrees(presentation.trailPhase * 360)
+                ),
+                style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round)
+            )
+            .shadow(color: glowColor.opacity(0.95), radius: 5)
+            .shadow(color: electricGreen.opacity(0.7), radius: 11)
+            .opacity(presentation.coreOpacity)
+    }
+
+    private func travelingCurrent(
+        presentation: SuccessIndicatorAnimationPresentation
+    ) -> some View {
+        SuccessIndicatorTrail(
+            cornerRadius: cornerRadius,
+            start: presentation.trailPhase,
+            length: 0.18,
+            lineWidth: 8,
+            color: .white
+        )
+        .shadow(color: electricGreen, radius: 8)
+        .shadow(color: glowColor, radius: 16)
+        .opacity(presentation.trailOpacity)
+    }
+
+    private func chasingTrails(
+        presentation: SuccessIndicatorAnimationPresentation
+    ) -> some View {
+        ZStack {
+            SuccessIndicatorTrail(
+                cornerRadius: cornerRadius,
+                start: presentation.trailPhase - 0.11,
+                length: 0.09,
+                lineWidth: 4,
+                color: electricGreen
+            )
+            SuccessIndicatorTrail(
+                cornerRadius: cornerRadius,
+                start: presentation.trailPhase - 0.22,
+                length: 0.055,
+                lineWidth: 3,
+                color: glowColor
+            )
+        }
+        .blur(radius: 1.2)
+        .opacity(presentation.trailOpacity * 0.82)
+    }
+}
+
+private struct SuccessIndicatorTrail: View {
+    let cornerRadius: CGFloat
+    let start: Double
+    let length: Double
+    let lineWidth: CGFloat
+    let color: Color
+
+    private var normalizedStart: Double {
+        let remainder = start.truncatingRemainder(dividingBy: 1)
+        return remainder >= 0 ? remainder : remainder + 1
+    }
+
+    var body: some View {
+        let end = normalizedStart + length
+        ZStack {
+            segment(from: normalizedStart, to: min(end, 1))
+            if end > 1 {
+                segment(from: 0, to: end - 1)
+            }
+        }
+    }
+
+    private func segment(from: Double, to: Double) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .inset(by: 5)
+            .trim(from: from, to: to)
+            .stroke(
+                color,
+                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+            )
+    }
+}
+
+private struct SuccessIndicatorSparkles: View {
+    let elapsed: TimeInterval
+    let intensity: Double
+    let color: Color
+
+    private let seeds: [(x: Double, y: Double, phase: Double, size: Double)] = [
+        (0.11, 0.012, 0.03, 7),
+        (0.34, 0.01, 0.41, 4),
+        (0.72, 0.012, 0.72, 6),
+        (0.985, 0.16, 0.18, 5),
+        (0.988, 0.47, 0.56, 7),
+        (0.986, 0.81, 0.87, 4),
+        (0.78, 0.988, 0.34, 6),
+        (0.48, 0.99, 0.66, 5),
+        (0.17, 0.987, 0.94, 7),
+        (0.012, 0.76, 0.49, 4),
+        (0.014, 0.43, 0.79, 6),
+        (0.013, 0.19, 0.12, 5)
+    ]
+
+    var body: some View {
+        Canvas { context, size in
+            guard intensity > 0 else { return }
+
+            for seed in seeds {
+                let twinkle = 0.35 + (0.65 * abs(sin((elapsed * 5.4) + (seed.phase * .pi * 2))))
+                let opacity = intensity * twinkle
+                let center = CGPoint(x: size.width * seed.x, y: size.height * seed.y)
+                let radius = seed.size * (0.72 + (0.28 * twinkle))
+                let sparkle = sparklePath(center: center, radius: radius)
+
+                context.drawLayer { glowContext in
+                    glowContext.addFilter(.blur(radius: 3.5))
+                    glowContext.fill(sparkle, with: .color(color.opacity(opacity)))
+                }
+                context.fill(sparkle, with: .color(.white.opacity(opacity * 0.92)))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private func sparklePath(center: CGPoint, radius: Double) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: center.x, y: center.y - radius))
+        path.addLine(to: CGPoint(x: center.x + radius * 0.2, y: center.y - radius * 0.2))
+        path.addLine(to: CGPoint(x: center.x + radius, y: center.y))
+        path.addLine(to: CGPoint(x: center.x + radius * 0.2, y: center.y + radius * 0.2))
+        path.addLine(to: CGPoint(x: center.x, y: center.y + radius))
+        path.addLine(to: CGPoint(x: center.x - radius * 0.2, y: center.y + radius * 0.2))
+        path.addLine(to: CGPoint(x: center.x - radius, y: center.y))
+        path.addLine(to: CGPoint(x: center.x - radius * 0.2, y: center.y - radius * 0.2))
+        path.closeSubpath()
+        return path
+    }
+}
+
 #if DEBUG
 #Preview("Restricted Startup") {
     RestrictedStartupOverlay(
@@ -508,6 +804,65 @@ struct RestrictedStartupOverlay: View {
         homeHubState: .connected
     )
     .background(Color.black)
+}
+
+#Preview("Success Indicator Glow") {
+    ZStack {
+        SuccessIndicatorGlowPreviewWall()
+        SuccessIndicatorGlow(cornerRadius: 34, reduceMotionOverride: false)
+    }
+    .frame(width: 390, height: 844)
+}
+
+#Preview("Success Indicator Glow — Reduce Motion") {
+    ZStack {
+        SuccessIndicatorGlowPreviewWall()
+        SuccessIndicatorGlow(cornerRadius: 34, reduceMotionOverride: true)
+    }
+    .frame(width: 390, height: 844)
+}
+
+private struct SuccessIndicatorGlowPreviewWall: View {
+    private let tileGradient = LinearGradient(
+        colors: [.gray.opacity(0.66), .black, .green.opacity(0.16)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                Color.black
+                VStack(spacing: 8) {
+                    previewTile(height: proxy.size.height * 0.25)
+                    previewTile(height: proxy.size.height * 0.25)
+                    previewTile(height: proxy.size.height * 0.2)
+                    HStack(spacing: 8) {
+                        previewTile(height: proxy.size.height * 0.18)
+                        previewTile(height: proxy.size.height * 0.18)
+                    }
+                }
+                .frame(width: max(0, proxy.size.width - 16))
+                .padding(8)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+    }
+
+    private func previewTile(height: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: 26, style: .continuous)
+            .fill(tileGradient)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .overlay(alignment: .bottomLeading) {
+                HStack(spacing: 7) {
+                    Circle().fill(.green).frame(width: 8, height: 8)
+                    Text("Live").font(.caption.weight(.medium))
+                }
+                .foregroundStyle(.white.opacity(0.82))
+                .padding(14)
+            }
+    }
 }
 #endif
 

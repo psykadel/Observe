@@ -208,6 +208,160 @@ final class ObservePreferencesTests: ObserveTestCase {
         )
     }
 
+    func testSuccessIndicatorRequiresReadyCamerasAndEveryEnabledGreenStatus() {
+        XCTAssertFalse(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: false,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: false,
+                lockState: .loading,
+                isHomeTemperatureEnabled: false,
+                temperatureState: .loading
+            )
+        )
+        XCTAssertFalse(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: false,
+                isLockStatusEnabled: false,
+                lockState: .alert,
+                isHomeTemperatureEnabled: false,
+                temperatureState: .alert
+            )
+        )
+        XCTAssertTrue(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: false,
+                lockState: .alert,
+                isHomeTemperatureEnabled: false,
+                temperatureState: .alert
+            )
+        )
+        XCTAssertTrue(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: true,
+                lockState: .locked,
+                isHomeTemperatureEnabled: false,
+                temperatureState: .alert
+            )
+        )
+        XCTAssertFalse(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: true,
+                lockState: .loading,
+                isHomeTemperatureEnabled: false,
+                temperatureState: .value(70, isInRange: true)
+            )
+        )
+        XCTAssertTrue(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: false,
+                lockState: .alert,
+                isHomeTemperatureEnabled: true,
+                temperatureState: .value(70, isInRange: true)
+            )
+        )
+        XCTAssertFalse(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: false,
+                lockState: .locked,
+                isHomeTemperatureEnabled: true,
+                temperatureState: .value(82, isInRange: false)
+            )
+        )
+        XCTAssertFalse(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: true,
+                lockState: .locked,
+                isHomeTemperatureEnabled: true,
+                temperatureState: .alert
+            )
+        )
+        XCTAssertTrue(
+            SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: true,
+                isLockStatusEnabled: true,
+                lockState: .locked,
+                isHomeTemperatureEnabled: true,
+                temperatureState: .value(70, isInRange: true)
+            )
+        )
+    }
+
+    func testSuccessIndicatorOpenAnimatesOnlyOnceUntilNextOpen() {
+        var openState = SuccessIndicatorOpenState()
+
+        openState.beginOpen()
+        XCTAssertFalse(openState.shouldAnimate(isEnabled: true, isHealthy: false))
+        XCTAssertTrue(openState.shouldAnimate(isEnabled: true, isHealthy: true))
+        XCTAssertFalse(openState.shouldAnimate(isEnabled: true, isHealthy: true))
+        XCTAssertFalse(openState.shouldAnimate(isEnabled: true, isHealthy: false))
+        XCTAssertFalse(openState.shouldAnimate(isEnabled: true, isHealthy: true))
+
+        openState.beginOpen()
+        XCTAssertTrue(openState.shouldAnimate(isEnabled: true, isHealthy: true))
+    }
+
+    func testSuccessIndicatorCanAnimateWhenEnabledAfterWallIsAlreadyHealthy() {
+        var openState = SuccessIndicatorOpenState()
+
+        openState.beginOpen()
+        XCTAssertFalse(openState.shouldAnimate(isEnabled: false, isHealthy: true))
+        XCTAssertTrue(openState.shouldAnimate(isEnabled: true, isHealthy: true))
+        XCTAssertFalse(openState.shouldAnimate(isEnabled: true, isHealthy: true))
+    }
+
+    func testSuccessIndicatorAnimationTimelineFlowsSparklesAndFades() {
+        let start = SuccessIndicatorAnimationTimeline.presentation(at: 0, reduceMotion: false)
+        XCTAssertEqual(start.drawProgress, 0, accuracy: 0.001)
+        XCTAssertEqual(start.coreOpacity, 0, accuracy: 0.001)
+        XCTAssertEqual(start.sparkleIntensity, 0, accuracy: 0.001)
+        XCTAssertFalse(start.isComplete)
+
+        let resolved = SuccessIndicatorAnimationTimeline.presentation(at: 1, reduceMotion: false)
+        XCTAssertEqual(resolved.drawProgress, 1, accuracy: 0.001)
+        XCTAssertEqual(resolved.coreOpacity, 1, accuracy: 0.001)
+        XCTAssertGreaterThan(resolved.radiance, 0.7)
+        XCTAssertGreaterThan(resolved.trailOpacity, 0.5)
+        XCTAssertGreaterThan(resolved.sparkleIntensity, 0.5)
+
+        let fading = SuccessIndicatorAnimationTimeline.presentation(at: 2.8, reduceMotion: false)
+        XCTAssertGreaterThan(fading.coreOpacity, 0)
+        XCTAssertLessThan(fading.coreOpacity, 0.7)
+
+        let complete = SuccessIndicatorAnimationTimeline.presentation(at: 3.2, reduceMotion: false)
+        XCTAssertEqual(complete.coreOpacity, 0, accuracy: 0.001)
+        XCTAssertEqual(complete.sparkleIntensity, 0, accuracy: 0.001)
+        XCTAssertTrue(complete.isComplete)
+    }
+
+    func testSuccessIndicatorReduceMotionUsesFullStationaryGlow() {
+        let visible = SuccessIndicatorAnimationTimeline.presentation(at: 0.25, reduceMotion: true)
+
+        XCTAssertEqual(visible.drawProgress, 1, accuracy: 0.001)
+        XCTAssertGreaterThan(visible.coreOpacity, 0.9)
+        XCTAssertEqual(visible.trailOpacity, 0, accuracy: 0.001)
+        XCTAssertGreaterThan(visible.sparkleIntensity, 0)
+        XCTAssertFalse(visible.isComplete)
+
+        let complete = SuccessIndicatorAnimationTimeline.presentation(at: 3.2, reduceMotion: true)
+        XCTAssertEqual(complete.coreOpacity, 0, accuracy: 0.001)
+        XCTAssertTrue(complete.isComplete)
+    }
+
     @MainActor
     func testHomeSecurityPreferencesDefaultAndRoundTrip() {
         let suiteName = "ObserveTests.\(UUID().uuidString)"
@@ -221,11 +375,13 @@ final class ObservePreferencesTests: ObserveTestCase {
         let preferences = ObservePreferences(userDefaults: defaults)
         XCTAssertFalse(preferences.isLockStatusEnabled)
         XCTAssertFalse(preferences.isHomeTemperatureEnabled)
+        XCTAssertFalse(preferences.isSuccessIndicatorEnabled)
         XCTAssertEqual(preferences.homeTemperatureLowFahrenheit, 60)
         XCTAssertEqual(preferences.homeTemperatureHighFahrenheit, 80)
 
         preferences.setLockStatusEnabled(true)
         preferences.setHomeTemperatureEnabled(true)
+        preferences.setSuccessIndicatorEnabled(true)
         preferences.setLockSelected(true, for: "front")
         preferences.setTemperatureSensorSelected(true, for: "hall")
         preferences.setHomeTemperatureLowFahrenheit(65)
@@ -234,6 +390,7 @@ final class ObservePreferencesTests: ObserveTestCase {
         let reloaded = ObservePreferences(userDefaults: defaults)
         XCTAssertTrue(reloaded.isLockStatusEnabled)
         XCTAssertTrue(reloaded.isHomeTemperatureEnabled)
+        XCTAssertTrue(reloaded.isSuccessIndicatorEnabled)
         XCTAssertTrue(reloaded.isLockSelected(id: "front"))
         XCTAssertTrue(reloaded.isTemperatureSensorSelected(id: "hall"))
         XCTAssertEqual(reloaded.homeTemperatureLowFahrenheit, 65)
@@ -243,6 +400,9 @@ final class ObservePreferencesTests: ObserveTestCase {
         XCTAssertEqual(reloaded.homeTemperatureLowFahrenheit, 75)
         reloaded.setHomeTemperatureHighFahrenheit(50)
         XCTAssertEqual(reloaded.homeTemperatureHighFahrenheit, 75)
+
+        reloaded.setSuccessIndicatorEnabled(false)
+        XCTAssertFalse(ObservePreferences(userDefaults: defaults).isSuccessIndicatorEnabled)
 
         defaults.removePersistentDomain(forName: suiteName)
     }

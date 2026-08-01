@@ -21,6 +21,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     @Published private(set) var temperatureSensorOptions: [HomeSecurityOption] = []
     @Published private(set) var lockIndicatorState: LockIndicatorState = .loading
     @Published private(set) var temperatureIndicatorState: TemperatureIndicatorState = .loading
+    @Published private(set) var isSuccessIndicatorHealthy = false
     @Published private(set) var restrictedStartupOverlayPresentation: RestrictedStartupOverlayPresentation?
 
     let preferences: ObservePreferences
@@ -142,24 +143,28 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         preferences.setLockStatusEnabled(enabled)
         resetLockStatus()
         serviceHomeSecurity()
+        refreshSuccessIndicatorHealth()
     }
 
     func setHomeTemperatureEnabled(_ enabled: Bool) {
         preferences.setHomeTemperatureEnabled(enabled)
         resetTemperatureStatus()
         serviceHomeSecurity()
+        refreshSuccessIndicatorHealth()
     }
 
     func setLockSelected(_ selected: Bool, for id: String) {
         preferences.setLockSelected(selected, for: id)
         resetLockStatus()
         serviceHomeSecurity()
+        refreshSuccessIndicatorHealth()
     }
 
     func setTemperatureSensorSelected(_ selected: Bool, for id: String) {
         preferences.setTemperatureSensorSelected(selected, for: id)
         resetTemperatureStatus()
         serviceHomeSecurity()
+        refreshSuccessIndicatorHealth()
     }
 
     func setHomeTemperatureLowFahrenheit(_ value: Int) {
@@ -647,6 +652,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         serviceStartupMetadataQueue()
         serviceHomeSecurity()
         updateRestrictedStartupOverlay(at: now)
+        refreshSuccessIndicatorHealth(at: now)
     }
 
     private func updateRestrictedStartupOverlay(at now: Date) {
@@ -2377,6 +2383,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func resetHomeSecurityStatus() {
         resetLockStatus()
         resetTemperatureStatus()
+        refreshSuccessIndicatorHealth()
     }
 
     private func resetLockStatus() {
@@ -2482,29 +2489,50 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func refreshLockIndicator() {
-        guard preferences.isLockStatusEnabled else {
+        if preferences.isLockStatusEnabled {
+            lockIndicatorState = HomeSecurityStatusPolicy.lockState(
+                isLoading: pendingLockReadIDs == nil || pendingLockReadIDs?.isEmpty == false,
+                selectedIDs: selectedCurrentHomeLockIDs,
+                valuesByID: lockValuesByID
+            )
+        } else {
             lockIndicatorState = .loading
-            return
         }
-        lockIndicatorState = HomeSecurityStatusPolicy.lockState(
-            isLoading: pendingLockReadIDs == nil || pendingLockReadIDs?.isEmpty == false,
-            selectedIDs: selectedCurrentHomeLockIDs,
-            valuesByID: lockValuesByID
-        )
+        refreshSuccessIndicatorHealth()
     }
 
     private func refreshTemperatureIndicator() {
-        guard preferences.isHomeTemperatureEnabled else {
+        if preferences.isHomeTemperatureEnabled {
+            temperatureIndicatorState = HomeSecurityStatusPolicy.temperatureState(
+                isLoading: pendingTemperatureReadIDs == nil || pendingTemperatureReadIDs?.isEmpty == false,
+                selectedIDs: selectedCurrentHomeTemperatureIDs,
+                celsiusValuesByID: temperatureValuesByID,
+                lowFahrenheit: preferences.homeTemperatureLowFahrenheit,
+                highFahrenheit: preferences.homeTemperatureHighFahrenheit
+            )
+        } else {
             temperatureIndicatorState = .loading
-            return
         }
-        temperatureIndicatorState = HomeSecurityStatusPolicy.temperatureState(
-            isLoading: pendingTemperatureReadIDs == nil || pendingTemperatureReadIDs?.isEmpty == false,
-            selectedIDs: selectedCurrentHomeTemperatureIDs,
-            celsiusValuesByID: temperatureValuesByID,
-            lowFahrenheit: preferences.homeTemperatureLowFahrenheit,
-            highFahrenheit: preferences.homeTemperatureHighFahrenheit
-        )
+        refreshSuccessIndicatorHealth()
+    }
+
+    private func refreshSuccessIndicatorHealth(at date: Date = Date()) {
+        let isHealthy: Bool
+        if isAppActive, !wallFeeds.isEmpty {
+            isHealthy = SuccessIndicatorPolicy.isHealthy(
+                hasVisibleCameras: true,
+                allVisibleCamerasReady: allVisibleFeedsTrusted(at: date),
+                isLockStatusEnabled: preferences.isLockStatusEnabled,
+                lockState: lockIndicatorState,
+                isHomeTemperatureEnabled: preferences.isHomeTemperatureEnabled,
+                temperatureState: temperatureIndicatorState
+            )
+        } else {
+            isHealthy = false
+        }
+
+        guard isSuccessIndicatorHealthy != isHealthy else { return }
+        isSuccessIndicatorHealthy = isHealthy
     }
 
     @discardableResult
