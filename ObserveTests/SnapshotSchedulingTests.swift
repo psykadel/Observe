@@ -200,29 +200,19 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertFalse(
             LivePromotionSnapshotPolicy.shouldQueue(
                 priority: .refresh,
-                presentationMode: .live,
-                wifiBurstOpen: false
+                presentationMode: .live
             )
         )
         XCTAssertTrue(
             LivePromotionSnapshotPolicy.shouldQueue(
                 priority: .urgent,
-                presentationMode: .live,
-                wifiBurstOpen: false
+                presentationMode: .live
             )
         )
         XCTAssertTrue(
             LivePromotionSnapshotPolicy.shouldQueue(
                 priority: .refresh,
-                presentationMode: .live,
-                wifiBurstOpen: true
-            )
-        )
-        XCTAssertTrue(
-            LivePromotionSnapshotPolicy.shouldQueue(
-                priority: .refresh,
-                presentationMode: .snapshot,
-                wifiBurstOpen: false
+                presentationMode: .snapshot
             )
         )
     }
@@ -394,37 +384,6 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertEqual(liveIDs(in: plan), [])
         XCTAssertEqual(plan.decisionsByID["first"]?.presentationMode, .snapshot)
         XCTAssertEqual(plan.decisionsByID["second"]?.presentationMode, .snapshot)
-    }
-    func testWiFiLiveBurstOpensAllLiveAndReleasesSnapshotsAfterHeadStart() {
-        var burst = WiFiLiveBurstState(
-            networkClass: .wifi,
-            visibleFeedIDs: ["one", "two", "three"],
-            startedAt: now,
-            snapshotHeadStart: 0.2,
-            deadline: 2
-        )
-
-        XCTAssertEqual(burst.mode, .headStart)
-        XCTAssertEqual(burst.liveIDs, ["one", "two", "three"])
-        XCTAssertFalse(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.199)))
-
-        burst.evaluate(streamingIDs: [], at: now.addingTimeInterval(0.2))
-
-        XCTAssertEqual(burst.mode, .active)
-        XCTAssertTrue(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.2)))
-        XCTAssertEqual(burst.liveIDs, ["one", "two", "three"])
-    }
-    func testWiFiLiveBurstDefaultSnapshotHeadStartIsOneSecond() {
-        var burst = WiFiLiveBurstState(
-            networkClass: .wifi,
-            visibleFeedIDs: ["one", "two"],
-            startedAt: now
-        )
-
-        XCTAssertFalse(burst.allowsSnapshotIssue(at: now.addingTimeInterval(0.999)))
-        burst.evaluate(streamingIDs: [], at: now.addingTimeInterval(1))
-        XCTAssertEqual(burst.mode, .active)
-        XCTAssertTrue(burst.allowsSnapshotIssue(at: now.addingTimeInterval(1)))
     }
     func testStartupCameraStateAcceptsLateSnapshotSuccessAfterFailure() {
         var state = StartupCameraState()

@@ -150,13 +150,7 @@ struct CameraRecoveryPlanner {
                 feeds: livePrioritizedFeeds,
                 now: now
             )
-        case .wifiFallback(let allowWiredFallback):
-            liveSelection = wifiFallbackLiveSelection(
-                feeds: prioritizedFeeds,
-                allowWiredFallback: allowWiredFallback,
-                now: now
-            )
-        case .liveBurst(let liveIDs):
+        case .homeNetwork(let liveIDs):
             liveSelection = ConstrainedLiveSelection(
                 liveIDs: liveIDs,
                 batteryCaptureIDs: [],
@@ -349,121 +343,6 @@ struct CameraRecoveryPlanner {
         }
 
         return now.timeIntervalSince(firstRequestDate) >= CameraSchedulingDefaults.snapshotRequestTimeout
-    }
-
-    private func wifiFallbackLiveSelection(
-        feeds: [FeedPlanningSnapshot],
-        allowWiredFallback: Bool,
-        now: Date
-    ) -> ConstrainedLiveSelection {
-        let batteryNeedingTrustedStillIDs = Set(
-            feeds
-                .filter {
-                    $0.isBatteryWakeCamera
-                        && !$0.hasTrustedImage(at: now)
-                        && $0.startupState.resolution != .trusted
-                }
-                .map(\.id)
-        )
-
-        if let focused = feeds.first(where: \.isFocused) {
-            let capturesBattery = focused.needsBatteryCapture(
-                at: now,
-                leaseDuration: batteryWakeLeaseDuration,
-                warmup: batteryCaptureWarmup,
-                liveStartTimeout: batteryWakeLiveStartTimeout
-            )
-            return ConstrainedLiveSelection(
-                liveIDs: [focused.id],
-                batteryCaptureIDs: capturesBattery ? [focused.id] : [],
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting(capturesBattery ? [focused.id] : [])
-            )
-        }
-
-        if let activeBattery = feeds.first(where: {
-            $0.startupState.resolution != .trusted
-                && $0.hasActiveBatteryCapture(
-                    at: now,
-                    leaseDuration: batteryWakeLeaseDuration,
-                    warmup: batteryCaptureWarmup,
-                    liveStartTimeout: batteryWakeLiveStartTimeout
-                )
-        }) {
-            return ConstrainedLiveSelection(
-                liveIDs: [activeBattery.id],
-                batteryCaptureIDs: [activeBattery.id],
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting([activeBattery.id])
-            )
-        }
-
-        if let activeWiredFallback = feeds.first(where: {
-            !$0.isBatteryWakeCamera
-                && $0.startupState.resolution != .trusted
-                && $0.startupState.liveFallbackStartedAt != nil
-                && !$0.hasTrustedImage(at: now)
-        }) {
-            return ConstrainedLiveSelection(
-                liveIDs: [activeWiredFallback.id],
-                batteryCaptureIDs: [],
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs
-            )
-        }
-
-        if let battery = feeds.first(where: {
-            $0.startupState.resolution != .trusted
-                && $0.needsBatteryCapture(
-                    at: now,
-                    leaseDuration: batteryWakeLeaseDuration,
-                    warmup: batteryCaptureWarmup,
-                    liveStartTimeout: batteryWakeLiveStartTimeout
-                )
-        }) {
-            return ConstrainedLiveSelection(
-                liveIDs: [battery.id],
-                batteryCaptureIDs: [battery.id],
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs.subtracting([battery.id])
-            )
-        }
-
-        let hasAttemptedWiredLiveProbe = feeds.contains {
-            !$0.isBatteryWakeCamera && $0.startupState.liveAttempted
-        }
-        if !hasAttemptedWiredLiveProbe,
-           let wiredProbe = feeds.first(where: {
-               !$0.isBatteryWakeCamera
-                   && !$0.hasTrustedImage(at: now)
-                   && $0.startupState.resolution == .pending
-           }) {
-            return ConstrainedLiveSelection(
-                liveIDs: [wiredProbe.id],
-                batteryCaptureIDs: [],
-                batteryWaitingIDs: batteryNeedingTrustedStillIDs
-            )
-        }
-
-        if allowWiredFallback {
-            let wiredFallbackCandidates = feeds.filter {
-                !$0.isBatteryWakeCamera
-                    && !$0.hasTrustedImage(at: now)
-                    && $0.startupState.snapshotAttempted
-                    && $0.startupState.resolution != .trusted
-            }
-            if let wiredFallback = wiredFallbackCandidates.first(where: {
-                $0.startupState.resolution == .pending
-            }) ?? wiredFallbackCandidates.first {
-                return ConstrainedLiveSelection(
-                    liveIDs: [wiredFallback.id],
-                    batteryCaptureIDs: [],
-                    batteryWaitingIDs: batteryNeedingTrustedStillIDs
-                )
-            }
-        }
-
-        return ConstrainedLiveSelection(
-            liveIDs: [],
-            batteryCaptureIDs: [],
-            batteryWaitingIDs: batteryNeedingTrustedStillIDs
-        )
     }
 
     private func constrainedLiveSelection(

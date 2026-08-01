@@ -52,14 +52,11 @@ enum LiveTransportPhase: Equatable {
 }
 
 enum LiveAdmissionMode: Equatable {
-    case wifiBurst
     case adaptive(maxPendingStarts: Int)
     case constrained
 
     fileprivate var maximumPendingStarts: Int {
         switch self {
-        case .wifiBurst:
-            Int.max
         case .adaptive(let maximum):
             max(1, maximum)
         case .constrained:
@@ -205,14 +202,9 @@ struct LiveAdmissionController {
             }
             return infrastructureIsEligible && isRetryEligible(feedID: intent.id, at: now)
         }
-        let plannedCapacity = mode == .wifiBurst
-            ? desired.count
-            : max(0, plannerCapacity ?? sustainableCapacity)
+        let plannedCapacity = max(0, plannerCapacity ?? sustainableCapacity)
         let capacity: Int
-        if mode == .wifiBurst {
-            capacity = plannedCapacity
-            lastCapacityLimitReason = "wifiBurst"
-        } else if let sessionCeiling = softContentionSessionCeiling {
+        if let sessionCeiling = softContentionSessionCeiling {
             let hasExplicitCapacityProbe = targetEligibleDesired.contains { intent in
                 intent.role == .capacityProbe
                     && (activeCapacityProbeFeedID == nil || activeCapacityProbeFeedID == intent.id)

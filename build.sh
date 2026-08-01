@@ -42,6 +42,18 @@ verify_homekit_signature() {
         echo "Refusing to package an app that cannot access Home data correctly." >&2
         exit 1
     fi
+
+    if ! grep -q 'com.apple.developer.networking.wifi-info' <<<"$entitlements_output"; then
+        echo "Built app is missing the Access Wi-Fi Information entitlement." >&2
+        echo "Refusing to package an app that cannot identify the Home Network." >&2
+        exit 1
+    fi
+
+    if ! grep -q 'com.apple.security.personal-information.location' <<<"$entitlements_output"; then
+        echo "Built app is missing the macOS Location entitlement." >&2
+        echo "Refusing to package an app whose Home Network lookup will fail on macOS." >&2
+        exit 1
+    fi
 }
 
 echo "Building $APP_NAME for macOS..."

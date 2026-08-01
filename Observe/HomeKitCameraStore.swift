@@ -1,5 +1,11 @@
+import CoreLocation
 import Foundation
 import HomeKit
+import NetworkExtension
+#if targetEnvironment(macCatalyst)
+import Darwin
+import ObjectiveC.runtime
+#endif
 
 private struct ActiveStartupMetadataOperation {
     let descriptor: StartupMetadataOperationDescriptor
@@ -23,14 +29,20 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     @Published private(set) var temperatureIndicatorState: TemperatureIndicatorState = .loading
     @Published private(set) var isSuccessIndicatorHealthy = false
     @Published private(set) var restrictedStartupOverlayPresentation: RestrictedStartupOverlayPresentation?
+    @Published private(set) var currentWiFiSSID: String?
+    @Published private(set) var connectionModeResolution = CameraConnectionModeResolution(
+        mode: .restricted,
+        reason: .homeNetworkNotConfigured
+    )
 
     let preferences: ObservePreferences
 
     private let homeManager = HMHomeManager()
+    private let locationManager = CLLocationManager()
     private let networkPathClassifier: any CameraNetworkPathClassifying
     private weak var selectedHome: HMHome?
     private var snapshotSchedulerTask: Task<Void, Never>?
-    private var wifiLiveBurstHeadStartTask: Task<Void, Never>?
+    private var ssidRefreshTask: Task<Void, Never>?
     private var feedScheduleStates: [String: FeedScheduleState] = [:]
     private var currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
     private var liveAdmissionController = LiveAdmissionController(
@@ -42,9 +54,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private var liveCapacityIncludesUnconfirmedMemory = false
     private var startupCoverageActive = true
     private var startupLiveRampState: StartupLiveRampState?
-    private var wifiLiveBurstState: WiFiLiveBurstState?
     private var lastLivePlanTelemetrySignature: String?
     private var sessionNetworkClass: CameraNetworkClass = .unknown
+    private var networkRevision: UInt64 = 0
     private var telemetrySessionStartedAt = Date()
     private var telemetryEvents: [CameraTelemetryEvent] = []
     private var nextTelemetrySequence = 1
@@ -91,9 +103,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     ) {
         self.preferences = preferences
         self.networkPathClassifier = networkPathClassifier
+        self.networkRevision = networkPathClassifier.revision
         self.authorizationStatus = homeManager.authorizationStatus
         super.init()
         homeManager.delegate = self
+        locationManager.delegate = self
+        refreshCurrentWiFiSSID()
         rebuildHomesAndFeeds()
     }
 
@@ -128,6 +143,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         if CameraSessionActivation.shouldRebuildSession(currentlyActive: wasActive, nextActive: active) {
             focusedFeedID = nil
+            currentWiFiSSID = nil
+            updateConnectionMode(at: Date(), refreshPresentation: false)
             rebuildHomesAndFeeds()
         } else {
             deactivateSession()
@@ -137,6 +154,26 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     func selectHome(id: String) {
         preferences.selectedHomeID = id
         rebuildHomesAndFeeds()
+    }
+
+    func setHomeNetworkSSID(_ ssid: String) {
+        preferences.setHomeNetworkSSID(ssid)
+        updateConnectionMode(at: Date(), refreshPresentation: true)
+    }
+
+    func requestHomeNetworkAccess() {
+        switch locationManager.authorizationStatus {
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            refreshCurrentWiFiSSID()
+        case .denied, .restricted:
+            currentWiFiSSID = nil
+            updateConnectionMode(at: Date(), refreshPresentation: true)
+        @unknown default:
+            currentWiFiSSID = nil
+            updateConnectionMode(at: Date(), refreshPresentation: true)
+        }
     }
 
     func setLockStatusEnabled(_ enabled: Bool) {
@@ -295,8 +332,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             } ?? "notRestricted",
             sessionNetworkClass: sessionNetworkClass.rawValue,
             currentNetworkClass: networkPathClassifier.currentClass.rawValue,
-            wifiLiveBurstMode: wifiLiveBurstModeLabel,
-            wifiLiveBurstSurvivorIDs: wifiLiveBurstState?.survivingLiveIDs.sorted() ?? [],
+            connectionMode: connectionModeResolution.mode.rawValue,
+            connectionModeReason: connectionModeResolution.reason.rawValue,
             startupLiveRampMode: startupLiveRampState?.mode.rawValue ?? "inactive",
             startupLiveRampSelectedIDs: startupLiveRampState?.selectedIDs.sorted() ?? [],
             startupLiveRampPendingIDs: startupLiveRampState?.pendingIDs.sorted() ?? [],
@@ -351,7 +388,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         home.delegate = self
 
         let metadataMode = StartupMetadataWorkMode.resolve(
-            networkClass: networkPathClassifier.currentClass
+            connectionMode: CameraConnectionModePolicy.resolve(
+                networkClass: networkPathClassifier.currentClass,
+                currentSSID: currentWiFiSSID,
+                configuredHomeSSID: preferences.homeNetworkSSID
+            ).mode
         )
         var discoveredFeeds: [CameraFeedCoordinator] = []
         var discoveredLocks: [HomeSecurityOption] = []
@@ -440,14 +481,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func deactivateSession() {
         sessionGeneration &+= 1
         snapshotSchedulerTask?.cancel()
-        wifiLiveBurstHeadStartTask?.cancel()
+        ssidRefreshTask?.cancel()
         focusedFeedID = nil
         liveCapacity = 0
         liveCapacityExpansionBlockedUntil = nil
         liveCapacityIncludesUnconfirmedMemory = false
         startupCoverageActive = true
         startupLiveRampState = nil
-        wifiLiveBurstState = nil
         lastLivePlanTelemetrySignature = nil
         resetStartupMetadataWork()
         currentRecoveryPlan = CameraRecoveryPlan(decisionsByID: [:], orderedSnapshotIDs: [])
@@ -480,7 +520,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveCapacityIncludesUnconfirmedMemory = false
         startupCoverageActive = true
         startupLiveRampState = nil
-        wifiLiveBurstState = nil
         restrictedStartupOverlayPresentation = nil
         resetStartupMetadataWork()
     }
@@ -518,14 +557,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveCapacityIncludesUnconfirmedMemory = false
         startupCoverageActive = true
         startupLiveRampState = nil
-        wifiLiveBurstState = nil
         lastLivePlanTelemetrySignature = nil
         resetHomeSecurityStatus()
     }
 
     private func startSession() {
         snapshotSchedulerTask?.cancel()
-        wifiLiveBurstHeadStartTask?.cancel()
+        ssidRefreshTask?.cancel()
 
         guard isAppActive else { return }
         guard !feeds.isEmpty else {
@@ -542,22 +580,23 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         startupLiveRampState = nil
         lastLivePlanTelemetrySignature = nil
         let networkClass = networkPathClassifier.currentClass
+        networkRevision = networkPathClassifier.revision
         sessionNetworkClass = networkClass
-        startupMetadataMode = StartupMetadataWorkMode.resolve(networkClass: networkClass)
+        connectionModeResolution = CameraConnectionModePolicy.resolve(
+            networkClass: networkClass,
+            currentSSID: currentWiFiSSID,
+            configuredHomeSSID: preferences.homeNetworkSSID
+        )
+        startupMetadataMode = StartupMetadataWorkMode.resolve(
+            connectionMode: connectionModeResolution.mode
+        )
         activeStartupMetadataOperation = nil
         initialMediaAdmissionCompleted = startupMetadataMode == .immediateParallel
         startupMetadataQueue = startupMetadataMode == .mediaPrioritySerial
             ? StartupMetadataAdmissionPolicy.ordered(feeds.flatMap { $0.startupMetadataOperations() })
             : []
-        wifiLiveBurstState = WiFiLiveBurstState(
-            networkClass: networkClass,
-            visibleFeedIDs: Set(wallFeeds.map(\.id)),
-            batteryFeedIDs: Set(wallFeeds.filter { preferences.isBatteryWakeCamera(id: $0.id) }.map(\.id)),
-            startedAt: telemetrySessionStartedAt,
-            batteryDeadline: batteryWakeLiveStartTimeout
-        )
         recordTelemetry(
-            "session start feeds=\(feeds.count) visible=\(wallFeeds.count) liveCapacity=\(liveCapacity) network=\(networkClass.rawValue) wifiBurst=\(wifiLiveBurstModeLabel)"
+            "session start feeds=\(feeds.count) visible=\(wallFeeds.count) liveCapacity=\(liveCapacity) network=\(networkClass.rawValue) connectionMode=\(connectionModeResolution.mode.rawValue) reason=\(connectionModeResolution.reason.rawValue)"
         )
         if !startupMetadataQueue.isEmpty {
             telemetryStartupMilestones.metadata.recordQueued(
@@ -574,20 +613,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             }
         }
         refreshPresentation(focusedFeedID: focusedFeedID)
-
-        if wifiLiveBurstState?.mode == .headStart {
-            let generation = sessionGeneration
-            wifiLiveBurstHeadStartTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(WiFiLiveBurstDefaults.snapshotHeadStart))
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard let self,
-                          self.isAppActive,
-                          self.sessionGeneration == generation else { return }
-                    self.refreshPresentation(focusedFeedID: self.focusedFeedID)
-                }
-            }
-        }
+        refreshCurrentWiFiSSID()
 
         snapshotSchedulerTask = Task { [weak self] in
             while let self, !Task.isCancelled {
@@ -607,9 +633,181 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         )
     }
 
+    private func refreshCurrentWiFiSSID() {
+        ssidRefreshTask?.cancel()
+        let lookupSources = CurrentWiFiSSIDLookupPolicy.sources(
+            isMacCatalyst: Self.isMacCatalyst,
+            networkClass: networkPathClassifier.currentClass
+        )
+        guard !lookupSources.isEmpty else {
+            currentWiFiSSID = nil
+            updateConnectionMode(at: Date(), refreshPresentation: true)
+            return
+        }
+
+        let requestedRevision = networkPathClassifier.revision
+        ssidRefreshTask = Task { @MainActor [weak self] in
+            let ssid = await Self.fetchCurrentWiFiSSID(using: lookupSources)
+            guard let self,
+                  !Task.isCancelled,
+                  self.networkPathClassifier.revision == requestedRevision else { return }
+
+            self.currentWiFiSSID = ssid
+            self.updateConnectionMode(at: Date(), refreshPresentation: true)
+        }
+    }
+
+    private static var isMacCatalyst: Bool {
+#if targetEnvironment(macCatalyst)
+        true
+#else
+        false
+#endif
+    }
+
+    private static func fetchCurrentWiFiSSID(
+        using sources: [CurrentWiFiSSIDLookupSource]
+    ) async -> String? {
+        for source in sources {
+            switch source {
+            case .coreWLAN:
+#if targetEnvironment(macCatalyst)
+                if let ssid = fetchCurrentWiFiSSIDUsingCoreWLAN() {
+                    return ssid
+                }
+#endif
+            case .networkExtension:
+                if let ssid = await fetchCurrentWiFiSSIDUsingNetworkExtension() {
+                    return ssid
+                }
+            }
+        }
+        return nil
+    }
+
+#if targetEnvironment(macCatalyst)
+    private static func fetchCurrentWiFiSSIDUsingCoreWLAN() -> String? {
+        guard dlopen(
+            "/System/Library/Frameworks/CoreWLAN.framework/CoreWLAN",
+            RTLD_LAZY | RTLD_LOCAL
+        ) != nil,
+        let clientClass = NSClassFromString("CWWiFiClient"),
+        let client = invokeObjectReturningSelector("sharedWiFiClient", on: clientClass),
+        let interface = invokeObjectReturningSelector("interface", on: client),
+        let ssid = invokeObjectReturningSelector("ssid", on: interface) as? String else {
+            return nil
+        }
+        return ssid
+    }
+
+    private static func invokeObjectReturningSelector(
+        _ selectorName: String,
+        on receiver: AnyObject
+    ) -> AnyObject? {
+        let selector = NSSelectorFromString(selectorName)
+        guard let receiverClass = object_getClass(receiver),
+              let method = class_getInstanceMethod(receiverClass, selector) else {
+            return nil
+        }
+
+        typealias SelectorFunction = @convention(c) (AnyObject, Selector) -> Unmanaged<AnyObject>?
+        let function = unsafeBitCast(method_getImplementation(method), to: SelectorFunction.self)
+        return function(receiver, selector)?.takeUnretainedValue()
+    }
+#endif
+
+    private static func fetchCurrentWiFiSSIDUsingNetworkExtension() async -> String? {
+        await withCheckedContinuation { continuation in
+            NEHotspotNetwork.fetchCurrent { network in
+                continuation.resume(returning: network?.ssid)
+            }
+        }
+    }
+
+    private func handleNetworkPathChangeIfNeeded(at date: Date) {
+        let revision = networkPathClassifier.revision
+        guard revision != networkRevision else { return }
+
+        networkRevision = revision
+        currentWiFiSSID = nil
+        updateConnectionMode(at: date, refreshPresentation: false)
+        refreshCurrentWiFiSSID()
+    }
+
+    private func updateConnectionMode(at date: Date, refreshPresentation shouldRefresh: Bool) {
+        let previous = connectionModeResolution
+        let resolved = CameraConnectionModePolicy.resolve(
+            networkClass: networkPathClassifier.currentClass,
+            currentSSID: currentWiFiSSID,
+            configuredHomeSSID: preferences.homeNetworkSSID
+        )
+        sessionNetworkClass = networkPathClassifier.currentClass
+        guard resolved != previous else { return }
+
+        connectionModeResolution = resolved
+        if resolved.mode != previous.mode {
+            applyConnectionModeTransition(from: previous.mode, to: resolved.mode)
+        }
+        if !feeds.isEmpty {
+            recordTelemetry(
+                "connection mode resolved mode=\(resolved.mode.rawValue) reason=\(resolved.reason.rawValue)",
+                at: date
+            )
+        }
+        if shouldRefresh, isAppActive {
+            refreshPresentation(focusedFeedID: focusedFeedID)
+        }
+    }
+
+    private func applyConnectionModeTransition(
+        from previousMode: CameraConnectionMode,
+        to mode: CameraConnectionMode
+    ) {
+        sessionMode = .optimistic
+        liveCapacity = wallFeeds.count
+        liveCapacityExpansionBlockedUntil = nil
+        liveCapacityIncludesUnconfirmedMemory = false
+        startupCoverageActive = true
+        startupLiveRampState = nil
+        liveAdmissionController = LiveAdmissionController(
+            mode: .adaptive(maxPendingStarts: mode == .homeNetwork ? Int.max : 1),
+            sustainableCapacity: wallFeeds.count
+        )
+        lastLiveAdmissionDecision = nil
+
+        if mode == .homeNetwork {
+            startupMetadataMode = .immediateParallel
+            startupMetadataQueue = []
+            activeStartupMetadataOperation = nil
+            initialMediaAdmissionCompleted = true
+            for feed in feeds {
+                feed.readHomeKitCameraActiveState()
+                feed.readBatteryPercentage()
+            }
+            for (feedID, var state) in feedScheduleStates {
+                if case .queued = state.snapshotWorkState {
+                    state.snapshotWorkState = .idle
+                    feedScheduleStates[feedID] = state
+                }
+            }
+        } else if previousMode == .homeNetwork {
+            startupMetadataMode = .mediaPrioritySerial
+            startupMetadataQueue = StartupMetadataAdmissionPolicy.ordered(
+                feeds.flatMap { $0.startupMetadataOperations() }
+            )
+            activeStartupMetadataOperation = nil
+            initialMediaAdmissionCompleted = false
+            for (feedID, var state) in feedScheduleStates {
+                applyStartupEvent(.reset, feedID: feedID, state: &state)
+                feedScheduleStates[feedID] = state
+            }
+        }
+    }
+
     private func refreshPresentation(focusedFeedID: String?) {
         guard isAppActive else { return }
 
+        handleNetworkPathChangeIfNeeded(at: Date())
         configureFeedsForPresentation()
         let now = Date()
         reconcileFeedScheduleStates(at: now, focusedFeedID: focusedFeedID)
@@ -617,7 +815,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let planningSnapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
         updateTrustedImageMilestones(from: planningSnapshots, at: now)
         updateStartupCoverage(from: planningSnapshots, at: now)
-        updateWiFiLiveBurst(from: planningSnapshots, at: now)
         updateStartupLiveRamp(from: planningSnapshots, at: now)
 
         let liveBudget = resolveLiveBudget(from: planningSnapshots, at: now)
@@ -660,7 +857,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let restrictedPhase = restrictedStartupPhase(from: snapshots, at: now)
         let isRestrictedStartup = restrictedPhase.map { !$0.isOrdinaryLiveGateOpen }
             ?? (
-                sessionNetworkClass == .wifi
+                connectionModeResolution.mode == .restricted
                     && sessionMode == .constrained
                     && (startupCoverageActive || restrictedStartupOverlayPresentation != nil)
             )
@@ -824,6 +1021,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         from planningSnapshots: [FeedPlanningSnapshot],
         at now: Date
     ) -> Int {
+        if connectionModeResolution.mode == .homeNetwork {
+            return planningSnapshots.count
+        }
         let currentLiveCount = wallFeeds.filter(\.isStreaming).count
         switch sessionMode {
         case .optimistic:
@@ -857,17 +1057,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         from planningSnapshots: [FeedPlanningSnapshot],
         at now: Date
     ) -> StartupLivePolicy {
-        let wiredStartupFeeds = planningSnapshots.filter { !$0.isBatteryWakeCamera }
-        let allWiredSnapshotPathsAttempted = wiredStartupFeeds.allSatisfy {
-            $0.hasTrustedImage(at: now) || $0.startupState.snapshotAttempted
-        }
-        let hasActiveSnapshotRequest = feedScheduleStates.values.contains {
-            $0.snapshotWorkState.isActive
-        }
-        if sessionMode == .optimistic,
-           let wifiLiveBurstState,
-           !wifiLiveBurstState.liveIDs.isEmpty {
-            return .liveBurst(liveIDs: wifiLiveBurstState.liveIDs)
+        if connectionModeResolution.mode == .homeNetwork {
+            return .homeNetwork(liveIDs: Set(planningSnapshots.map(\.id)))
         } else if let restrictedStartupPhase = restrictedStartupPhase(
             from: planningSnapshots,
             at: now
@@ -880,10 +1071,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 liveIDs: startupLiveRampState.selectedIDs,
                 maxPendingStarts: startupLiveRampState.maxPendingCount
             )
-        } else if sessionNetworkClass == .wifi, startupCoverageActive {
-            return .wifiFallback(
-                allowWiredFallback: allWiredSnapshotPathsAttempted && !hasActiveSnapshotRequest
-            )
         } else {
             return .normal
         }
@@ -893,7 +1080,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         from planningSnapshots: [FeedPlanningSnapshot],
         at now: Date
     ) -> RestrictedStartupPhase? {
-        guard sessionNetworkClass != .wifi, !planningSnapshots.isEmpty else { return nil }
+        guard connectionModeResolution.mode == .restricted,
+              !planningSnapshots.isEmpty else { return nil }
 
         return RestrictedStartupPhase.resolve(
             initialSnapshotPassActive: startupCoverageActive,
@@ -914,9 +1102,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             decision.presentationMode == .live ? id : nil
         })
         let admissionMode: LiveAdmissionMode
-        if wifiLiveBurstState?.liveIDs.isEmpty == false {
-            admissionMode = .wifiBurst
-        } else if sessionMode == .constrained {
+        if connectionModeResolution.mode == .restricted, sessionMode == .constrained {
             admissionMode = .constrained
         } else {
             admissionMode = .adaptive(maxPendingStarts: startupLivePolicy.pendingStartLimit)
@@ -924,7 +1110,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveAdmissionController.update(mode: admissionMode, sustainableCapacity: liveCapacity)
 
         let visibleFeeds = wallFeeds
-        let usesLivePriority = sessionMode == .constrained || startupLivePolicy == .restrictedSnapshotOnly
+        let usesLivePriority = connectionModeResolution.mode == .restricted
+            && (sessionMode == .constrained || startupLivePolicy == .restrictedSnapshotOnly)
         let admissionOrderedFeeds = usesLivePriority
             ? livePriorityOrderedFeeds.filter { isVisibleOnWall($0) }
             : visibleFeeds
@@ -944,7 +1131,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             } else if startupCoverageActive,
                       feedScheduleStates[feed.id]?.startupState.resolution != .trusted {
                 role = .firstImageRecovery
-            } else if liveBudget > liveCapacity, !feed.isStreaming {
+            } else if connectionModeResolution.mode == .restricted,
+                      liveBudget > liveCapacity,
+                      !feed.isStreaming {
                 role = .capacityProbe
             } else {
                 role = .steadyState
@@ -973,6 +1162,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             intents: liveIntents,
             transports: transports,
             preserveActiveDuringCoverage: (startupCoverageActive || hasRecoveringCamera)
+                && connectionModeResolution.mode == .restricted
                 && sessionMode == .constrained
                 && !restrictedLiveGateClosed,
             plannerCapacity: liveBudget,
@@ -1019,13 +1209,11 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func queuePlannedSnapshots(at now: Date) {
-        let wifiBurstOpen = wifiLiveBurstState.map { !$0.liveIDs.isEmpty } ?? false
         for feed in feeds where isVisibleOnWall(feed) {
             guard let decision = currentRecoveryPlan.decisionsByID[feed.id] else { continue }
             if LivePromotionSnapshotPolicy.shouldQueue(
                 priority: decision.snapshotPriority,
-                presentationMode: decision.presentationMode,
-                wifiBurstOpen: wifiBurstOpen
+                presentationMode: decision.presentationMode
             ), !feed.isStreaming {
                 queueSnapshotRefresh(for: feed.id, priority: decision.snapshotPriority, at: now)
             } else if var state = feedScheduleStates[feed.id],
@@ -1349,14 +1537,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacityIncludesUnconfirmedMemory = false
             startupCoverageActive = true
             startupLiveRampState = nil
-            wifiLiveBurstState = nil
         }
     }
 
     private func serviceSnapshotQueue() {
         guard isAppActive else { return }
         let now = Date()
-        guard wifiLiveBurstState?.allowsSnapshotIssue(at: now) ?? true else { return }
         let feedLookup = Dictionary(uniqueKeysWithValues: wallFeeds.map { ($0.id, $0) })
         let snapshotFeeds = currentRecoveryPlan.orderedSnapshotIDs.compactMap { feedLookup[$0] }
         let activeLimit = effectiveMaxConcurrentSnapshotRequests(at: now)
@@ -1648,7 +1834,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private var restrictedSnapshotFailureEntersRecovery: Bool {
-        sessionNetworkClass != .wifi
+        connectionModeResolution.mode == .restricted
     }
 
     private func handleSnapshotFailure(for feedID: String, at date: Date) {
@@ -1710,6 +1896,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
     private func handleConstrainedSignal(from feedID: String) {
         let now = Date()
+        guard connectionModeResolution.mode == .restricted else { return }
         if let feed = feeds.first(where: { $0.id == feedID }), !isVisibleOnWall(feed) {
             reconcileHiddenBatteryCameraWork()
             refreshPresentation(focusedFeedID: focusedFeedID)
@@ -1820,6 +2007,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func enterConstrainedMode(at now: Date) {
+        guard connectionModeResolution.mode == .restricted else { return }
         guard sessionMode != .constrained else {
             refreshPresentation(focusedFeedID: focusedFeedID)
             return
@@ -1854,7 +2042,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             liveCapacityIncludesUnconfirmedMemory = false
             startupCoverageActive = true
             startupLiveRampState = nil
-            wifiLiveBurstState = nil
         }
 
         objectWillChange.send()
@@ -1902,7 +2089,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard !planningSnapshots.isEmpty else {
             startupCoverageActive = false
             startupLiveRampState = nil
-            wifiLiveBurstState = nil
             return
         }
 
@@ -1935,75 +2121,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         )
     }
 
-    private func updateWiFiLiveBurst(
-        from planningSnapshots: [FeedPlanningSnapshot],
-        at now: Date
-    ) {
-        guard var burst = wifiLiveBurstState else { return }
-        let previousMode = burst.mode
-        let streamingIDs = Set(planningSnapshots.filter(\.isStreaming).map(\.id))
-
-        let visibleIDs = Set(planningSnapshots.map(\.id))
-        if networkPathClassifier.currentClass != .wifi
-            || (!burst.liveIDs.isEmpty && burst.liveIDs != visibleIDs) {
-            burst.invalidatePath(streamingIDs: streamingIDs)
-        } else {
-            burst.evaluate(streamingIDs: streamingIDs, at: now)
-        }
-        wifiLiveBurstState = burst
-
-        guard burst.mode != previousMode else { return }
-        recordTelemetry(
-            "wifi live burst mode=\(wifiLiveBurstModeLabel) survivors=\(burst.survivingLiveIDs.sorted().joined(separator: ","))"
-        )
-
-        if case .closed = burst.mode {
-            enterConstrainedAfterWiFiBurst(at: now)
-        } else if burst.mode == .completed {
-            telemetryStartupMilestones.recordAllVisibleFeedsLive(at: elapsedSinceSession(now))
-        }
-    }
-
-    private func enterConstrainedAfterWiFiBurst(at now: Date) {
-        guard sessionMode == .optimistic else { return }
-
-        let currentLiveCount = wallFeeds.filter(\.isStreaming).count
-        liveCapacity = RestrictedLiveCapacity.enteringAfterConstrainedSignal(
-            currentLiveCount: currentLiveCount,
-            visibleFeedCount: wallFeeds.count
-        )
-        liveCapacityExpansionBlockedUntil = now.addingTimeInterval(
-            CameraSchedulingDefaults.liveCapacityExpansionRetryDelay
-        )
-        liveCapacityIncludesUnconfirmedMemory = false
-        startupLiveRampState = nil
-        sessionMode = .constrained
-        telemetryStartupMilestones.recordEnteredConstrainedMode(
-            liveCapacity: liveCapacity,
-            at: elapsedSinceSession(now)
-        )
-        recordTelemetry(
-            "wifi live burst fallback entered constrained mode liveCapacity=\(liveCapacity)"
-        )
-    }
-
-    private var wifiLiveBurstModeLabel: String {
-        guard let wifiLiveBurstState else { return "none" }
-        return switch wifiLiveBurstState.mode {
-        case .inactive: "inactive"
-        case .headStart: "headStart"
-        case .active: "active"
-        case .batteryGrace: "batteryGrace"
-        case .completed: "completed"
-        case .closed(let reason): "closed:\(reason.rawValue)"
-        }
-    }
-
     private func updateStartupLiveRamp(
         from planningSnapshots: [FeedPlanningSnapshot],
         at now: Date
     ) {
-        guard sessionMode == .optimistic, var ramp = startupLiveRampState else { return }
+        guard connectionModeResolution.mode == .restricted,
+              sessionMode == .optimistic,
+              var ramp = startupLiveRampState else { return }
 
         let previousMode = ramp.mode
         let previousIDs = ramp.selectedIDs
@@ -2047,18 +2171,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 )
             }
             let startedAtElapsed = elapsedSinceSession(startedAt)
-            let burstOwnsLiveSelection = wifiLiveBurstState.map { state in
-                switch state.mode {
-                case .headStart, .active, .batteryGrace, .completed: true
-                case .inactive, .closed: false
-                }
-            } ?? false
+            let homeNetworkOwnsLiveSelection = connectionModeResolution.mode == .homeNetwork
             let restrictedPhase = restrictedStartupPhase(
                 from: planningSnapshots(at: startedAt, focusedFeedID: focusedFeedID),
                 at: startedAt
             )
-            if sessionMode == .optimistic,
-               !burstOwnsLiveSelection,
+            if connectionModeResolution.mode == .restricted,
+               sessionMode == .optimistic,
                restrictedPhase == nil || restrictedPhase?.isOrdinaryLiveGateOpen == true {
                 var ramp = startupLiveRampState ?? StartupLiveRampState(
                     initialSelectedIDs: Set(currentRecoveryPlan.decisionsByID.compactMap { id, decision in
@@ -2081,7 +2200,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             }
             if var state = feedScheduleStates[feedID], state.startupState.resolution != .trusted {
                 applyStartupEvent(
-                    burstOwnsLiveSelection ? .plainLiveStarted : .liveStarted,
+                    homeNetworkOwnsLiveSelection ? .plainLiveStarted : .liveStarted,
                     feedID: feedID,
                     state: &state
                 )
@@ -2090,7 +2209,8 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             telemetryStartupMilestones.recordLiveStarted(
                 feedID: feedID,
                 callbackLatency: callbackLatency,
-                resolvesTrustedImage: !preferences.isBatteryWakeCamera(id: feedID) || burstOwnsLiveSelection,
+                resolvesTrustedImage: !preferences.isBatteryWakeCamera(id: feedID)
+                    || homeNetworkOwnsLiveSelection,
                 at: startedAtElapsed
             )
             recordTelemetry(
@@ -2129,23 +2249,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 )
                 startupLiveRampState = ramp
             }
-            let burstWasOpen = wifiLiveBurstState.map { state in
-                switch state.mode {
-                case .headStart, .active, .batteryGrace: true
-                case .inactive, .completed, .closed: false
-                }
-            } ?? false
-            if burstWasOpen, var burst = wifiLiveBurstState {
-                let streamingIDs = Set(wallFeeds.filter(\.isStreaming).map(\.id))
-                if case .hardCapacity = disposition {
-                    burst.recordCapacityRejection(streamingIDs: streamingIDs)
-                } else if case .softContention = disposition {
-                    burst.recordCapacityRejection(streamingIDs: streamingIDs)
-                } else if disposition != .requestedStop {
-                    burst.recordFailure(streamingIDs: streamingIDs)
-                }
-                wifiLiveBurstState = burst
-            }
             recordTelemetry(
                 "live stopped \(feedID) disposition=\(liveFailureDispositionLabel(disposition)) callbackLatency=\(optionalSeconds(callbackLatency)) error=\(transportErrorLabel(disposition.error))",
                 at: stoppedAt
@@ -2156,6 +2259,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 liveAdmissionController.cancelCapacityProbe(feedID: feedID)
                 break
             case .softContention:
+                if connectionModeResolution.mode == .homeNetwork {
+                    liveAdmissionController.recordRetryableFailure(feedID: feedID, at: stoppedAt)
+                    recordTelemetry(
+                        "home network live retry queued \(feedID) disposition=softContention retryIn=\(optionalSeconds(liveAdmissionController.retryDelay(feedID: feedID, at: stoppedAt)))",
+                        at: stoppedAt
+                    )
+                    break
+                }
                 let survivingStreamCount = wallFeeds.filter(\.isStreaming).count
                 let outcome = liveAdmissionController.recordSoftContention(
                     feedID: feedID,
@@ -2183,6 +2294,14 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 )
                 enterSerializedModePreservingCapacity(reason: "softContention", at: stoppedAt)
             case .hardCapacity:
+                if connectionModeResolution.mode == .homeNetwork {
+                    liveAdmissionController.recordRetryableFailure(feedID: feedID, at: stoppedAt)
+                    recordTelemetry(
+                        "home network live retry queued \(feedID) disposition=hardCapacity retryIn=\(optionalSeconds(liveAdmissionController.retryDelay(feedID: feedID, at: stoppedAt)))",
+                        at: stoppedAt
+                    )
+                    break
+                }
                 liveAdmissionController.cancelCapacityProbe(feedID: feedID)
                 handleConstrainedSignal(from: feedID)
                 return
@@ -2192,18 +2311,12 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                     "live infrastructure backoff retryIn=\(optionalSeconds(liveAdmissionController.infrastructureRetryDelay(at: stoppedAt)))",
                     at: stoppedAt
                 )
-                if burstWasOpen {
-                    enterSerializedModePreservingCapacity(reason: "infrastructureUnavailable", at: stoppedAt)
-                }
             case .startupTimedOut, .retryableTransport, .cameraFailure, .ended:
                 liveAdmissionController.recordRetryableFailure(feedID: feedID, at: stoppedAt)
                 recordTelemetry(
                     "live retry queued \(feedID) disposition=\(liveFailureDispositionLabel(disposition)) retryIn=\(optionalSeconds(liveAdmissionController.retryDelay(feedID: feedID, at: stoppedAt)))",
                     at: stoppedAt
                 )
-                if burstWasOpen {
-                    enterSerializedModePreservingCapacity(reason: "transportFailure", at: stoppedAt)
-                }
             }
         }
 
@@ -2211,6 +2324,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     }
 
     private func enterSerializedModePreservingCapacity(reason: String, at now: Date) {
+        guard connectionModeResolution.mode == .restricted else { return }
         startupLiveRampState = nil
         if sessionMode != .constrained {
             sessionMode = .constrained
@@ -2251,7 +2365,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let trustedCount = nonBatterySnapshots.filter { $0.hasTrustedImage(at: now) }.count
         return StartupSnapshotConcurrencyPolicy.effectiveLimit(
             isFirstFramePhaseActive: startupCoverageActive,
-            usesRestrictedSnapshotOnlyStrategy: sessionNetworkClass != .wifi,
+            usesRestrictedSnapshotOnlyStrategy: connectionModeResolution.mode == .restricted,
             nonBatteryTrustedCount: trustedCount,
             nonBatteryCount: nonBatterySnapshots.count
         )
@@ -2403,8 +2517,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func serviceHomeSecurity() {
         let canLoad = HomeSecurityReadPolicy.shouldLoad(
             hasVisibleCameras: !wallFeeds.isEmpty,
-            allVisibleCamerasTrusted: allVisibleFeedsTrusted(at: Date()),
-            allVisibleCamerasLiveInWiFiBurst: wifiLiveBurstState?.mode == .completed
+            allVisibleCamerasTrusted: allVisibleFeedsTrusted(at: Date())
         )
         guard canLoad else { return }
 
@@ -2646,7 +2759,6 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
                 self.liveCapacityIncludesUnconfirmedMemory = false
                 self.startupCoverageActive = true
                 self.startupLiveRampState = nil
-                self.wifiLiveBurstState = nil
             }
 
             self.objectWillChange.send()
@@ -2666,6 +2778,26 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
     nonisolated func accessoryDidUpdateServices(_ accessory: HMAccessory) {
         Task { @MainActor [weak self] in
             self?.rebuildHomesAndFeeds()
+        }
+    }
+}
+
+extension HomeKitCameraStore: CLLocationManagerDelegate {
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            switch manager.authorizationStatus {
+            case .authorizedAlways, .authorizedWhenInUse:
+                self.refreshCurrentWiFiSSID()
+            case .denied, .restricted:
+                self.currentWiFiSSID = nil
+                self.updateConnectionMode(at: Date(), refreshPresentation: true)
+            case .notDetermined:
+                break
+            @unknown default:
+                self.currentWiFiSSID = nil
+                self.updateConnectionMode(at: Date(), refreshPresentation: true)
+            }
         }
     }
 }

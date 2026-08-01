@@ -45,6 +45,30 @@ struct SettingsView: View {
                     }
                 }
 
+                Section("Home Network") {
+                    Text(
+                        "Set your home Wi-Fi network so Observe can start all selected cameras live immediately when you’re at home."
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                    TextField("Network Name", text: homeNetworkSSIDBinding)
+
+                    if let currentWiFiSSID = store.currentWiFiSSID {
+                        HStack {
+                            Text(currentWiFiSSID)
+                            Spacer()
+                            Button {
+                                store.setHomeNetworkSSID(currentWiFiSSID)
+                            } label: {
+                                Image(systemName: "plus")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Use Current Wi-Fi Network")
+                        }
+                    }
+                }
+
                 Section("Camera Names") {
                     Picker("Show Camera Names", selection: cameraNameVisibilityBinding) {
                         ForEach(CameraNameVisibility.allCases) { visibility in
@@ -125,6 +149,13 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
 
                     Toggle("Success Indicator", isOn: successIndicatorEnabledBinding)
+
+                    if preferences.isSuccessIndicatorEnabled {
+                        Toggle(
+                            "Only Off Home Network",
+                            isOn: successIndicatorOnlyOffHomeNetworkBinding
+                        )
+                    }
                 }
 
                 if !store.priorityOrderedFeeds.isEmpty {
@@ -229,6 +260,9 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Color(UIColor.systemGroupedBackground))
+            .onAppear {
+                store.requestHomeNetworkAccess()
+            }
             .navigationTitle("Observe")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -287,6 +321,13 @@ struct SettingsView: View {
         )
     }
 
+    private var homeNetworkSSIDBinding: Binding<String> {
+        Binding(
+            get: { preferences.homeNetworkSSID },
+            set: { store.setHomeNetworkSSID($0) }
+        )
+    }
+
     private var lockStatusEnabledBinding: Binding<Bool> {
         Binding(
             get: { preferences.isLockStatusEnabled },
@@ -305,6 +346,13 @@ struct SettingsView: View {
         Binding(
             get: { preferences.isSuccessIndicatorEnabled },
             set: { preferences.setSuccessIndicatorEnabled($0) }
+        )
+    }
+
+    private var successIndicatorOnlyOffHomeNetworkBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.isSuccessIndicatorOnlyOffHomeNetwork },
+            set: { preferences.setSuccessIndicatorOnlyOffHomeNetwork($0) }
         )
     }
 

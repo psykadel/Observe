@@ -34,7 +34,7 @@ current. Battery cameras do not provide ordinary HomeKit snapshots. If a
 battery camera is already live, Observe keeps it live without running a separate
 live capture.
 
-During the initial Wi-Fi attempt, live video is enough to show the battery camera
+On the configured Home Network, live video is enough to show a battery camera
 right away. It does not count as a saved battery still for later use.
 
 Observe never presents an old picture as if it were current merely because a new
@@ -49,16 +49,22 @@ If a Home Security indicator is enabled, it stays gray until every visible
 camera has a current picture. Observe then reads the selected locks or
 temperature sensors without controlling or changing anything in the home.
 
-On Wi-Fi, Observe makes one quick attempt to start every camera live. It also
-begins taking snapshots shortly afterward so the view still fills in when Wi-Fi
-is not actually connected to the home network.
+The Home Network setting starts blank. When the user enters a network name,
+Observe compares it exactly with the name of the current Wi-Fi network. If the
+names match, Observe starts every visible camera live immediately. It does not
+apply Restricted Mode connection limits, Live Order, staged startup, or learned
+capacity. A camera that fails keeps retrying without changing the connection
+mode for the other cameras.
 
-If that all-live attempt succeeds, keep it. If a camera fails, the attempt takes
-too long, the network changes, or the visible cameras change, stop using this
-fast approach for the rest of that camera view. Late responses must not turn it
-back on.
+Observe asks for location access only when Settings opens because Apple requires
+that permission to read the current Wi-Fi name. If the setting is blank, the
+device is not on Wi-Fi, the network name is unavailable, or the names differ,
+Observe uses Restricted Mode. When the network or setting changes, Observe makes
+the decision again. On a Mac, Observe can still identify the associated Wi-Fi
+network when another interface is the primary network route. It never includes
+either network name in copied telemetry.
 
-On cellular or any other connection, Observe starts more cautiously:
+In Restricted Mode, Observe starts more cautiously:
 
 - Take up to three ordinary-camera snapshots at a time.
 - Give those ordinary-camera snapshots a short head start before waking one
@@ -94,18 +100,17 @@ snapshots for cameras that already have one.
 
 Observe still uses HomeKit's already-known availability values while building
 the initial camera wall and subscribes to changes so a camera that turns on can
-appear promptly. On Wi-Fi, availability notifications, availability reads, and
-battery reads keep their existing immediate behavior. Deferred reads and the
-one-at-a-time background rule apply only to cellular and other non-Wi-Fi
-startup.
+appear promptly. On the Home Network, availability notifications, availability
+reads, and battery reads happen immediately. Deferred reads and the one-at-a-time
+background rule apply only in Restricted Mode.
 
 ## Restricted Mode
 
-Restricted Mode means HomeKit will not allow every visible camera to be live at
-the same time. During startup, Observe uses ordinary-camera snapshots plus, when
-needed, one battery-camera live capture to get every camera up to date. Ordinary
-live connections are presentation work and begin only after every visible
-camera has a current picture.
+Restricted Mode is used whenever Observe cannot confirm an exact match with the
+configured Home Network. During startup, Observe uses ordinary-camera snapshots
+plus, when needed, one battery-camera live capture to get every camera up to
+date. Ordinary live connections are presentation work and begin only after every
+visible camera has a current picture.
 
 ### Ordinary Cameras
 
@@ -134,7 +139,7 @@ a live connection to wake and capture it.
 
 ### Who Gets Live Video First
 
-During cellular or other non-Wi-Fi startup, the only live connection allowed
+During Restricted Mode startup, the only live connection allowed
 before every camera has a current picture is one battery-camera capture. An
 ordinary camera never bypasses this rule because it is full screen, stalled, or
 recovering.
@@ -193,6 +198,11 @@ green. Disabled Home Security indicators do not count. Turning the indicator
 on while the wall is already healthy can show it for the current open. It does
 not repeat until Observe is left and opened again, even if a status changes and
 recovers.
+
+When **Only Off Home Network** is also on, the glow appears only after Observe
+can confirm that the device is away from the configured Home Network. It does
+not appear while that network matches, while no Home Network is configured, or
+while the current Wi-Fi name is unavailable.
 
 During Restricted Mode startup, when no camera has a current picture yet,
 Observe shows a centered loading panel. It confirms **Home Found**, reports the

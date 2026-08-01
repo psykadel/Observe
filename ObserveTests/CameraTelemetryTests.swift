@@ -136,8 +136,8 @@ final class CameraTelemetryTests: ObserveTestCase {
             ordinaryLiveGateState: "waitingForAllTrusted",
             sessionNetworkClass: "cellular",
             currentNetworkClass: "cellular",
-            wifiLiveBurstMode: "closed:capacity",
-            wifiLiveBurstSurvivorIDs: ["front"],
+            connectionMode: "restricted",
+            connectionModeReason: "notOnWiFi",
             startupLiveRampMode: "fast",
             startupLiveRampSelectedIDs: ["front", "side"],
             startupLiveRampPendingIDs: ["side"],
@@ -281,8 +281,9 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("activeMetadataOperation=front:availabilityRead"))
         XCTAssertTrue(text.contains("sessionNetworkClass=cellular"))
         XCTAssertTrue(text.contains("currentNetworkClass=cellular"))
-        XCTAssertTrue(text.contains("wifiLiveBurstMode=closed:capacity"))
-        XCTAssertTrue(text.contains("wifiLiveBurstSurvivorIDs=front"))
+        XCTAssertTrue(text.contains("connectionMode=restricted"))
+        XCTAssertTrue(text.contains("connectionModeReason=notOnWiFi"))
+        XCTAssertFalse(text.contains("Backmeyer Home"))
         XCTAssertTrue(text.contains("startupLiveRampSelectedIDs=front,side"))
         XCTAssertTrue(text.contains("startupLiveRampPendingIDs=side"))
         XCTAssertTrue(text.contains("startupLiveRampMaxPendingCount=2"))
@@ -328,7 +329,7 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("liveStopRequestedAge=0.5s"))
         XCTAssertTrue(text.contains("liveStopReason=startupTimeout"))
         XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
-        XCTAssertEqual(stableFingerprint(text), 7_665_718_299_484_667_874)
+        XCTAssertEqual(stableFingerprint(text), 8_461_495_959_973_679_894)
     }
 
     private func stableFingerprint(_ text: String) -> UInt64 {

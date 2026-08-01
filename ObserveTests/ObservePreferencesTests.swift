@@ -6,6 +6,28 @@ import XCTest
 
 final class ObservePreferencesTests: ObserveTestCase {
     @MainActor
+    func testHomeNetworkSSIDDefaultsBlankAndPersistsExactly() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertEqual(preferences.homeNetworkSSID, "")
+
+        preferences.setHomeNetworkSSID("  Backmeyer Home  ")
+
+        XCTAssertEqual(preferences.homeNetworkSSID, "  Backmeyer Home  ")
+        XCTAssertEqual(
+            ObservePreferences(userDefaults: defaults).homeNetworkSSID,
+            "  Backmeyer Home  "
+        )
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @MainActor
     func testLiveOrderDefaultsToCameraOrderThenPersistsIndependently() {
         let suiteName = "ObserveTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
@@ -51,36 +73,75 @@ final class ObservePreferencesTests: ObserveTestCase {
         defaults.removePersistentDomain(forName: suiteName)
     }
 
+    @MainActor
+    func testCameraOrderKeepsTemporarilyUnavailableCamerasInSavedOrder() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        preferences.remotePriorityIDs = ["front", "garage", "side"]
+
+        XCTAssertEqual(
+            preferences.normalizedPriority(availableIDs: ["side", "front"]),
+            ["front", "side"]
+        )
+        XCTAssertEqual(preferences.remotePriorityIDs, ["front", "garage", "side"])
+        XCTAssertEqual(
+            preferences.normalizedPriority(availableIDs: ["side", "front", "garage"]),
+            ["front", "garage", "side"]
+        )
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @MainActor
+    func testMovingCameraOrderPreservesUnavailableCameraPosition() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        preferences.remotePriorityIDs = ["front", "garage", "side"]
+
+        preferences.movePriority(
+            from: IndexSet(integer: 1),
+            to: 0,
+            availableIDs: ["front", "side"]
+        )
+
+        XCTAssertEqual(preferences.remotePriorityIDs, ["side", "garage", "front"])
+        XCTAssertEqual(
+            preferences.normalizedPriority(availableIDs: ["garage", "side", "front"]),
+            ["side", "garage", "front"]
+        )
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
     func testHomeSecurityReadWaitsForVisibleCamerasButNotAnEmptyWall() {
         XCTAssertFalse(
             HomeSecurityReadPolicy.shouldLoad(
                 hasVisibleCameras: true,
-                allVisibleCamerasTrusted: false,
-                allVisibleCamerasLiveInWiFiBurst: false
+                allVisibleCamerasTrusted: false
             )
         )
         XCTAssertTrue(
             HomeSecurityReadPolicy.shouldLoad(
                 hasVisibleCameras: true,
-                allVisibleCamerasTrusted: true,
-                allVisibleCamerasLiveInWiFiBurst: false
+                allVisibleCamerasTrusted: true
             )
         )
         XCTAssertTrue(
             HomeSecurityReadPolicy.shouldLoad(
                 hasVisibleCameras: false,
-                allVisibleCamerasTrusted: false,
-                allVisibleCamerasLiveInWiFiBurst: false
-            )
-        )
-    }
-
-    func testHomeSecurityReadStartsAfterEveryCameraIsLiveInWiFiBurst() {
-        XCTAssertTrue(
-            HomeSecurityReadPolicy.shouldLoad(
-                hasVisibleCameras: true,
-                allVisibleCamerasTrusted: false,
-                allVisibleCamerasLiveInWiFiBurst: true
+                allVisibleCamerasTrusted: false
             )
         )
     }
@@ -324,6 +385,81 @@ final class ObservePreferencesTests: ObserveTestCase {
         XCTAssertFalse(openState.shouldAnimate(isEnabled: true, isHealthy: true))
     }
 
+    func testSuccessIndicatorOnlyOffHomeNetworkRequiresConfirmedAwayConnection() {
+        XCTAssertFalse(
+            SuccessIndicatorNetworkPolicy.allowsAnimation(
+                onlyOffHomeNetwork: true,
+                connectionResolution: CameraConnectionModeResolution(
+                    mode: .homeNetwork,
+                    reason: .homeNetworkMatched
+                )
+            )
+        )
+        XCTAssertTrue(
+            SuccessIndicatorNetworkPolicy.allowsAnimation(
+                onlyOffHomeNetwork: true,
+                connectionResolution: CameraConnectionModeResolution(
+                    mode: .restricted,
+                    reason: .homeNetworkMismatch
+                )
+            )
+        )
+        XCTAssertTrue(
+            SuccessIndicatorNetworkPolicy.allowsAnimation(
+                onlyOffHomeNetwork: true,
+                connectionResolution: CameraConnectionModeResolution(
+                    mode: .restricted,
+                    reason: .notOnWiFi
+                )
+            )
+        )
+        XCTAssertFalse(
+            SuccessIndicatorNetworkPolicy.allowsAnimation(
+                onlyOffHomeNetwork: true,
+                connectionResolution: CameraConnectionModeResolution(
+                    mode: .restricted,
+                    reason: .ssidUnavailable
+                )
+            )
+        )
+        XCTAssertFalse(
+            SuccessIndicatorNetworkPolicy.allowsAnimation(
+                onlyOffHomeNetwork: true,
+                connectionResolution: CameraConnectionModeResolution(
+                    mode: .restricted,
+                    reason: .homeNetworkNotConfigured
+                )
+            )
+        )
+    }
+
+    func testSuccessIndicatorNetworkGateDoesNotConsumeCurrentOpen() {
+        var openState = SuccessIndicatorOpenState()
+
+        openState.beginOpen()
+        XCTAssertFalse(
+            openState.shouldAnimate(
+                isEnabled: true,
+                isHealthy: true,
+                isAllowedByNetwork: false
+            )
+        )
+        XCTAssertTrue(
+            openState.shouldAnimate(
+                isEnabled: true,
+                isHealthy: true,
+                isAllowedByNetwork: true
+            )
+        )
+        XCTAssertFalse(
+            openState.shouldAnimate(
+                isEnabled: true,
+                isHealthy: true,
+                isAllowedByNetwork: true
+            )
+        )
+    }
+
     func testSuccessIndicatorAnimationTimelineFlowsSparklesAndFades() {
         let start = SuccessIndicatorAnimationTimeline.presentation(at: 0, reduceMotion: false)
         XCTAssertEqual(start.drawProgress, 0, accuracy: 0.001)
@@ -404,6 +540,26 @@ final class ObservePreferencesTests: ObserveTestCase {
         reloaded.setSuccessIndicatorEnabled(false)
         XCTAssertFalse(ObservePreferences(userDefaults: defaults).isSuccessIndicatorEnabled)
 
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @MainActor
+    func testSuccessIndicatorOnlyOffHomeNetworkDefaultsOffAndPersists() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertFalse(preferences.isSuccessIndicatorOnlyOffHomeNetwork)
+
+        preferences.setSuccessIndicatorOnlyOffHomeNetwork(true)
+
+        XCTAssertTrue(
+            ObservePreferences(userDefaults: defaults).isSuccessIndicatorOnlyOffHomeNetwork
+        )
         defaults.removePersistentDomain(forName: suiteName)
     }
 

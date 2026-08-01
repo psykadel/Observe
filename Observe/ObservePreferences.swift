@@ -4,6 +4,7 @@ import Foundation
 final class ObservePreferences: ObservableObject {
     private enum Keys {
         static let selectedHomeID = "observe.selectedHomeID"
+        static let homeNetworkSSID = "observe.homeNetworkSSID"
         static let density = "observe.wallDensity"
         static let cameraNameVisibility = "observe.cameraNameVisibility"
         static let remotePriority = "observe.remotePriority"
@@ -20,6 +21,7 @@ final class ObservePreferences: ObservableObject {
         static let lockStatusEnabled = "observe.lockStatusEnabled"
         static let homeTemperatureEnabled = "observe.homeTemperatureEnabled"
         static let successIndicatorEnabled = "observe.successIndicatorEnabled"
+        static let successIndicatorOnlyOffHomeNetwork = "observe.successIndicatorOnlyOffHomeNetwork"
         static let selectedLockIDs = "observe.selectedLockIDs"
         static let selectedTemperatureSensorIDs = "observe.selectedTemperatureSensorIDs"
         static let homeTemperatureLowFahrenheit = "observe.homeTemperatureLowFahrenheit"
@@ -29,6 +31,8 @@ final class ObservePreferences: ObservableObject {
     @Published var selectedHomeID: String? {
         didSet { userDefaults.set(selectedHomeID, forKey: Keys.selectedHomeID) }
     }
+
+    @Published private(set) var homeNetworkSSID: String
 
     @Published var wallDensity: WallDensity {
         didSet { userDefaults.set(wallDensity.rawValue, forKey: Keys.density) }
@@ -57,6 +61,7 @@ final class ObservePreferences: ObservableObject {
     @Published private(set) var isLockStatusEnabled: Bool
     @Published private(set) var isHomeTemperatureEnabled: Bool
     @Published private(set) var isSuccessIndicatorEnabled: Bool
+    @Published private(set) var isSuccessIndicatorOnlyOffHomeNetwork: Bool
     @Published private(set) var selectedLockIDs: [String]
     @Published private(set) var selectedTemperatureSensorIDs: [String]
     @Published private(set) var homeTemperatureLowFahrenheit: Int
@@ -87,6 +92,7 @@ final class ObservePreferences: ObservableObject {
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         self.selectedHomeID = userDefaults.string(forKey: Keys.selectedHomeID)
+        self.homeNetworkSSID = userDefaults.string(forKey: Keys.homeNetworkSSID) ?? ""
         let storedDensity = userDefaults.string(forKey: Keys.density) ?? ""
         self.wallDensity = switch storedDensity {
         case "focus":
@@ -144,6 +150,9 @@ final class ObservePreferences: ObservableObject {
         self.isSuccessIndicatorEnabled = userDefaults.object(
             forKey: Keys.successIndicatorEnabled
         ) as? Bool ?? false
+        self.isSuccessIndicatorOnlyOffHomeNetwork = userDefaults.object(
+            forKey: Keys.successIndicatorOnlyOffHomeNetwork
+        ) as? Bool ?? false
         self.selectedLockIDs = userDefaults.stringArray(forKey: Keys.selectedLockIDs) ?? []
         self.selectedTemperatureSensorIDs = userDefaults.stringArray(
             forKey: Keys.selectedTemperatureSensorIDs
@@ -155,50 +164,70 @@ final class ObservePreferences: ObservableObject {
     }
 
     func normalizedPriority(availableIDs: [String]) -> [String] {
-        let normalized = normalizedOrder(remotePriorityIDs, availableIDs: availableIDs)
+        let savedOrder = savedOrder(remotePriorityIDs, adding: availableIDs)
 
-        if normalized != remotePriorityIDs {
-            remotePriorityIDs = normalized
+        if savedOrder != remotePriorityIDs {
+            remotePriorityIDs = savedOrder
         }
 
-        return normalized
+        return availableOrder(savedOrder, availableIDs: availableIDs)
     }
 
     func movePriority(from source: IndexSet, to destination: Int, availableIDs: [String]) {
         var ids = normalizedPriority(availableIDs: availableIDs)
         ids.move(fromOffsets: source, toOffset: destination)
-        remotePriorityIDs = ids
+        remotePriorityIDs = mergingAvailableOrder(ids, into: remotePriorityIDs)
     }
 
     func normalizedLivePriority(availableIDs: [String]) -> [String] {
         let storedIDs = livePriorityIDs.isEmpty ? availableIDs : livePriorityIDs
-        let normalized = normalizedOrder(storedIDs, availableIDs: availableIDs)
+        let savedOrder = savedOrder(storedIDs, adding: availableIDs)
 
-        if normalized != livePriorityIDs {
-            livePriorityIDs = normalized
+        if savedOrder != livePriorityIDs {
+            livePriorityIDs = savedOrder
         }
 
-        return normalized
+        return availableOrder(savedOrder, availableIDs: availableIDs)
     }
 
     func moveLivePriority(from source: IndexSet, to destination: Int, availableIDs: [String]) {
         var ids = normalizedLivePriority(availableIDs: availableIDs)
         ids.move(fromOffsets: source, toOffset: destination)
-        livePriorityIDs = ids
+        livePriorityIDs = mergingAvailableOrder(ids, into: livePriorityIDs)
     }
 
-    private func normalizedOrder(_ storedIDs: [String], availableIDs: [String]) -> [String] {
-        var normalized: [String] = []
+    private func savedOrder(_ storedIDs: [String], adding availableIDs: [String]) -> [String] {
+        var saved: [String] = []
+        var seen: Set<String> = []
 
-        for id in storedIDs where availableIDs.contains(id) && !normalized.contains(id) {
-            normalized.append(id)
+        for id in storedIDs where seen.insert(id).inserted {
+            saved.append(id)
         }
 
-        for id in availableIDs where !normalized.contains(id) {
-            normalized.append(id)
+        for id in availableIDs where seen.insert(id).inserted {
+            saved.append(id)
         }
 
-        return normalized
+        return saved
+    }
+
+    private func availableOrder(_ savedOrder: [String], availableIDs: [String]) -> [String] {
+        let availableIDs = Set(availableIDs)
+        return savedOrder.filter(availableIDs.contains)
+    }
+
+    private func mergingAvailableOrder(
+        _ reorderedAvailableIDs: [String],
+        into savedOrder: [String]
+    ) -> [String] {
+        let reorderedSet = Set(reorderedAvailableIDs)
+        var reorderedIndex = 0
+
+        return savedOrder.map { id in
+            guard reorderedSet.contains(id) else { return id }
+            defer { reorderedIndex += 1 }
+            return reorderedAvailableIDs[reorderedIndex]
+        }
     }
 
     func adjustDensity(with scale: CGFloat) {
@@ -231,6 +260,13 @@ final class ObservePreferences: ObservableObject {
 
         staleVisualHighlightSeconds = sanitized
         userDefaults.set(sanitized, forKey: Keys.staleVisualHighlightSeconds)
+    }
+
+    func setHomeNetworkSSID(_ ssid: String) {
+        guard homeNetworkSSID != ssid else { return }
+
+        homeNetworkSSID = ssid
+        userDefaults.set(ssid, forKey: Keys.homeNetworkSSID)
     }
 
     func rememberedRestrictedLiveCapacity(homeID: String?, visibleCameraIDs: [String]) -> Int? {
@@ -371,6 +407,12 @@ final class ObservePreferences: ObservableObject {
         guard isSuccessIndicatorEnabled != enabled else { return }
         isSuccessIndicatorEnabled = enabled
         userDefaults.set(enabled, forKey: Keys.successIndicatorEnabled)
+    }
+
+    func setSuccessIndicatorOnlyOffHomeNetwork(_ enabled: Bool) {
+        guard isSuccessIndicatorOnlyOffHomeNetwork != enabled else { return }
+        isSuccessIndicatorOnlyOffHomeNetwork = enabled
+        userDefaults.set(enabled, forKey: Keys.successIndicatorOnlyOffHomeNetwork)
     }
 
     func isLockSelected(id: String) -> Bool {

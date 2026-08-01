@@ -105,10 +105,9 @@ enum TemperatureIndicatorState: Equatable {
 enum HomeSecurityReadPolicy {
     static func shouldLoad(
         hasVisibleCameras: Bool,
-        allVisibleCamerasTrusted: Bool,
-        allVisibleCamerasLiveInWiFiBurst: Bool
+        allVisibleCamerasTrusted: Bool
     ) -> Bool {
-        !hasVisibleCameras || allVisibleCamerasTrusted || allVisibleCamerasLiveInWiFiBurst
+        !hasVisibleCameras || allVisibleCamerasTrusted
     }
 }
 
@@ -184,6 +183,22 @@ enum SuccessIndicatorPolicy {
     }
 }
 
+enum SuccessIndicatorNetworkPolicy {
+    static func allowsAnimation(
+        onlyOffHomeNetwork: Bool,
+        connectionResolution: CameraConnectionModeResolution
+    ) -> Bool {
+        guard onlyOffHomeNetwork else { return true }
+
+        return switch connectionResolution.reason {
+        case .notOnWiFi, .homeNetworkMismatch:
+            true
+        case .homeNetworkMatched, .homeNetworkNotConfigured, .ssidUnavailable:
+            false
+        }
+    }
+}
+
 struct SuccessIndicatorOpenState {
     private(set) var hasAnimatedThisOpen = false
 
@@ -191,8 +206,12 @@ struct SuccessIndicatorOpenState {
         hasAnimatedThisOpen = false
     }
 
-    mutating func shouldAnimate(isEnabled: Bool, isHealthy: Bool) -> Bool {
-        guard isEnabled, isHealthy, !hasAnimatedThisOpen else { return false }
+    mutating func shouldAnimate(
+        isEnabled: Bool,
+        isHealthy: Bool,
+        isAllowedByNetwork: Bool = true
+    ) -> Bool {
+        guard isEnabled, isHealthy, isAllowedByNetwork, !hasAnimatedThisOpen else { return false }
         hasAnimatedThisOpen = true
         return true
     }

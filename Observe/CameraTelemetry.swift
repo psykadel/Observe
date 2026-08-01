@@ -424,8 +424,8 @@ struct CameraTelemetryReport: Equatable {
     let ordinaryLiveGateState: String
     let sessionNetworkClass: String
     let currentNetworkClass: String
-    let wifiLiveBurstMode: String
-    let wifiLiveBurstSurvivorIDs: [String]
+    let connectionMode: String
+    let connectionModeReason: String
     let startupLiveRampMode: String
     let startupLiveRampSelectedIDs: [String]
     let startupLiveRampPendingIDs: [String]
@@ -485,8 +485,8 @@ struct CameraTelemetryReport: Equatable {
         lines.append("ordinaryLiveGateState=\(ordinaryLiveGateState)")
         lines.append("sessionNetworkClass=\(sessionNetworkClass)")
         lines.append("currentNetworkClass=\(currentNetworkClass)")
-        lines.append("wifiLiveBurstMode=\(wifiLiveBurstMode)")
-        lines.append("wifiLiveBurstSurvivorIDs=\(wifiLiveBurstSurvivorIDs.isEmpty ? "none" : wifiLiveBurstSurvivorIDs.joined(separator: ","))")
+        lines.append("connectionMode=\(connectionMode)")
+        lines.append("connectionModeReason=\(connectionModeReason)")
         lines.append("startupLiveRampMode=\(startupLiveRampMode)")
         lines.append("startupLiveRampSelectedIDs=\(startupLiveRampSelectedIDs.isEmpty ? "none" : startupLiveRampSelectedIDs.joined(separator: ","))")
         lines.append("startupLiveRampPendingIDs=\(startupLiveRampPendingIDs.isEmpty ? "none" : startupLiveRampPendingIDs.joined(separator: ","))")

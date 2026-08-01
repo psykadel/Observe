@@ -101,6 +101,12 @@ struct CameraWallView: View {
                 successIndicatorAnimationID = nil
             }
         }
+        .onChange(of: preferences.isSuccessIndicatorOnlyOffHomeNetwork) { _, _ in
+            evaluateSuccessIndicator(isHealthy: store.isSuccessIndicatorHealthy)
+        }
+        .onChange(of: store.connectionModeResolution) { _, _ in
+            evaluateSuccessIndicator(isHealthy: store.isSuccessIndicatorHealthy)
+        }
         .onChange(of: showsSettings) { _, isPresented in
             guard !isPresented else { return }
             evaluateSuccessIndicator(isHealthy: store.isSuccessIndicatorHealthy)
@@ -166,7 +172,11 @@ struct CameraWallView: View {
         guard !showsSettings, selectedFeed == nil else { return }
         guard successIndicatorOpenState.shouldAnimate(
             isEnabled: preferences.isSuccessIndicatorEnabled,
-            isHealthy: isHealthy
+            isHealthy: isHealthy,
+            isAllowedByNetwork: SuccessIndicatorNetworkPolicy.allowsAnimation(
+                onlyOffHomeNetwork: preferences.isSuccessIndicatorOnlyOffHomeNetwork,
+                connectionResolution: store.connectionModeResolution
+            )
         ) else { return }
 
         successIndicatorAnimationID = UUID()

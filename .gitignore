@@ -1,5 +1,6 @@
 DerivedData/
 build/
+docs/
 .build/
 *.xcuserstate
 *.moved-aside

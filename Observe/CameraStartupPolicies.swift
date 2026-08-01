@@ -30,8 +30,8 @@ enum StartupMetadataWorkMode: String, Equatable {
     case immediateParallel
     case mediaPrioritySerial
 
-    static func resolve(networkClass: CameraNetworkClass) -> StartupMetadataWorkMode {
-        networkClass == .wifi ? .immediateParallel : .mediaPrioritySerial
+    static func resolve(connectionMode: CameraConnectionMode) -> StartupMetadataWorkMode {
+        connectionMode == .homeNetwork ? .immediateParallel : .mediaPrioritySerial
     }
 }
 
@@ -169,15 +169,14 @@ enum TrustedFrameSnapshotAdmissionPolicy {
 enum StartupLivePolicy: Equatable {
     case normal
     case restrictedSnapshotOnly
-    case wifiFallback(allowWiredFallback: Bool)
-    case liveBurst(liveIDs: Set<String>)
+    case homeNetwork(liveIDs: Set<String>)
     case capacityRamp(liveIDs: Set<String>, maxPendingStarts: Int)
 
     var pendingStartLimit: Int {
         switch self {
-        case .normal, .restrictedSnapshotOnly, .wifiFallback:
+        case .normal, .restrictedSnapshotOnly:
             1
-        case .liveBurst:
+        case .homeNetwork:
             Int.max
         case .capacityRamp(_, let maxPendingStarts):
             max(1, maxPendingStarts)
@@ -422,11 +421,9 @@ enum LivePlanTransitionPolicy {
 enum LivePromotionSnapshotPolicy {
     static func shouldQueue(
         priority: SnapshotPriority,
-        presentationMode: PlannedPresentationMode,
-        wifiBurstOpen: Bool
+        presentationMode: PlannedPresentationMode
     ) -> Bool {
         guard priority != .none else { return false }
-        if wifiBurstOpen { return true }
         return presentationMode != .live || priority == .urgent
     }
 }
@@ -444,122 +441,6 @@ enum CameraNetworkClass: String, Equatable {
     case cellular
     case other
     case unknown
-}
-
-enum WiFiLiveBurstCloseReason: String, Equatable {
-    case capacity
-    case deadline
-    case batteryDeadline
-    case failure
-    case pathInvalidated
-}
-
-enum WiFiLiveBurstMode: Equatable {
-    case inactive
-    case headStart
-    case active
-    case batteryGrace
-    case completed
-    case closed(WiFiLiveBurstCloseReason)
-}
-
-enum WiFiLiveBurstDefaults {
-    static let snapshotHeadStart: TimeInterval = 1
-    static let deadline: TimeInterval = 4
-    static let batteryDeadline: TimeInterval = CameraSchedulingDefaults.batteryWakeLiveStartTimeout
-}
-
-struct WiFiLiveBurstState: Equatable {
-    private(set) var mode: WiFiLiveBurstMode
-    private(set) var survivingLiveIDs: Set<String> = []
-
-    private let visibleFeedIDs: Set<String>
-    private let batteryFeedIDs: Set<String>
-    private let startedAt: Date
-    private let snapshotHeadStart: TimeInterval
-    private let deadline: TimeInterval
-    private let batteryDeadline: TimeInterval
-
-    init(
-        networkClass: CameraNetworkClass,
-        visibleFeedIDs: Set<String>,
-        batteryFeedIDs: Set<String> = [],
-        startedAt: Date,
-        snapshotHeadStart: TimeInterval = WiFiLiveBurstDefaults.snapshotHeadStart,
-        deadline: TimeInterval = WiFiLiveBurstDefaults.deadline,
-        batteryDeadline: TimeInterval = WiFiLiveBurstDefaults.batteryDeadline
-    ) {
-        self.visibleFeedIDs = visibleFeedIDs
-        self.batteryFeedIDs = batteryFeedIDs.intersection(visibleFeedIDs)
-        self.startedAt = startedAt
-        self.snapshotHeadStart = max(0, snapshotHeadStart)
-        self.deadline = max(0, deadline)
-        self.batteryDeadline = max(self.deadline, batteryDeadline)
-        mode = networkClass == .wifi && !visibleFeedIDs.isEmpty ? .headStart : .inactive
-    }
-
-    var liveIDs: Set<String> {
-        switch mode {
-        case .headStart, .active, .batteryGrace, .completed:
-            visibleFeedIDs
-        case .inactive, .closed:
-            []
-        }
-    }
-
-    func allowsSnapshotIssue(at date: Date) -> Bool {
-        guard case .headStart = mode else { return true }
-        return date.timeIntervalSince(startedAt) + 0.000_001 >= snapshotHeadStart
-    }
-
-    mutating func evaluate(streamingIDs: Set<String>, at date: Date) {
-        switch mode {
-        case .inactive, .completed, .closed:
-            return
-        case .headStart, .active, .batteryGrace:
-            break
-        }
-
-        let visibleStreamingIDs = streamingIDs.intersection(visibleFeedIDs)
-        survivingLiveIDs = visibleStreamingIDs
-        let elapsed = date.timeIntervalSince(startedAt)
-        if visibleStreamingIDs == visibleFeedIDs {
-            mode = .completed
-        } else if elapsed >= batteryDeadline {
-            mode = .closed(.batteryDeadline)
-        } else if elapsed >= deadline {
-            let wiredFeedIDs = visibleFeedIDs.subtracting(batteryFeedIDs)
-            mode = visibleStreamingIDs.isSuperset(of: wiredFeedIDs)
-                ? .batteryGrace
-                : .closed(.deadline)
-        } else if elapsed + 0.000_001 >= snapshotHeadStart {
-            mode = .active
-        }
-    }
-
-    mutating func recordCapacityRejection(streamingIDs: Set<String>) {
-        close(reason: .capacity, streamingIDs: streamingIDs)
-    }
-
-    mutating func recordFailure(streamingIDs: Set<String>) {
-        close(reason: .failure, streamingIDs: streamingIDs)
-    }
-
-    mutating func invalidatePath(streamingIDs: Set<String>) {
-        close(reason: .pathInvalidated, streamingIDs: streamingIDs)
-    }
-
-    private mutating func close(
-        reason: WiFiLiveBurstCloseReason,
-        streamingIDs: Set<String>
-    ) {
-        guard mode != .inactive else { return }
-        guard case .closed = mode else {
-            survivingLiveIDs = streamingIDs.intersection(visibleFeedIDs)
-            mode = .closed(reason)
-            return
-        }
-    }
 }
 
 struct StartupLiveRampState: Equatable {
