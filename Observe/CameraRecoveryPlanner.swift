@@ -55,40 +55,17 @@ struct FeedPlanningSnapshot: Equatable {
         }
     }
 
-    func hasActiveBatteryCapture(
-        at now: Date,
-        leaseDuration: TimeInterval,
-        warmup: TimeInterval,
-        liveStartTimeout: TimeInterval
-    ) -> Bool {
+    func hasActiveBatteryCapture() -> Bool {
         guard let batteryWakeLeaseStartedAt else { return false }
         if let lastSnapshotDate, lastSnapshotDate >= batteryWakeLeaseStartedAt {
             return false
         }
-        return !BatteryWakeLeaseTimeoutPolicy.hasTimedOut(
-            isStreaming: isStreaming,
-            liveStartedAt: liveStartedAt,
-            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
-            warmup: warmup,
-            leaseDuration: leaseDuration,
-            liveStartTimeout: liveStartTimeout,
-            now: now
-        )
+        return true
     }
 
-    func needsBatteryCapture(
-        at now: Date,
-        leaseDuration: TimeInterval,
-        warmup: TimeInterval,
-        liveStartTimeout: TimeInterval
-    ) -> Bool {
+    func needsBatteryCapture(at now: Date) -> Bool {
         guard isBatteryWakeCamera else { return false }
-        if hasActiveBatteryCapture(
-            at: now,
-            leaseDuration: leaseDuration,
-            warmup: warmup,
-            liveStartTimeout: liveStartTimeout
-        ) {
+        if hasActiveBatteryCapture() {
             return true
         }
         if batteryWakeLeaseStartedAt != nil {
@@ -121,20 +98,6 @@ struct CameraRecoveryPlan {
 }
 
 struct CameraRecoveryPlanner {
-    let batteryWakeLeaseDuration: TimeInterval
-    let batteryCaptureWarmup: TimeInterval
-    let batteryWakeLiveStartTimeout: TimeInterval
-
-    init(
-        batteryWakeLeaseDuration: TimeInterval = CameraSchedulingDefaults.batteryWakeLeaseDuration,
-        batteryCaptureWarmup: TimeInterval = CameraSchedulingDefaults.batteryCaptureWarmup,
-        batteryWakeLiveStartTimeout: TimeInterval = CameraSchedulingDefaults.batteryWakeLiveStartTimeout
-    ) {
-        self.batteryWakeLeaseDuration = batteryWakeLeaseDuration
-        self.batteryCaptureWarmup = batteryCaptureWarmup
-        self.batteryWakeLiveStartTimeout = batteryWakeLiveStartTimeout
-    }
-
     func makePlan(
         feeds: [FeedPlanningSnapshot],
         liveCapacity: Int,
@@ -246,21 +209,11 @@ struct CameraRecoveryPlanner {
         }
 
         let activeCapture = orderedFeeds.first { feed in
-            batteryNeedingTrustedStillIDs.contains(feed.id) && feed.hasActiveBatteryCapture(
-                at: now,
-                leaseDuration: batteryWakeLeaseDuration,
-                warmup: batteryCaptureWarmup,
-                liveStartTimeout: batteryWakeLiveStartTimeout
-            )
+            batteryNeedingTrustedStillIDs.contains(feed.id) && feed.hasActiveBatteryCapture()
         }
         let nextCapture = activeCapture ?? orderedFeeds.first { feed in
             batteryNeedingTrustedStillIDs.contains(feed.id)
-                && feed.needsBatteryCapture(
-                    at: now,
-                    leaseDuration: batteryWakeLeaseDuration,
-                    warmup: batteryCaptureWarmup,
-                    liveStartTimeout: batteryWakeLiveStartTimeout
-                )
+                && feed.needsBatteryCapture(at: now)
         }
 
         if let nextCapture, !(capacity == 1 && focusedFeed != nil) {

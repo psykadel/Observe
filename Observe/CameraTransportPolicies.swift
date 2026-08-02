@@ -23,20 +23,15 @@ enum SnapshotRequestResult {
 enum CameraLiveTransportEvent: Equatable {
     case startRequested(at: Date, restarted: Bool)
     case started(at: Date, callbackLatency: TimeInterval?)
-    case stopRequested(at: Date, reason: CameraLiveStopReason)
+    case stopRequested(at: Date)
     case stopped(at: Date, disposition: CameraLiveFailureDisposition, callbackLatency: TimeInterval?)
-}
-
-enum CameraLiveStopReason: Equatable {
-    case planned
-    case startupTimeout
 }
 
 enum CameraLiveTransportState: Equatable {
     case idle
     case starting(requestedAt: Date)
     case streaming(startedAt: Date)
-    case stopping(requestedAt: Date, reason: CameraLiveStopReason)
+    case stopping(requestedAt: Date)
 
     var phase: LiveTransportPhase {
         switch self {
@@ -58,13 +53,8 @@ enum CameraLiveTransportState: Equatable {
     }
 
     var stopRequestedAt: Date? {
-        guard case .stopping(let requestedAt, _) = self else { return nil }
+        guard case .stopping(let requestedAt) = self else { return nil }
         return requestedAt
-    }
-
-    var stopReason: CameraLiveStopReason? {
-        guard case .stopping(_, let reason) = self else { return nil }
-        return reason
     }
 
     mutating func requestStart(at date: Date) -> Bool {
@@ -79,20 +69,20 @@ enum CameraLiveTransportState: Equatable {
         return true
     }
 
-    mutating func requestStop(at date: Date, reason: CameraLiveStopReason) -> Bool {
+    mutating func requestStop(at date: Date) -> Bool {
         switch self {
         case .starting, .streaming:
-            self = .stopping(requestedAt: date, reason: reason)
+            self = .stopping(requestedAt: date)
             return true
         case .idle, .stopping:
             return false
         }
     }
 
-    mutating func confirmStopped() -> CameraLiveStopReason? {
-        let reason = stopReason
+    mutating func confirmStopped() -> Bool {
+        let stopWasRequested = phase == .stopping
         self = .idle
-        return reason
+        return stopWasRequested
     }
 }
 
@@ -115,7 +105,6 @@ enum CameraLivePresentationPolicy {
 
 enum CameraLiveFailureDisposition: Equatable {
     case requestedStop
-    case startupTimedOut
     case softContention(CameraTransportError)
     case hardCapacity(CameraTransportError)
     case infrastructureUnavailable(CameraTransportError)
@@ -131,7 +120,7 @@ enum CameraLiveFailureDisposition: Equatable {
              .retryableTransport(let error),
              .cameraFailure(let error):
             error
-        case .requestedStop, .startupTimedOut, .ended:
+        case .requestedStop, .ended:
             nil
         }
     }
@@ -140,16 +129,16 @@ enum CameraLiveFailureDisposition: Equatable {
 enum CameraLiveFailureDispositionPolicy {
     static func classify(
         error: CameraTransportError?,
-        stopReason: CameraLiveStopReason?
+        stopWasRequested: Bool
     ) -> CameraLiveFailureDisposition {
         guard let error else {
-            return expectedStopDisposition(for: stopReason) ?? .ended
+            return stopWasRequested ? .requestedStop : .ended
         }
 
-        if stopReason != nil,
+        if stopWasRequested,
            error.domain == HMErrorDomain,
            error.code == HMError.Code.operationCancelled.rawValue {
-            return expectedStopDisposition(for: stopReason) ?? .ended
+            return .requestedStop
         }
 
         guard error.domain == HMErrorDomain,
@@ -171,23 +160,6 @@ enum CameraLiveFailureDispositionPolicy {
             return .retryableTransport(error)
         default:
             return .cameraFailure(error)
-        }
-    }
-
-    static func classify(
-        error: CameraTransportError?,
-        stopWasRequested: Bool
-    ) -> CameraLiveFailureDisposition {
-        classify(error: error, stopReason: stopWasRequested ? .planned : nil)
-    }
-
-    private static func expectedStopDisposition(
-        for reason: CameraLiveStopReason?
-    ) -> CameraLiveFailureDisposition? {
-        switch reason {
-        case .planned: .requestedStop
-        case .startupTimeout: .startupTimedOut
-        case nil: nil
         }
     }
 }

@@ -121,9 +121,6 @@ final class CameraTelemetryTests: ObserveTestCase {
             trustedSnapshotRefreshInterval: 5,
             batteryCaptureWarmup: 5,
             batteryWakeTriggerThreshold: 30,
-            batteryWakeLeaseDuration: 8,
-            batteryWakeLiveStartTimeout: 30,
-            wiredStartupLiveStartTimeout: 8,
             startupCoverageActive: true,
             sessionNetworkClass: "cellular",
             currentNetworkClass: "cellular",
@@ -187,8 +184,7 @@ final class CameraTelemetryTests: ObserveTestCase {
                         firstBatteryTrustedStillAt: nil,
                         batteryWakeLeaseStartedCount: 0,
                         batteryTrustedStillCount: 0,
-                        batteryWakeFailureCount: 0,
-                        batteryWakeTimeoutCount: 0
+                        batteryWakeFailureCount: 0
                     )
                 ]
             ),
@@ -227,11 +223,9 @@ final class CameraTelemetryTests: ObserveTestCase {
                     batteryCaptureSchedule: "notApplicable",
                     batteryWakeLeaseAge: nil,
                     batteryWakeRetryIn: nil,
-                    consecutiveBatteryWakeFailures: 0,
                     liveStartedAge: nil,
                     liveStartRequestedAge: nil,
                     liveStopRequestedAge: 0.5,
-                    liveStopReason: "startupTimeout",
                     lastErrorMessage: nil
                 )
             ],
@@ -260,7 +254,6 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertFalse(text.contains("Backmeyer Home"))
         XCTAssertTrue(text.contains("outstandingSnapshotRequests=3"))
         XCTAssertTrue(text.contains("batteryWakeTriggerThreshold=30.0s"))
-        XCTAssertTrue(text.contains("wiredStartupLiveStartTimeout=8.0s"))
         XCTAssertTrue(text.contains("nextBatteryCaptureDueIn=25.0s"))
         XCTAssertTrue(text.contains("batteryCaptureSchedule=notApplicable"))
         XCTAssertTrue(text.contains("allVisibleFeedsTrustedAt=12.0s"))
@@ -292,9 +285,8 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("startupLivePath=notAttempted"))
         XCTAssertTrue(text.contains("liveTransportPhase=stopping"))
         XCTAssertTrue(text.contains("liveStopRequestedAge=0.5s"))
-        XCTAssertTrue(text.contains("liveStopReason=startupTimeout"))
         XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
-        XCTAssertEqual(stableFingerprint(text), 7_549_613_269_488_127_810)
+        XCTAssertEqual(stableFingerprint(text), 12_338_359_716_316_310_087)
     }
 
     private func stableFingerprint(_ text: String) -> UInt64 {

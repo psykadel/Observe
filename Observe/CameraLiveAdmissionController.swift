@@ -73,9 +73,7 @@ struct LiveAdmissionController {
     private(set) var lastEffectiveCapacity: Int?
     private(set) var lastCapacityLimitReason = "notEvaluated"
 
-    private var failureCountsByFeedID: [String: Int] = [:]
     private var retryAfterByFeedID: [String: Date] = [:]
-    private var infrastructureFailureCount = 0
     private var infrastructureRetryAfter: Date?
 
     init(mode: LiveAdmissionMode, sustainableCapacity: Int) {
@@ -89,24 +87,15 @@ struct LiveAdmissionController {
     }
 
     mutating func recordRetryableFailure(feedID: String, at now: Date) {
-        let failureCount = failureCountsByFeedID[feedID, default: 0] + 1
-        failureCountsByFeedID[feedID] = failureCount
-        retryAfterByFeedID[feedID] = now.addingTimeInterval(
-            Self.retryDelay(failureCount: failureCount, delays: [2, 4, 8, 10])
-        )
+        retryAfterByFeedID[feedID] = now.addingTimeInterval(CameraSchedulingDefaults.failureRetryDelay)
     }
 
     mutating func recordInfrastructureUnavailable(at now: Date) {
-        infrastructureFailureCount += 1
-        infrastructureRetryAfter = now.addingTimeInterval(
-            Self.retryDelay(failureCount: infrastructureFailureCount, delays: [2, 4, 8, 10])
-        )
+        infrastructureRetryAfter = now.addingTimeInterval(CameraSchedulingDefaults.failureRetryDelay)
     }
 
     mutating func recordSuccess(feedID: String) {
-        failureCountsByFeedID[feedID] = nil
         retryAfterByFeedID[feedID] = nil
-        infrastructureFailureCount = 0
         infrastructureRetryAfter = nil
     }
 
@@ -193,10 +182,6 @@ struct LiveAdmissionController {
 
     private func isRetryEligible(feedID: String, at now: Date) -> Bool {
         retryAfterByFeedID[feedID].map { now >= $0 } ?? true
-    }
-
-    private static func retryDelay(failureCount: Int, delays: [TimeInterval]) -> TimeInterval {
-        delays[min(max(0, failureCount - 1), delays.count - 1)]
     }
 
     private static func intentPrecedes(_ lhs: LiveIntent, _ rhs: LiveIntent) -> Bool {

@@ -352,7 +352,6 @@ final class CameraStartupTests: ObserveTestCase {
         state.apply(.liveRequested(at: retryAt), isBatteryCamera: false)
 
         XCTAssertEqual(state.livePath, .inFlight(startedAt: retryAt))
-        XCTAssertEqual(state.liveFallbackStartedAt, retryAt)
 
         state.apply(.liveStarted, isBatteryCamera: false)
         XCTAssertEqual(state.resolution, .trusted)
@@ -361,12 +360,10 @@ final class CameraStartupTests: ObserveTestCase {
         var state = StartupCameraState()
 
         state.apply(.liveRequested(at: now), isBatteryCamera: false)
-        XCTAssertEqual(state.liveFallbackStartedAt, now)
 
         state.apply(.liveStarted, isBatteryCamera: false)
 
         XCTAssertEqual(state.resolution, .trusted)
-        XCTAssertNil(state.liveFallbackStartedAt)
     }
     func testStartupCameraStateResetReturnsToWaiting() {
         var state = StartupCameraState()
@@ -397,29 +394,6 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertEqual(liveIDs(in: plan), ["battery", "wired"])
         XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .live)
         XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .idle)
-    }
-    func testStartupLiveTimeoutPolicySeparatesWiredAndBatteryWork() {
-        XCTAssertEqual(
-            LiveStartTimeoutPolicy.timeout(
-                startupCoverageActive: true,
-                isBatteryCamera: false
-            ),
-            8
-        )
-        XCTAssertEqual(
-            LiveStartTimeoutPolicy.timeout(
-                startupCoverageActive: true,
-                isBatteryCamera: true
-            ),
-            30
-        )
-        XCTAssertEqual(
-            LiveStartTimeoutPolicy.timeout(
-                startupCoverageActive: false,
-                isBatteryCamera: false
-            ),
-            30
-        )
     }
     func testRestrictedStartupOverlayCountsVisibleCameras() {
         let presentation = RestrictedStartupOverlayPolicy.presentation(

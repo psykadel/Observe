@@ -1,26 +1,12 @@
 import Foundation
 
 enum CameraSchedulingDefaults {
+    static let failureRetryDelay: TimeInterval = 1
     static let staleVisualHighlightThreshold: TimeInterval = 60
     static let batteryWakeTriggerThreshold: TimeInterval = 60
     static let batteryStaleThreshold: TimeInterval = 120
     static let minimumSnapshotRefreshInterval: TimeInterval = 5
     static let batteryCaptureWarmup: TimeInterval = 5
-    static let batteryCaptureLeasePadding: TimeInterval = 3
-    static let batteryWakeLeaseDuration: TimeInterval = 8
-    static let wiredStartupLiveStartTimeout: TimeInterval = 8
-    static let batteryWakeLiveStartTimeout: TimeInterval = 30
-}
-
-enum LiveStartTimeoutPolicy {
-    static func timeout(
-        startupCoverageActive: Bool,
-        isBatteryCamera: Bool
-    ) -> TimeInterval {
-        startupCoverageActive && !isBatteryCamera
-            ? CameraSchedulingDefaults.wiredStartupLiveStartTimeout
-            : CameraSchedulingDefaults.batteryWakeLiveStartTimeout
-    }
 }
 
 enum SnapshotQueuePolicy {
@@ -67,7 +53,7 @@ enum SnapshotQueuePolicy {
     static func nextEligibleDateAfterFailure(
         failedAt: Date
     ) -> Date {
-        failedAt
+        failedAt.addingTimeInterval(CameraSchedulingDefaults.failureRetryDelay)
     }
 }
 
@@ -150,55 +136,6 @@ enum BatteryTrustedStillCapturePolicy {
         guard now.timeIntervalSince(liveStartedAt) >= warmup else { return false }
 
         return (batteryStillDate ?? .distantPast) < liveStartedAt
-    }
-}
-
-enum BatteryWakeLeaseTimeoutPolicy {
-    static func hasTimedOut(
-        isStreaming: Bool,
-        liveStartedAt: Date?,
-        batteryWakeLeaseStartedAt: Date,
-        warmup: TimeInterval,
-        leaseDuration: TimeInterval,
-        liveStartTimeout: TimeInterval,
-        now: Date
-    ) -> Bool {
-        if isStreaming, let liveStartedAt {
-            return now.timeIntervalSince(liveStartedAt) >= max(warmup, leaseDuration)
-        }
-        return now.timeIntervalSince(batteryWakeLeaseStartedAt) >= liveStartTimeout
-    }
-}
-
-enum BatteryWakeConstrainedSignalPolicy {
-    static func shouldKeepLeaseAlive(
-        isBatteryCamera: Bool,
-        isStreaming: Bool,
-        liveStartedAt: Date?,
-        batteryWakeLeaseStartedAt: Date?,
-        didCaptureTrustedStill: Bool,
-        warmup: TimeInterval,
-        leaseDuration: TimeInterval,
-        liveStartTimeout: TimeInterval,
-        now: Date
-    ) -> Bool {
-        guard isBatteryCamera,
-              isStreaming,
-              liveStartedAt != nil,
-              let batteryWakeLeaseStartedAt,
-              !didCaptureTrustedStill else {
-            return false
-        }
-
-        return !BatteryWakeLeaseTimeoutPolicy.hasTimedOut(
-            isStreaming: isStreaming,
-            liveStartedAt: liveStartedAt,
-            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
-            warmup: warmup,
-            leaseDuration: leaseDuration,
-            liveStartTimeout: liveStartTimeout,
-            now: now
-        )
     }
 }
 

@@ -48,10 +48,6 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
         liveTransportState.stopRequestedAt
     }
 
-    var liveStopReason: CameraLiveStopReason? {
-        liveTransportState.stopReason
-    }
-
     init(accessory: HMAccessory, profile: HMCameraProfile, profileIndex: Int) {
         self.accessory = accessory
         self.profile = profile
@@ -393,14 +389,14 @@ final class CameraFeedCoordinator: NSObject, ObservableObject, Identifiable {
     }
 
     @discardableResult
-    func stopLiveIfNeeded(reason: CameraLiveStopReason = .planned) -> Bool {
+    func stopLiveIfNeeded() -> Bool {
         reconcileLiveTransportStateFromHomeKit(at: Date())
         let requestedAt = Date()
-        guard liveTransportState.requestStop(at: requestedAt, reason: reason) else {
+        guard liveTransportState.requestStop(at: requestedAt) else {
             return false
         }
 
-        onLiveTransportEvent?(id, .stopRequested(at: requestedAt, reason: reason))
+        onLiveTransportEvent?(id, .stopRequested(at: requestedAt))
         profile.streamControl?.stopStream()
         return true
     }
@@ -642,11 +638,11 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             let callbackLatency = self.liveStopRequestedAt.map {
                 max(0, stoppedAt.timeIntervalSince($0))
             }
-            let stopReason = self.liveTransportState.confirmStopped()
+            let stopWasRequested = self.liveTransportState.confirmStopped()
             let transportError = CameraTransportError(error)
             let disposition = CameraLiveFailureDispositionPolicy.classify(
                 error: transportError,
-                stopReason: stopReason
+                stopWasRequested: stopWasRequested
             )
 
             if case .retryableTransport(let error) = disposition {
@@ -663,7 +659,7 @@ extension CameraFeedCoordinator: HMCameraStreamControlDelegate {
             self.presentSnapshotIfAvailable()
             if self.cameraSource == nil, self.state != .offline {
                 switch disposition {
-                case .startupTimedOut, .retryableTransport, .cameraFailure, .ended:
+                case .retryableTransport, .cameraFailure, .ended:
                     self.state = .failed("Unavailable")
                 case .requestedStop, .softContention, .hardCapacity, .infrastructureUnavailable:
                     self.state = .idle

@@ -194,8 +194,7 @@ final class CameraRecoveryPlannerTests: ObserveTestCase {
         XCTAssertEqual(plan.decisionsByID["active-battery"]?.recoveryPhase, .batteryCapture)
         XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryWaiting)
     }
-    func testBatteryCaptureLeaseTimesOutWhenLiveConnectionNeverStarts() {
-        let planner = CameraRecoveryPlanner(batteryWakeLiveStartTimeout: 30)
+    func testActiveBatteryCaptureWaitsForHomeKitPastThirtySeconds() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(id: "new-battery", priorityIndex: 0, isBatteryWakeCamera: true),
@@ -211,9 +210,9 @@ final class CameraRecoveryPlannerTests: ObserveTestCase {
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["new-battery"])
-        XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .idle)
-        XCTAssertEqual(plan.decisionsByID["stuck-battery"]?.recoveryPhase, .batteryWaiting)
+        XCTAssertEqual(liveIDs(in: plan), ["stuck-battery"])
+        XCTAssertEqual(plan.decisionsByID["new-battery"]?.recoveryPhase, .batteryWaiting)
+        XCTAssertEqual(plan.decisionsByID["stuck-battery"]?.recoveryPhase, .batteryCapture)
     }
     func testTrustedBatteryStillNeedsNoCaptureLane() {
         let plan = planner.makePlan(
@@ -382,11 +381,11 @@ final class CameraRecoveryPlannerTests: ObserveTestCase {
         XCTAssertEqual(plan.decisionsByID["captured-battery"]?.recoveryPhase, .idle)
         XCTAssertEqual(plan.decisionsByID["next-battery"]?.recoveryPhase, .batteryCapture)
     }
-    func testBatteryWakeBackoffRotatesLiveSlotToNextEligibleBattery() {
+    func testBatteryRetryDelayRotatesLiveSlotToNextEligibleBattery() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(
-                    id: "backing-off-battery",
+                    id: "retry-waiting-battery",
                     priorityIndex: 0,
                     isBatteryWakeCamera: true,
                     batteryWakeRetryAfter: now.addingTimeInterval(5)
@@ -399,7 +398,7 @@ final class CameraRecoveryPlannerTests: ObserveTestCase {
         )
 
         XCTAssertEqual(liveIDs(in: plan), ["next-battery"])
-        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.recoveryPhase, .batteryWaiting)
+        XCTAssertEqual(plan.decisionsByID["retry-waiting-battery"]?.recoveryPhase, .batteryWaiting)
         XCTAssertEqual(plan.decisionsByID["next-battery"]?.recoveryPhase, .batteryCapture)
         XCTAssertEqual(plan.decisionsByID["trusted-battery"]?.recoveryPhase, .idle)
     }
@@ -483,34 +482,6 @@ final class CameraRecoveryPlannerTests: ObserveTestCase {
                 batteryStillDate: nil,
                 batteryWakeLeaseStartedAt: now.addingTimeInterval(-10),
                 warmup: 5,
-                now: now
-            )
-        )
-    }
-    func testConstrainedSignalDoesNotPreserveBatteryLeaseBeforeLiveStarts() {
-        XCTAssertFalse(
-            BatteryWakeConstrainedSignalPolicy.shouldKeepLeaseAlive(
-                isBatteryCamera: true,
-                isStreaming: false,
-                liveStartedAt: nil,
-                batteryWakeLeaseStartedAt: now.addingTimeInterval(-5),
-                didCaptureTrustedStill: false,
-                warmup: 5,
-                leaseDuration: 8,
-                liveStartTimeout: 30,
-                now: now
-            )
-        )
-        XCTAssertTrue(
-            BatteryWakeConstrainedSignalPolicy.shouldKeepLeaseAlive(
-                isBatteryCamera: true,
-                isStreaming: true,
-                liveStartedAt: now.addingTimeInterval(-2),
-                batteryWakeLeaseStartedAt: now.addingTimeInterval(-5),
-                didCaptureTrustedStill: false,
-                warmup: 5,
-                leaseDuration: 8,
-                liveStartTimeout: 30,
                 now: now
             )
         )

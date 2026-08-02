@@ -55,10 +55,10 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         )
         XCTAssertEqual(SnapshotQueuePolicy.minimumRefreshInterval(for: .refresh), 5)
     }
-    func testSnapshotFailureIsImmediatelyEligibleForRetry() {
+    func testSnapshotFailureRetriesAfterOneSecond() {
         XCTAssertEqual(
             SnapshotQueuePolicy.nextEligibleDateAfterFailure(failedAt: now),
-            now
+            now.addingTimeInterval(1)
         )
     }
     func testRestrictedStartupSnapshotRecoveryBeginsAfterFirstFailure() {
@@ -73,7 +73,7 @@ final class SnapshotSchedulingTests: ObserveTestCase {
                 startupState: startupState,
                 snapshotFailedAt: now
             ),
-            now
+            now.addingTimeInterval(1)
         )
     }
     func testSnapshotQueueingIsIdempotentUntilPriorityIncreases() {

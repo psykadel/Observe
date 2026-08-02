@@ -5,12 +5,12 @@ import XCTest
 @testable import Observe
 
 final class CameraLiveAdmissionTests: ObserveTestCase {
-    func testPermanentBatteryLiveSlotIgnoresCaptureRetryBackoff() {
+    func testPermanentBatteryLiveSlotIgnoresCaptureRetryDelay() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(id: "wired-live", priorityIndex: 0, isStreaming: true),
                 makeFeed(
-                    id: "backing-off-battery",
+                    id: "retry-waiting-battery",
                     priorityIndex: 1,
                     isBatteryWakeCamera: true,
                     batteryWakeRetryAfter: now.addingTimeInterval(5)
@@ -21,9 +21,9 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["backing-off-battery", "wired-live"])
-        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.presentationMode, .live)
-        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.recoveryPhase, .idle)
+        XCTAssertEqual(liveIDs(in: plan), ["retry-waiting-battery", "wired-live"])
+        XCTAssertEqual(plan.decisionsByID["retry-waiting-battery"]?.presentationMode, .live)
+        XCTAssertEqual(plan.decisionsByID["retry-waiting-battery"]?.recoveryPhase, .idle)
     }
     func testSnapshotQueueAdmissionRejectsBatteryAndNonePriorityWork() {
         XCTAssertFalse(SnapshotQueueAdmissionPolicy.shouldQueue(isBatteryCamera: true, priority: .urgent))
@@ -73,6 +73,72 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             2
         )
     }
+    func testRepeatedLiveFailuresRetryAfterOneSecond() {
+        let liveBudget = RestrictedLiveCapacity.planningBudget(
+            knownCapacity: 2,
+            currentLiveCount: 2,
+            visibleFeedCount: 4,
+            isDiscovering: true
+        )
+        var controller = LiveAdmissionController(
+            mode: .adaptive(maxPendingStarts: 1),
+            sustainableCapacity: 2
+        )
+        controller.recordRetryableFailure(feedID: "third", at: now)
+        controller.recordRetryableFailure(feedID: "third", at: now)
+        controller.recordRetryableFailure(feedID: "third", at: now)
+        let intents = [
+            LiveIntent(id: "first", role: .steadyState, priorityIndex: 0),
+            LiveIntent(id: "second", role: .steadyState, priorityIndex: 1),
+            LiveIntent(id: "third", role: .steadyState, priorityIndex: 2)
+        ]
+        let transports: [String: LiveTransportPhase] = [
+            "first": .streaming,
+            "second": .streaming,
+            "third": .idle
+        ]
+
+        let beforeRetry = controller.reconcile(
+            intents: intents,
+            transports: transports,
+            plannerCapacity: liveBudget,
+            now: now.addingTimeInterval(0.5)
+        )
+        let afterOneSecond = controller.reconcile(
+            intents: intents,
+            transports: transports,
+            plannerCapacity: liveBudget,
+            now: now.addingTimeInterval(1)
+        )
+
+        XCTAssertTrue(beforeRetry.startIDs.isEmpty)
+        XCTAssertEqual(afterOneSecond.startIDs, ["third"])
+    }
+    func testRepeatedInfrastructureFailuresRetryAfterOneSecond() {
+        var controller = LiveAdmissionController(
+            mode: .adaptive(maxPendingStarts: 1),
+            sustainableCapacity: 1
+        )
+        controller.recordInfrastructureUnavailable(at: now)
+        controller.recordInfrastructureUnavailable(at: now)
+        controller.recordInfrastructureUnavailable(at: now)
+        let intents = [LiveIntent(id: "front", role: .steadyState, priorityIndex: 0)]
+        let transports = ["front": LiveTransportPhase.idle]
+
+        let beforeRetry = controller.reconcile(
+            intents: intents,
+            transports: transports,
+            now: now.addingTimeInterval(0.5)
+        )
+        let afterOneSecond = controller.reconcile(
+            intents: intents,
+            transports: transports,
+            now: now.addingTimeInterval(1)
+        )
+
+        XCTAssertTrue(beforeRetry.startIDs.isEmpty)
+        XCTAssertEqual(afterOneSecond.startIDs, ["front"])
+    }
     func testLivePlanTransitionDrainsOutgoingTransportBeforeStartingReplacements() {
         let transition = LivePlanTransitionPolicy.makeTransition(
             activeTransportIDs: ["garage"],
@@ -107,28 +173,22 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
 
         XCTAssertTrue(
             transport.requestStop(
-                at: now.addingTimeInterval(8),
-                reason: .startupTimeout
+                at: now.addingTimeInterval(8)
             )
         )
         XCTAssertEqual(transport.phase, .stopping)
-        XCTAssertEqual(transport.stopReason, .startupTimeout)
         XCTAssertFalse(
             transport.requestStop(
-                at: now.addingTimeInterval(9),
-                reason: .startupTimeout
+                at: now.addingTimeInterval(9)
             )
         )
 
-        XCTAssertEqual(transport.confirmStopped(), .startupTimeout)
+        XCTAssertTrue(transport.confirmStopped())
         XCTAssertEqual(transport, .idle)
     }
     func testLateStartWhileStoppingDoesNotRestoreStreamingOwnership() {
         var transport = CameraLiveTransportState.starting(requestedAt: now)
-        _ = transport.requestStop(
-            at: now.addingTimeInterval(8),
-            reason: .startupTimeout
-        )
+        _ = transport.requestStop(at: now.addingTimeInterval(8))
 
         XCTAssertFalse(transport.confirmStarted(at: now.addingTimeInterval(8.1)))
         XCTAssertEqual(transport.phase, .stopping)
@@ -202,10 +262,7 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
     }
     func testLateStartAfterStopDoesNotReacquireTransportOwnership() {
         var transport = CameraLiveTransportState.starting(requestedAt: now)
-        _ = transport.requestStop(
-            at: now.addingTimeInterval(8),
-            reason: .startupTimeout
-        )
+        _ = transport.requestStop(at: now.addingTimeInterval(8))
         _ = transport.confirmStopped()
 
         XCTAssertFalse(transport.confirmStarted(at: now.addingTimeInterval(8.2)))
@@ -234,7 +291,7 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             )
         )
     }
-    func testLiveStopReasonClassifiesRequestedCapacityAndCameraFailures() throws {
+    func testLiveFailureDispositionClassifiesRequestedCapacityAndCameraFailures() throws {
         let cancelled = try XCTUnwrap(CameraTransportError(
             NSError(
                 domain: HMErrorDomain,
@@ -251,26 +308,18 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             NSError(domain: "Camera", code: 7)
         ))
 
-        let requested = CameraLiveFailureDispositionPolicy.classify(error: cancelled, stopReason: .planned)
+        let requested = CameraLiveFailureDispositionPolicy.classify(error: cancelled, stopWasRequested: true)
         XCTAssertEqual(requested, .requestedStop)
         XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: nil, stopReason: .startupTimeout),
-            .startupTimedOut
-        )
-        XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: cancelled, stopReason: .startupTimeout),
-            .startupTimedOut
-        )
-        XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: capacity, stopReason: nil),
+            CameraLiveFailureDispositionPolicy.classify(error: capacity, stopWasRequested: false),
             .hardCapacity(capacity)
         )
         XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: cameraFailure, stopReason: nil),
+            CameraLiveFailureDispositionPolicy.classify(error: cameraFailure, stopWasRequested: false),
             .cameraFailure(cameraFailure)
         )
         XCTAssertEqual(
-            CameraLiveFailureDispositionPolicy.classify(error: nil, stopReason: nil),
+            CameraLiveFailureDispositionPolicy.classify(error: nil, stopWasRequested: false),
             .ended
         )
     }
@@ -291,11 +340,11 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             NSError(domain: "Camera", code: 7)
         ))
 
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: busy, stopReason: .startupTimeout), .softContention(busy))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: hardLimit, stopReason: .startupTimeout), .hardCapacity(hardLimit))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: communication, stopReason: .startupTimeout), .retryableTransport(communication))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: network, stopReason: .startupTimeout), .infrastructureUnavailable(network))
-        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: camera, stopReason: .startupTimeout), .cameraFailure(camera))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: busy, stopWasRequested: true), .softContention(busy))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: hardLimit, stopWasRequested: true), .hardCapacity(hardLimit))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: communication, stopWasRequested: true), .retryableTransport(communication))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: network, stopWasRequested: true), .infrastructureUnavailable(network))
+        XCTAssertEqual(CameraLiveFailureDispositionPolicy.classify(error: camera, stopWasRequested: true), .cameraFailure(camera))
     }
     func testConstrainedAdmissionSerializesColdStartsInLiveOrder() {
         var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
@@ -319,7 +368,7 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
         )
         XCTAssertEqual(second.startIDs, ["back"])
     }
-    func testRetryBackoffDoesNotEvictWorkingCoverageStream() {
+    func testRetryDelayDoesNotEvictWorkingCoverageStream() {
         var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 1)
         controller.recordRetryableFailure(feedID: "back", at: now)
 

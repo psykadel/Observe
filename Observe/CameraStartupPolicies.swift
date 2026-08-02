@@ -196,9 +196,6 @@ struct StartupCameraState: Equatable {
     var snapshotAttempted: Bool { snapshotPath.wasAttempted }
     var snapshotFailed: Bool { snapshotPath == .failed }
     var liveAttempted: Bool { livePath.wasAttempted }
-    var liveFallbackStartedAt: Date? {
-        resolution != .trusted ? livePath.startedAt : nil
-    }
 
     mutating func apply(_ event: StartupCameraEvent, isBatteryCamera: Bool) {
         switch event {

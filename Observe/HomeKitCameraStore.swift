@@ -81,17 +81,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         preferences.batteryCaptureWarmupThreshold
     }
 
-    private var batteryWakeLeaseDuration: TimeInterval {
-        max(
-            CameraSchedulingDefaults.batteryWakeLeaseDuration,
-            batteryCaptureWarmup + CameraSchedulingDefaults.batteryCaptureLeasePadding
-        )
-    }
-
-    private var batteryWakeLiveStartTimeout: TimeInterval {
-        max(CameraSchedulingDefaults.batteryWakeLiveStartTimeout, batteryWakeLeaseDuration)
-    }
-
     init(
         preferences: ObservePreferences,
         networkPathClassifier: any CameraNetworkPathClassifying = CameraNetworkPathMonitor.shared
@@ -298,9 +287,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             trustedSnapshotRefreshInterval: CameraSchedulingDefaults.minimumSnapshotRefreshInterval,
             batteryCaptureWarmup: batteryCaptureWarmup,
             batteryWakeTriggerThreshold: preferences.batteryWakeTriggerThreshold,
-            batteryWakeLeaseDuration: batteryWakeLeaseDuration,
-            batteryWakeLiveStartTimeout: batteryWakeLiveStartTimeout,
-            wiredStartupLiveStartTimeout: CameraSchedulingDefaults.wiredStartupLiveStartTimeout,
             startupCoverageActive: startupCoverageActive,
             sessionNetworkClass: sessionNetworkClass.rawValue,
             currentNetworkClass: networkPathClassifier.currentClass.rawValue,
@@ -431,7 +417,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                         lastSnapshotFailureAt: nil,
                         batteryWakeLeaseStartedAt: nil,
                         batteryWakeRetryAfter: nil,
-                        consecutiveBatteryWakeFailures: 0,
                         startupState: StartupCameraState()
                     )
                 )
@@ -787,7 +772,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         handleNetworkPathChangeIfNeeded(at: Date())
         configureFeedsForPresentation()
         let now = Date()
-        reconcileFeedScheduleStates(at: now, focusedFeedID: focusedFeedID)
+        reconcileFeedScheduleStates(at: now)
 
         let planningSnapshots = planningSnapshots(at: now, focusedFeedID: focusedFeedID)
         updateTrustedImageMilestones(from: planningSnapshots, at: now)
@@ -795,11 +780,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
         let liveBudget = resolveLiveBudget(from: planningSnapshots)
         let startupLivePolicy = resolveStartupLivePolicy(from: planningSnapshots)
-        currentRecoveryPlan = CameraRecoveryPlanner(
-            batteryWakeLeaseDuration: batteryWakeLeaseDuration,
-            batteryCaptureWarmup: batteryCaptureWarmup,
-            batteryWakeLiveStartTimeout: batteryWakeLiveStartTimeout
-        ).makePlan(
+        currentRecoveryPlan = CameraRecoveryPlanner().makePlan(
             feeds: planningSnapshots,
             liveCapacity: liveBudget,
             startupLivePolicy: startupLivePolicy,
@@ -1187,58 +1168,20 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         }
     }
 
-    private func reconcileFeedScheduleStates(at now: Date, focusedFeedID: String?) {
+    private func reconcileFeedScheduleStates(at now: Date) {
         reconcileHiddenBatteryCameraWork()
 
         for feed in feeds {
             guard var state = feedScheduleStates[feed.id] else { continue }
 
             let isBatteryCamera = preferences.isBatteryWakeCamera(id: feed.id)
-            let liveStartTimeout = LiveStartTimeoutPolicy.timeout(
-                startupCoverageActive: startupCoverageActive,
-                isBatteryCamera: isBatteryCamera
-            )
-            if let fallbackStartedAt = state.startupState.liveFallbackStartedAt,
-               !feed.isStreaming,
-               now.timeIntervalSince(fallbackStartedAt) >= liveStartTimeout,
-               feed.stopLiveIfNeeded(reason: .startupTimeout) {
-                recordTelemetry(
-                    "startup live start timed out \(feed.id) elapsed=\(formatSeconds(now.timeIntervalSince(fallbackStartedAt)))"
-                )
-            }
+            let shouldClearBatteryCapture = !isVisibleOnWall(feed)
+                || !isBatteryCamera
+                || hasTrustedBatteryStill(feed, at: now)
+            guard shouldClearBatteryCapture else { continue }
 
-            guard isVisibleOnWall(feed), isBatteryCamera else {
-                state.batteryWakeLeaseStartedAt = nil
-                state.batteryWakeRetryAfter = nil
-                state.consecutiveBatteryWakeFailures = 0
-                feedScheduleStates[feed.id] = state
-                continue
-            }
-
-            if hasTrustedBatteryStill(feed, at: now) {
-                state.batteryWakeLeaseStartedAt = nil
-                state.batteryWakeRetryAfter = nil
-                state.consecutiveBatteryWakeFailures = 0
-                feedScheduleStates[feed.id] = state
-                continue
-            }
-
-            if let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt,
-               BatteryWakeLeaseTimeoutPolicy.hasTimedOut(
-                   isStreaming: feed.isStreaming,
-                   liveStartedAt: feed.liveStartedAt,
-                   batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
-                   warmup: batteryCaptureWarmup,
-                   leaseDuration: batteryWakeLeaseDuration,
-                   liveStartTimeout: batteryWakeLiveStartTimeout,
-                   now: now
-               ) {
-                telemetryStartupMilestones.recordBatteryWakeTimeout(feedID: feed.id, at: elapsedSinceSession(now))
-                recordTelemetry("battery wake timed out \(feed.id) streaming=\(feed.isStreaming)")
-                feed.stopLiveIfNeeded()
-                state = recordBatteryWakeFailure(state, for: feed.id, at: now)
-            }
-
+            state.batteryWakeLeaseStartedAt = nil
+            state.batteryWakeRetryAfter = nil
             feedScheduleStates[feed.id] = state
         }
     }
@@ -1253,7 +1196,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard preferences.isBatteryWakeCamera(id: feedID) else {
             state.batteryWakeLeaseStartedAt = nil
             state.batteryWakeRetryAfter = nil
-            state.consecutiveBatteryWakeFailures = 0
             feedScheduleStates[feedID] = state
             return
         }
@@ -1293,7 +1235,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         feed.markBatteryStillCaptured(at: now)
         state.batteryWakeLeaseStartedAt = nil
         state.batteryWakeRetryAfter = nil
-        state.consecutiveBatteryWakeFailures = 0
         applyStartupEvent(.trustedImageObserved, feedID: feedID, state: &state)
         feedScheduleStates[feedID] = state
         telemetryStartupMilestones.recordBatteryTrustedStill(feedID: feedID, at: elapsedSinceSession(now))
@@ -1309,7 +1250,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         if didCaptureBatteryStill(for: feedID, since: state.batteryWakeLeaseStartedAt) {
             state.batteryWakeLeaseStartedAt = nil
             state.batteryWakeRetryAfter = nil
-            state.consecutiveBatteryWakeFailures = 0
             applyStartupEvent(.trustedImageObserved, feedID: feedID, state: &state)
         } else {
             feeds.first { $0.id == feedID }?.stopLiveIfNeeded()
@@ -1328,10 +1268,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     ) -> FeedScheduleState {
         var state = originalState
         state.batteryWakeLeaseStartedAt = nil
-        state.consecutiveBatteryWakeFailures += 1
-        state.batteryWakeRetryAfter = date.addingTimeInterval(
-            batteryWakeBackoff(for: state.consecutiveBatteryWakeFailures)
-        )
+        state.batteryWakeRetryAfter = date.addingTimeInterval(CameraSchedulingDefaults.failureRetryDelay)
         applyStartupEvent(.liveFailed, feedID: feedID, state: &state)
         return state
     }
@@ -1425,7 +1362,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             state.snapshotWorkState = .idle
             state.batteryWakeLeaseStartedAt = nil
             state.batteryWakeRetryAfter = nil
-            state.consecutiveBatteryWakeFailures = 0
             applyStartupEvent(.reset, feedID: feed.id, state: &state)
             feedScheduleStates[feed.id] = state
         }
@@ -1703,19 +1639,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         feedScheduleStates[feedID] = state
     }
 
-    private func batteryWakeBackoff(for failures: Int) -> TimeInterval {
-        switch failures {
-        case 0:
-            0
-        case 1:
-            2
-        case 2:
-            4
-        default:
-            8
-        }
-    }
-
     private func handleConstrainedSignal(from feedID: String) {
         let now = Date()
         guard connectionModeResolution.mode == .restricted else { return }
@@ -1728,7 +1651,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         telemetryStartupMilestones.recordConstrainedSignal(feedID: feedID, at: elapsedSinceSession(now))
         recordTelemetry("constrained signal \(feedID) mode=\(sessionMode) liveCapacity=\(liveCapacity)")
         isDiscoveringRestrictedLiveCapacity = false
-        if keepBatteryWakeLeaseAliveAfterConstrainedSignal(for: feedID, at: now) {
+        if keepBatteryWakeLeaseAliveAfterConstrainedSignal(for: feedID) {
             refreshPresentation(focusedFeedID: focusedFeedID)
             return
         }
@@ -1781,29 +1704,16 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         refreshPresentation(focusedFeedID: focusedFeedID)
     }
 
-    private func keepBatteryWakeLeaseAliveAfterConstrainedSignal(for feedID: String, at now: Date) -> Bool {
+    private func keepBatteryWakeLeaseAliveAfterConstrainedSignal(for feedID: String) -> Bool {
         guard preferences.isBatteryWakeCamera(id: feedID),
               let feed = feeds.first(where: { $0.id == feedID }),
               let state = feedScheduleStates[feedID],
-              let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt else {
+              let batteryWakeLeaseStartedAt = state.batteryWakeLeaseStartedAt,
+              feed.isStreaming,
+              !didCaptureBatteryStill(for: feedID, since: batteryWakeLeaseStartedAt) else {
             return false
         }
 
-        guard BatteryWakeConstrainedSignalPolicy.shouldKeepLeaseAlive(
-            isBatteryCamera: feed.isBatteryWakeCamera,
-            isStreaming: feed.isStreaming,
-            liveStartedAt: feed.liveStartedAt,
-            batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
-            didCaptureTrustedStill: didCaptureBatteryStill(for: feedID, since: batteryWakeLeaseStartedAt),
-            warmup: batteryCaptureWarmup,
-            leaseDuration: batteryWakeLeaseDuration,
-            liveStartTimeout: batteryWakeLiveStartTimeout,
-            now: now
-        ) else {
-            return false
-        }
-
-        feedScheduleStates[feedID] = state
         recordTelemetry("constrained signal preserved battery lease \(feedID)")
         return true
     }
@@ -1849,7 +1759,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 applyStartupEvent(.reset, feedID: feedID, state: &state)
             }
             state.batteryWakeRetryAfter = nil
-            state.consecutiveBatteryWakeFailures = 0
             feedScheduleStates[feedID] = state
         }
 
@@ -1973,9 +1882,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 "live started \(feedID) callbackLatency=\(optionalSeconds(callbackLatency))",
                 at: startedAt
             )
-        case .stopRequested(let requestedAt, let reason):
+        case .stopRequested(let requestedAt):
             recordTelemetry(
-                "live stop requested \(feedID) reason=\(String(describing: reason))",
+                "live stop requested \(feedID)",
                 at: requestedAt
             )
         case .stopped(let stoppedAt, let disposition, let callbackLatency):
@@ -1984,7 +1893,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 callbackLatency: callbackLatency
             )
             let shouldFailCameraPath: Bool = switch disposition {
-            case .startupTimedOut, .retryableTransport, .cameraFailure, .ended: true
+            case .retryableTransport, .cameraFailure, .ended: true
             case .requestedStop, .softContention, .hardCapacity, .infrastructureUnavailable: false
             }
             if shouldFailCameraPath,
@@ -2013,7 +1922,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                     )
                     break
                 }
-                isDiscoveringRestrictedLiveCapacity = false
                 liveCapacityIncludesUnconfirmedMemory = false
                 liveAdmissionController.recordRetryableFailure(feedID: feedID, at: stoppedAt)
                 recordTelemetry(
@@ -2034,10 +1942,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             case .infrastructureUnavailable:
                 liveAdmissionController.recordInfrastructureUnavailable(at: stoppedAt)
                 recordTelemetry(
-                    "live infrastructure backoff retryIn=\(optionalSeconds(liveAdmissionController.infrastructureRetryDelay(at: stoppedAt)))",
+                    "live infrastructure retry queued retryIn=\(optionalSeconds(liveAdmissionController.infrastructureRetryDelay(at: stoppedAt)))",
                     at: stoppedAt
                 )
-            case .startupTimedOut, .retryableTransport, .cameraFailure, .ended:
+            case .retryableTransport, .cameraFailure, .ended:
                 liveAdmissionController.recordRetryableFailure(feedID: feedID, at: stoppedAt)
                 recordTelemetry(
                     "live retry queued \(feedID) disposition=\(liveFailureDispositionLabel(disposition)) retryIn=\(optionalSeconds(liveAdmissionController.retryDelay(feedID: feedID, at: stoppedAt)))",
@@ -2052,7 +1960,6 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
     private func liveFailureDispositionLabel(_ disposition: CameraLiveFailureDisposition) -> String {
         switch disposition {
         case .requestedStop: "requestedStop"
-        case .startupTimedOut: "startupTimedOut"
         case .softContention: "softContention"
         case .hardCapacity: "hardCapacity"
         case .infrastructureUnavailable: "infrastructureUnavailable"
@@ -2132,11 +2039,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 ),
                 batteryWakeLeaseAge: age(of: state?.batteryWakeLeaseStartedAt, at: now),
                 batteryWakeRetryIn: secondsUntil(state?.batteryWakeRetryAfter, from: now),
-                consecutiveBatteryWakeFailures: state?.consecutiveBatteryWakeFailures ?? 0,
                 liveStartedAge: age(of: feed.liveStartedAt, at: now),
                 liveStartRequestedAge: age(of: feed.liveStartRequestedAt, at: now),
                 liveStopRequestedAge: age(of: feed.liveStopRequestedAt, at: now),
-                liveStopReason: feed.liveStopReason.map { String(describing: $0) },
                 lastErrorMessage: feed.lastErrorMessage
             )
         }
@@ -2422,7 +2327,6 @@ extension HomeKitCameraStore: HMAccessoryDelegate {
                 guard var state = self.feedScheduleStates[feed.id] else { return }
                 state.batteryWakeLeaseStartedAt = nil
                 state.batteryWakeRetryAfter = nil
-                state.consecutiveBatteryWakeFailures = 0
                 if case .queued(let priority, _) = state.snapshotWorkState {
                     state.snapshotWorkState = .queued(priority: priority, eligibleAt: .distantPast)
                 }
@@ -2485,6 +2389,5 @@ private struct FeedScheduleState {
     var lastSnapshotFailureAt: Date?
     var batteryWakeLeaseStartedAt: Date?
     var batteryWakeRetryAfter: Date?
-    var consecutiveBatteryWakeFailures: Int
     var startupState: StartupCameraState
 }
