@@ -340,7 +340,7 @@ struct RestrictedStartupOverlayPresentation: Equatable {
 
     var activityText: String {
         [
-            checkingCount > 0 ? "Checking \(checkingCount)" : nil,
+            checkingCount > 0 ? "Trying \(checkingCount)" : nil,
             waitingCount > 0 ? "Waiting \(waitingCount)" : nil,
             retryingCount > 0 ? "Retrying \(retryingCount)" : nil
         ]

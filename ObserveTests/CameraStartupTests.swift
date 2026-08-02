@@ -757,13 +757,13 @@ final class CameraStartupTests: ObserveTestCase {
     }
     func testRestrictedStartupOverlayCopyOmitsEmptyActivityGroups() {
         let presentation = RestrictedStartupOverlayPresentation(
-            cameraCount: 1,
-            checkingCount: 0,
-            waitingCount: 0,
+            cameraCount: 3,
+            checkingCount: 1,
+            waitingCount: 1,
             retryingCount: 1
         )
 
-        XCTAssertEqual(presentation.cameraCountText, "1 Camera Found")
-        XCTAssertEqual(presentation.activityText, "Retrying 1")
+        XCTAssertEqual(presentation.cameraCountText, "3 Cameras Found")
+        XCTAssertEqual(presentation.activityText, "Trying 1 · Waiting 1 · Retrying 1")
     }
 }

@@ -207,7 +207,7 @@ while the current Wi-Fi name is unavailable.
 During Restricted Mode startup, when no camera has a current picture yet,
 Observe shows a centered loading panel. It confirms **Home Found**, reports the
 Home Hub as connected, disconnected, or not available, and shows how many
-visible cameras were found. Each camera is counted once as **Checking**,
+visible cameras were found. Each camera is counted once as **Trying**,
 **Waiting**, or **Retrying**; empty groups are omitted.
 
 The panel appears only if startup lasts long enough to be noticeable and stays
