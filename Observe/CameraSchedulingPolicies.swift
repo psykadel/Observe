@@ -4,17 +4,12 @@ enum CameraSchedulingDefaults {
     static let staleVisualHighlightThreshold: TimeInterval = 60
     static let batteryWakeTriggerThreshold: TimeInterval = 60
     static let batteryStaleThreshold: TimeInterval = 120
-    static let snapshotRequestTimeout: TimeInterval = 4
-    static let maxConcurrentSnapshotRequests = 3
-    static let startupMaxOutstandingSnapshotRequests = 4
-    static let untrustedSnapshotRefreshInterval: TimeInterval = 2
     static let minimumSnapshotRefreshInterval: TimeInterval = 5
     static let batteryCaptureWarmup: TimeInterval = 5
     static let batteryCaptureLeasePadding: TimeInterval = 3
     static let batteryWakeLeaseDuration: TimeInterval = 8
     static let wiredStartupLiveStartTimeout: TimeInterval = 8
     static let batteryWakeLiveStartTimeout: TimeInterval = 30
-    static let liveCapacityExpansionRetryDelay: TimeInterval = 10
 }
 
 enum LiveStartTimeoutPolicy {
@@ -32,7 +27,7 @@ enum SnapshotQueuePolicy {
     static func minimumRefreshInterval(for priority: SnapshotPriority) -> TimeInterval {
         switch priority {
         case .urgent:
-            CameraSchedulingDefaults.untrustedSnapshotRefreshInterval
+            0
         case .refresh, .none:
             CameraSchedulingDefaults.minimumSnapshotRefreshInterval
         }
@@ -70,16 +65,9 @@ enum SnapshotQueuePolicy {
     }
 
     static func nextEligibleDateAfterFailure(
-        failedAt: Date,
-        lastRequestIssuedAt: Date?,
-        priority: SnapshotPriority
+        failedAt: Date
     ) -> Date {
-        let minimumInterval = minimumRefreshInterval(for: priority)
-        let issueEligibleDate = lastRequestIssuedAt.map {
-            $0.addingTimeInterval(max(0, minimumInterval))
-        } ?? failedAt
-        let completionEligibleDate = failedAt.addingTimeInterval(max(0, minimumInterval))
-        return max(issueEligibleDate, completionEligibleDate)
+        failedAt
     }
 }
 
@@ -87,42 +75,14 @@ enum StartupSnapshotRecoveryPolicy {
     static func retryEligibleDate(
         startupCoverageActive: Bool,
         startupState: StartupCameraState,
-        snapshotFailedAt: Date?,
-        lastRequestIssuedAt: Date?,
-        priority: SnapshotPriority
+        snapshotFailedAt: Date?
     ) -> Date? {
         guard let snapshotFailedAt else { return nil }
         guard !startupCoverageActive || startupState.resolution == .recovering else {
             return nil
         }
 
-        return SnapshotQueuePolicy.nextEligibleDateAfterFailure(
-            failedAt: snapshotFailedAt,
-            lastRequestIssuedAt: lastRequestIssuedAt,
-            priority: priority
-        )
-    }
-}
-
-enum StartupSnapshotConcurrencyPolicy {
-    static func effectiveLimit(
-        isFirstFramePhaseActive: Bool,
-        usesRestrictedSnapshotOnlyStrategy: Bool,
-        nonBatteryTrustedCount: Int,
-        nonBatteryCount: Int
-    ) -> Int {
-        guard isFirstFramePhaseActive,
-              nonBatteryCount > 0,
-              nonBatteryTrustedCount < nonBatteryCount else {
-            return CameraSchedulingDefaults.maxConcurrentSnapshotRequests
-        }
-
-        if usesRestrictedSnapshotOnlyStrategy {
-            return CameraSchedulingDefaults.maxConcurrentSnapshotRequests
-        }
-
-        let startupLimit = nonBatteryTrustedCount == 0 ? 2 : 3
-        return min(CameraSchedulingDefaults.maxConcurrentSnapshotRequests, startupLimit)
+        return SnapshotQueuePolicy.nextEligibleDateAfterFailure(failedAt: snapshotFailedAt)
     }
 }
 
@@ -267,21 +227,21 @@ enum RestrictedLiveCapacity {
 
     static func planningBudget(
         knownCapacity: Int,
+        currentLiveCount: Int = 0,
         visibleFeedCount: Int,
-        allVisibleFeedsTrusted: Bool,
-        canProbeCapacity: Bool
+        isDiscovering: Bool = false
     ) -> Int {
         guard visibleFeedCount > 0 else { return 0 }
+
+        if isDiscovering {
+            return min(visibleFeedCount, max(1, currentLiveCount + 1))
+        }
 
         let boundedKnownCapacity = boundedCapacity(
             observedLiveCount: knownCapacity,
             visibleFeedCount: visibleFeedCount
         )
-        guard canProbeCapacity, allVisibleFeedsTrusted else {
-            return boundedKnownCapacity
-        }
-
-        return min(visibleFeedCount, boundedKnownCapacity + 1)
+        return boundedKnownCapacity
     }
 
     static func afterConstrainedSignal(

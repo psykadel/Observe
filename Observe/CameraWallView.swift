@@ -519,21 +519,14 @@ struct RestrictedStartupOverlay: View {
                 Divider()
                     .overlay(.white.opacity(0.14))
 
-                HStack(alignment: .top, spacing: 13) {
+                HStack(spacing: 13) {
                     ProgressView()
                         .controlSize(.regular)
                         .tint(.white.opacity(0.68))
-                        .padding(.top, 2)
 
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(presentation.cameraCountText)
-                            .font(.headline.weight(.semibold))
-                            .foregroundStyle(.white)
-
-                        Text(presentation.activityText)
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.white.opacity(0.62))
-                    }
+                    Text(presentation.cameraCountText)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
                 }
             }
             .padding(.horizontal, 28)
@@ -554,7 +547,7 @@ struct RestrictedStartupOverlay: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Restricted Mode Startup")
         .accessibilityValue(
-            "Home Found. \(hubPresentation.text). \(presentation.cameraCountText). \(presentation.activityText)."
+            "Home Found. \(hubPresentation.text). \(presentation.cameraCountText)."
         )
     }
 
@@ -805,12 +798,7 @@ private struct SuccessIndicatorSparkles: View {
 #if DEBUG
 #Preview("Restricted Startup") {
     RestrictedStartupOverlay(
-        presentation: RestrictedStartupOverlayPresentation(
-            cameraCount: 7,
-            checkingCount: 3,
-            waitingCount: 4,
-            retryingCount: 0
-        ),
+        presentation: RestrictedStartupOverlayPresentation(cameraCount: 7),
         homeHubState: .connected
     )
     .background(Color.black)

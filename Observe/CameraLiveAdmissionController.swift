@@ -3,17 +3,13 @@ import Foundation
 enum LiveIntentRole: Equatable {
     case focused
     case batteryCapture
-    case firstImageRecovery
     case steadyState
-    case capacityProbe
 
     fileprivate var rank: Int {
         switch self {
         case .focused: 0
         case .batteryCapture: 1
-        case .firstImageRecovery: 2
-        case .steadyState: 3
-        case .capacityProbe: 4
+        case .steadyState: 2
         }
     }
 }
@@ -23,20 +19,17 @@ struct LiveIntent: Equatable {
     let role: LiveIntentRole
     let priorityIndex: Int
     let isDesired: Bool
-    let hasOutstandingSnapshot: Bool
 
     init(
         id: String,
         role: LiveIntentRole,
         priorityIndex: Int,
-        isDesired: Bool = true,
-        hasOutstandingSnapshot: Bool = false
+        isDesired: Bool = true
     ) {
         self.id = id
         self.role = role
         self.priorityIndex = priorityIndex
         self.isDesired = isDesired
-        self.hasOutstandingSnapshot = hasOutstandingSnapshot
     }
 }
 
@@ -73,27 +66,15 @@ struct LiveAdmissionDecision: Equatable {
     let reservedTransportIDs: [String]
 }
 
-struct LiveSoftContentionOutcome: Equatable {
-    let attempt: Int
-    let retryDelay: TimeInterval
-    let sessionCeiling: Int
-    let shouldYieldCamera: Bool
-}
-
 struct LiveAdmissionController {
     private(set) var mode: LiveAdmissionMode
     private(set) var sustainableCapacity: Int
-    private(set) var softContentionSessionCeiling: Int?
-    private(set) var activeCapacityProbeFeedID: String?
     private(set) var lastPlannerCapacity: Int?
     private(set) var lastEffectiveCapacity: Int?
     private(set) var lastCapacityLimitReason = "notEvaluated"
-    private(set) var deferredCapacityProbeIDs: [String] = []
 
-    private var contentionCountsByFeedID: [String: Int] = [:]
     private var failureCountsByFeedID: [String: Int] = [:]
     private var retryAfterByFeedID: [String: Date] = [:]
-    private var activeCapacityProbeTarget: Int?
     private var infrastructureFailureCount = 0
     private var infrastructureRetryAfter: Date?
 
@@ -107,33 +88,7 @@ struct LiveAdmissionController {
         self.sustainableCapacity = max(0, sustainableCapacity)
     }
 
-    @discardableResult
-    mutating func recordSoftContention(
-        feedID: String,
-        survivingStreamCount: Int,
-        at now: Date
-    ) -> LiveSoftContentionOutcome {
-        mode = .constrained
-        clearCapacityProbeIfMatching(feedID)
-        let failureCount = contentionCountsByFeedID[feedID, default: 0] + 1
-        contentionCountsByFeedID[feedID] = failureCount
-        let retryDelay = Self.retryDelay(failureCount: failureCount, delays: [1, 2, 4, 8])
-        retryAfterByFeedID[feedID] = now.addingTimeInterval(retryDelay)
-
-        if softContentionSessionCeiling == nil {
-            softContentionSessionCeiling = max(1, survivingStreamCount)
-        }
-
-        return LiveSoftContentionOutcome(
-            attempt: failureCount,
-            retryDelay: retryDelay,
-            sessionCeiling: softContentionSessionCeiling ?? 1,
-            shouldYieldCamera: failureCount >= 2
-        )
-    }
-
     mutating func recordRetryableFailure(feedID: String, at now: Date) {
-        clearCapacityProbeIfMatching(feedID)
         let failureCount = failureCountsByFeedID[feedID, default: 0] + 1
         failureCountsByFeedID[feedID] = failureCount
         retryAfterByFeedID[feedID] = now.addingTimeInterval(
@@ -149,23 +104,10 @@ struct LiveAdmissionController {
     }
 
     mutating func recordSuccess(feedID: String) {
-        if activeCapacityProbeFeedID == feedID {
-            softContentionSessionCeiling = max(
-                softContentionSessionCeiling ?? 0,
-                activeCapacityProbeTarget ?? 0
-            )
-            activeCapacityProbeFeedID = nil
-            activeCapacityProbeTarget = nil
-        }
-        contentionCountsByFeedID[feedID] = nil
         failureCountsByFeedID[feedID] = nil
         retryAfterByFeedID[feedID] = nil
         infrastructureFailureCount = 0
         infrastructureRetryAfter = nil
-    }
-
-    mutating func cancelCapacityProbe(feedID: String) {
-        clearCapacityProbeIfMatching(feedID)
     }
 
     func retryDelay(feedID: String, at now: Date) -> TimeInterval? {
@@ -179,49 +121,21 @@ struct LiveAdmissionController {
     mutating func reconcile(
         intents: [LiveIntent],
         transports: [String: LiveTransportPhase],
-        preserveActiveDuringCoverage: Bool,
         plannerCapacity: Int? = nil,
         now: Date
     ) -> LiveAdmissionDecision {
         let sortedIntents = intents.sorted(by: Self.intentPrecedes)
         let desired = sortedIntents.filter(\.isDesired)
-        deferredCapacityProbeIDs = desired.compactMap { intent in
-            intent.role == .capacityProbe
-                && intent.hasOutstandingSnapshot
-                && (transports[intent.id] ?? .idle) == .idle
-                ? intent.id
-                : nil
-        }
         let infrastructureIsEligible = infrastructureRetryAfter.map { now >= $0 } ?? true
         let targetEligibleDesired = desired.filter { intent in
             if (transports[intent.id] ?? .idle) != .idle {
                 return true
             }
-            guard intent.role != .capacityProbe || !intent.hasOutstandingSnapshot else {
-                return false
-            }
             return infrastructureIsEligible && isRetryEligible(feedID: intent.id, at: now)
         }
         let plannedCapacity = max(0, plannerCapacity ?? sustainableCapacity)
-        let capacity: Int
-        if let sessionCeiling = softContentionSessionCeiling {
-            let hasExplicitCapacityProbe = targetEligibleDesired.contains { intent in
-                intent.role == .capacityProbe
-                    && (activeCapacityProbeFeedID == nil || activeCapacityProbeFeedID == intent.id)
-            }
-            let probeAllowance = hasExplicitCapacityProbe && plannedCapacity > sessionCeiling ? 1 : 0
-            capacity = min(plannedCapacity, sessionCeiling + probeAllowance)
-            if probeAllowance == 1 {
-                lastCapacityLimitReason = "softContentionProbe"
-            } else if plannedCapacity > sessionCeiling {
-                lastCapacityLimitReason = "softContentionCeiling"
-            } else {
-                lastCapacityLimitReason = "plannerWithinSoftContentionCeiling"
-            }
-        } else {
-            capacity = plannedCapacity
-            lastCapacityLimitReason = "planner"
-        }
+        let capacity = plannedCapacity
+        lastCapacityLimitReason = "planner"
         lastPlannerCapacity = plannedCapacity
         lastEffectiveCapacity = capacity
 
@@ -231,15 +145,10 @@ struct LiveAdmissionController {
             targets.append(intent)
         }
 
-        if preserveActiveDuringCoverage || !infrastructureIsEligible {
-            for intent in targetEligibleDesired where intent.role != .steadyState {
-                appendIfAbsent(intent)
-            }
-            for intent in sortedIntents where transports[intent.id] == .streaming {
-                appendIfAbsent(intent)
-            }
-        }
         for intent in targetEligibleDesired {
+            appendIfAbsent(intent)
+        }
+        for intent in sortedIntents where transports[intent.id] == .streaming {
             appendIfAbsent(intent)
         }
 
@@ -273,14 +182,6 @@ struct LiveAdmissionController {
         let startIDs = Array(candidates.prefix(admittedCount))
         let queuedStartIDs = Array(candidates.dropFirst(admittedCount))
 
-        if activeCapacityProbeFeedID == nil,
-           let admittedProbe = targets.first(where: { intent in
-               intent.role == .capacityProbe && startIDs.contains(intent.id)
-           }) {
-            activeCapacityProbeFeedID = admittedProbe.id
-            activeCapacityProbeTarget = capacity
-        }
-
         return LiveAdmissionDecision(
             targetIDs: targetIDs,
             stopIDs: stopIDs,
@@ -292,12 +193,6 @@ struct LiveAdmissionController {
 
     private func isRetryEligible(feedID: String, at now: Date) -> Bool {
         retryAfterByFeedID[feedID].map { now >= $0 } ?? true
-    }
-
-    private mutating func clearCapacityProbeIfMatching(_ feedID: String) {
-        guard activeCapacityProbeFeedID == feedID else { return }
-        activeCapacityProbeFeedID = nil
-        activeCapacityProbeTarget = nil
     }
 
     private static func retryDelay(failureCount: Int, delays: [TimeInterval]) -> TimeInterval {

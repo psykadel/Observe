@@ -42,8 +42,13 @@ request failed.
 
 ## When the Camera View Opens
 
-Observe first tries to get a current picture for every visible camera. Only then
-does it concentrate on showing as many live feeds as HomeKit will allow.
+Observe starts each camera's useful work immediately. On the Home Network, every
+camera goes straight to live with no snapshot request. In Restricted Mode, a
+camera selected for live starts without waiting for a snapshot, and an ordinary
+camera without a current picture also requests a snapshot. Battery cameras
+outside the permanent live set briefly use the battery capture lane. Observe acts
+on each useful result as soon as HomeKit returns it; one slow camera does not hold
+back unrelated cameras.
 
 If a Home Security indicator is enabled, it stays gray until every visible
 camera has a current picture. Observe then reads the selected locks or
@@ -53,8 +58,8 @@ The Home Network setting starts blank. When the user enters a network name,
 Observe compares it exactly with the name of the current Wi-Fi network. If the
 names match, Observe starts every visible camera live immediately. It does not
 apply Restricted Mode connection limits, Live Order, staged startup, or learned
-capacity. A camera that fails keeps retrying without changing the connection
-mode for the other cameras.
+capacity, and it does not request snapshots. A camera that fails keeps retrying
+without changing the connection mode for the other cameras.
 
 Observe asks for location access only when Settings opens because Apple requires
 that permission to read the current Wi-Fi name. If the setting is blank, the
@@ -64,39 +69,22 @@ the decision again. On a Mac, Observe can still identify the associated Wi-Fi
 network when another interface is the primary network route. It never includes
 either network name in copied telemetry.
 
-In Restricted Mode, Observe starts more cautiously:
+In Restricted Mode, Observe starts the permanent live set and needed picture
+requests together. Every ordinary camera without a current picture requests a
+snapshot immediately, including cameras in the live set. Battery cameras outside
+the permanent set share one temporary live capture lane. A camera opened full
+screen gets a permanent live position right away, even if its snapshot request is
+still outstanding.
 
-- Take up to three ordinary-camera snapshots at a time.
-- Give those ordinary-camera snapshots a short head start before waking one
-  battery camera that needs a new still. Wake it as soon as an ordinary snapshot
-  succeeds, or after the short wait if none has succeeded. If no ordinary
-  snapshot is needed, wake the battery camera immediately. Do not interrupt a
-  battery wake already in progress.
-- Admit those picture requests before asking HomeKit to refresh secondary camera
-  details. Register availability and battery change notifications after that
-  first admission pass, but postpone explicit availability and battery reads
-  until every visible camera has a current picture. Once pictures are current,
-  live filling remains ahead of those reads, which then run one request at a
-  time with availability first.
-- If an ordinary camera's first snapshot fails or takes too long, move that
-  camera into background snapshot recovery immediately. Keep accepting a useful
-  late result from its original request.
-- Do not use ordinary live video as a fallback, even for the full-screen camera.
-- Wait until every visible camera has a current picture, then add live feeds
-  gradually as HomeKit accepts them.
-- If HomeKit clearly refuses another live feed, keep the feeds that still work
-  and switch to Restricted Mode.
-- If HomeKit is merely busy, slow down and try again without treating that as a
-  permanent limit.
+Observe registers availability and battery change notifications after the first
+media admission pass. It postpones explicit availability and battery reads until
+every visible camera has a current picture, then runs those background reads one
+at a time with availability first.
 
-A camera whose first snapshot fails remains visible and keeps trying snapshots
-in the background. The initial loading period ends when every camera either has
-a current picture or has moved into background recovery. This does not open
-ordinary live video: a later successful snapshot must first bring every visible
-camera up to date. If a reachable camera never returns a current picture,
-ordinary live filling remains paused while snapshot recovery continues.
-While any visible camera is still waiting for a current picture, do not refresh
-snapshots for cameras that already have one.
+A camera whose snapshot fails remains visible and retries immediately. Observe
+keeps waiting for a slow request and does not issue a duplicate while that
+request is unresolved. A useful picture is accepted as soon as HomeKit returns
+it.
 
 Observe still uses HomeKit's already-known availability values while building
 the initial camera wall and subscribes to changes so a camera that turns on can
@@ -107,62 +95,79 @@ background rule apply only in Restricted Mode.
 ## Restricted Mode
 
 Restricted Mode is used whenever Observe cannot confirm an exact match with the
-configured Home Network. During startup, Observe uses ordinary-camera snapshots
-plus, when needed, one battery-camera live capture to get every camera up to
-date. Ordinary live connections are presentation work and begin only after every
-visible camera has a current picture.
+configured Home Network. Observe directly assigns the available live positions
+instead of waiting for a snapshot phase to finish.
 
 ### Ordinary Cameras
 
-An ordinary camera that is not live keeps receiving snapshots. Missing and old
-pictures go first, followed by the user's camera order.
+An ordinary camera outside the permanent live set requests a snapshot
+immediately and keeps receiving periodic snapshots. An ordinary camera in the
+live set also requests a snapshot when it has no current picture. Missing and old
+pictures go first, followed by the user's camera order. Snapshot requests are
+independent; there is no wall-wide concurrency limit. Each camera may have only
+one unresolved request, so a slow response cannot cause duplicate requests to
+that camera. A late picture is useful only if it is still recent and no newer
+picture has already arrived.
 
-Observe limits how many snapshot requests it makes at once. If HomeKit is slow
-to answer, Observe may continue with other cameras, but it does not send a
-duplicate request to the same camera. A late picture is useful only if it is
-still recent and no newer picture has already arrived.
+Snapshot retrying is driven only by HomeKit results. A successful request
+returns to the normal refresh cadence. A failed request is retried immediately
+if the camera still needs a picture. A request that has not returned simply
+remains the camera's one outstanding request.
+
+Snapshot requests never delay live starts, and live starts never cancel snapshot
+requests that HomeKit is already handling. If the snapshot arrives first,
+Observe shows it immediately while live continues connecting. When actual live
+video arrives, it replaces the snapshot. A snapshot that returns after video is
+live is saved but does not replace the video.
 
 Snapshots do not use one of HomeKit's limited live connections.
 
 ### Battery Cameras
 
-A battery camera that is not already live and needs a new still must briefly use
-a live connection to wake and capture it.
+A battery camera selected for the permanent live set starts live immediately and
+does not capture a saved still. Live video itself is its current picture.
+
+A battery camera outside the permanent set that needs a new still briefly uses
+the single battery capture lane: start live, wait for actual video, finish the
+configured warmup, save one still, and stop. Actual video counts as current as
+soon as it appears; the saved still is needed only so the camera can leave the
+temporary lane and remain current afterward.
 
 - Let an active capture finish instead of continually rotating cameras.
 - Count the capture wait from when live video actually begins, not while the
   camera is still waking.
-- The full-screen camera may take the connection if none is free.
+- The full-screen camera takes a permanent position instead of the temporary
+  capture lane.
 - After a failure or timeout, stop the connection cleanly, wait before trying
   that camera again, and give the next battery camera a turn.
 - Show **Queued** while a battery camera is waiting for a connection.
 
 ### Who Gets Live Video First
 
-During Restricted Mode startup, the only live connection allowed
-before every camera has a current picture is one battery-camera capture. An
-ordinary camera never bypasses this rule because it is full screen, stalled, or
-recovering.
-
-After every visible camera has a current picture, use limited live connections
-in this order:
+Choose the permanent live set in this order:
 
 1. The camera the user opened full screen.
-2. Battery cameras already capturing a still.
-3. Other battery cameras waiting for a new still, in Live Order.
-4. Normal live feeds, in Live Order.
+2. The remaining cameras in Live Order.
 
-Once this startup gate opens, an aging picture does not reopen startup recovery.
-Normal Restricted Mode refresh and battery-capture priorities handle later
-updates while preserving the other live feeds that still fit.
-
-Do not use a waiting battery camera as an ordinary live feed. First give every
-visible battery camera a current still. After every camera has a current picture,
-carefully try to add more live feeds one at a time.
+If a battery camera outside that set needs a still, reserve exactly one of the
+available positions as the temporary battery capture lane. The other positions
+remain permanent. Let the active capture finish, then rotate the lane to the
+next eligible battery camera. When the queue is empty, restore the displaced
+permanent camera. With three battery cameras in Live Order and two available
+positions, for example, the first remains permanently live while the capture
+lane captures the third; the second then takes its permanent position, making
+the final permanent set the first two cameras.
 
 Observe remembers a confirmed live-camera limit for each home and exact group of
-visible cameras. A different group starts fresh. A temporary busy message or a
-network problem must not permanently lower the remembered limit.
+visible cameras. A different group starts fresh. When that exact limit is known,
+Observe starts all assigned positions together. When it is unknown, Observe
+starts one camera; each confirmed video opens exactly one more start until every
+camera is live or HomeKit clearly refuses the next position.
+
+A clear capacity refusal lowers and remembers the number of feeds that continued
+working. A temporary busy message, camera-specific failure, network problem, or
+Home Hub problem does not lower the remembered limit. Once an exact limit is
+known, Observe uses it without periodically testing an additional position.
 
 ## Starting and Stopping Live Video
 
@@ -206,9 +211,8 @@ while the current Wi-Fi name is unavailable.
 
 During Restricted Mode startup, when no camera has a current picture yet,
 Observe shows a centered loading panel. It confirms **Home Found**, reports the
-Home Hub as connected, disconnected, or not available, and shows how many
-visible cameras were found. Each camera is counted once as **Trying**,
-**Waiting**, or **Retrying**; empty groups are omitted.
+Home Hub as connected, disconnected, or not available, and shows **Contacting N
+Cameras** beside a spinner.
 
 The panel appears only if startup lasts long enough to be noticeable and stays
 visible while recovery continues. It disappears immediately when any camera

@@ -128,17 +128,15 @@ final class CameraStartupTests: ObserveTestCase {
 
         let plan = planner.makePlan(
             feeds: feeds,
-            sessionMode: .constrained,
             liveCapacity: 1,
             startupLivePolicy: policy,
             now: now
         )
 
         XCTAssertEqual(Set(liveIDs(in: plan)), selectedIDs)
-        XCTAssertEqual(policy.pendingStartLimit, Int.max)
 
         var controller = LiveAdmissionController(
-            mode: .adaptive(maxPendingStarts: policy.pendingStartLimit),
+            mode: .adaptive(maxPendingStarts: Int.max),
             sustainableCapacity: 1
         )
         let decision = controller.reconcile(
@@ -148,7 +146,6 @@ final class CameraStartupTests: ObserveTestCase {
             transports: Dictionary(
                 uniqueKeysWithValues: selectedIDs.map { ($0, LiveTransportPhase.idle) }
             ),
-            preserveActiveDuringCoverage: false,
             plannerCapacity: selectedIDs.count,
             now: now
         )
@@ -157,7 +154,7 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertTrue(decision.queuedStartIDs.isEmpty)
     }
 
-    func testRestrictedOptimisticLiveFillUsesLiveOrderImmediately() {
+    func testRestrictedLiveFillUsesLiveOrderImmediately() {
         XCTAssertTrue(
             LiveAdmissionOrderingPolicy.usesLiveOrder(
                 connectionMode: .restricted
@@ -252,40 +249,6 @@ final class CameraStartupTests: ObserveTestCase {
             "complete"
         )
     }
-    func testRestrictedTrustGateSuppressesRefreshesForAlreadyTrustedFeeds() {
-        XCTAssertFalse(
-            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
-                isTrusted: true,
-                startupCoverageActive: false,
-                startupLiveRampActive: false,
-                restrictedLiveGateClosed: true
-            )
-        )
-        XCTAssertTrue(
-            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
-                isTrusted: false,
-                startupCoverageActive: false,
-                startupLiveRampActive: false,
-                restrictedLiveGateClosed: true
-            )
-        )
-        XCTAssertTrue(
-            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
-                isTrusted: true,
-                startupCoverageActive: false,
-                startupLiveRampActive: false,
-                restrictedLiveGateClosed: false
-            )
-        )
-        XCTAssertFalse(
-            TrustedFrameSnapshotAdmissionPolicy.shouldQueue(
-                isTrusted: true,
-                startupCoverageActive: false,
-                startupLiveRampActive: true,
-                restrictedLiveGateClosed: false
-            )
-        )
-    }
     func testHomeNetworkMetadataKeepsImmediateParallelBehavior() {
         let mode = StartupMetadataWorkMode.resolve(connectionMode: .homeNetwork)
 
@@ -345,165 +308,6 @@ final class CameraStartupTests: ObserveTestCase {
             ]
         )
     }
-    func testRestrictedStartupPhaseIsDerivedFromInitialPassAndTrust() {
-        XCTAssertEqual(
-            RestrictedStartupPhase.resolve(
-                initialSnapshotPassActive: true,
-                allVisibleFeedsTrusted: false,
-                allVisibleFeedsCompletedStartupCoverage: false
-            ),
-            .initialSnapshotPass
-        )
-        XCTAssertEqual(
-            RestrictedStartupPhase.resolve(
-                initialSnapshotPassActive: false,
-                allVisibleFeedsTrusted: false,
-                allVisibleFeedsCompletedStartupCoverage: false
-            ),
-            .snapshotRecovery
-        )
-        XCTAssertEqual(
-            RestrictedStartupPhase.resolve(
-                initialSnapshotPassActive: false,
-                allVisibleFeedsTrusted: true,
-                allVisibleFeedsCompletedStartupCoverage: true
-            ),
-            .liveFill
-        )
-        XCTAssertFalse(RestrictedStartupPhase.initialSnapshotPass.isOrdinaryLiveGateOpen)
-        XCTAssertFalse(RestrictedStartupPhase.snapshotRecovery.isOrdinaryLiveGateOpen)
-        XCTAssertTrue(RestrictedStartupPhase.liveFill.isOrdinaryLiveGateOpen)
-    }
-    func testRestrictedStartupPhaseDoesNotReopenAfterCompletedCoverageBecomesOld() {
-        XCTAssertEqual(
-            RestrictedStartupPhase.resolve(
-                initialSnapshotPassActive: false,
-                allVisibleFeedsTrusted: false,
-                allVisibleFeedsCompletedStartupCoverage: true
-            ),
-            .liveFill
-        )
-    }
-    func testRestrictedSnapshotOnlyPolicyAllowsOnePendingBatteryStart() {
-        XCTAssertEqual(StartupLivePolicy.restrictedSnapshotOnly.pendingStartLimit, 1)
-    }
-    func testStartupLiveRampUsesTwoPendingSlotsAfterFastFirstSuccess() {
-        var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-
-        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.8, fastSessionThreshold: 3)
-        let firstWave = ramp.reconcile(
-            priorityIDs: ["one", "two", "three", "four", "five"],
-            streamingIDs: ["one"],
-            focusedID: nil,
-            now: now
-        )
-
-        XCTAssertEqual(ramp.mode, .fast)
-        XCTAssertEqual(ramp.maxPendingCount, 2)
-        XCTAssertEqual(firstWave, ["one", "two", "three"])
-        XCTAssertEqual(ramp.pendingIDs, ["two", "three"])
-
-        ramp.recordLiveStarted(feedID: "two", sessionElapsed: 1.1, fastSessionThreshold: 3)
-        ramp.recordLiveStarted(feedID: "three", sessionElapsed: 1.2, fastSessionThreshold: 3)
-        let secondWave = ramp.reconcile(
-            priorityIDs: ["one", "two", "three", "four", "five"],
-            streamingIDs: ["one", "two", "three"],
-            focusedID: nil,
-            now: now
-        )
-
-        XCTAssertEqual(secondWave, ["one", "two", "three", "four", "five"])
-        XCTAssertEqual(ramp.pendingIDs, ["four", "five"])
-    }
-    func testStartupLiveRampStaysOneWideAfterSlowFirstSuccess() {
-        var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-
-        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 3, fastSessionThreshold: 3)
-        let selection = ramp.reconcile(
-            priorityIDs: ["one", "two", "three"],
-            streamingIDs: ["one"],
-            focusedID: nil,
-            now: now
-        )
-
-        XCTAssertEqual(ramp.mode, .conservative)
-        XCTAssertEqual(ramp.maxPendingCount, 1)
-        XCTAssertEqual(selection, ["one", "two"])
-        XCTAssertEqual(ramp.pendingIDs, ["two"])
-    }
-    func testStartupLiveRampSkipsFailedCameraUntilCooldownExpires() {
-        var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.5, fastSessionThreshold: 3)
-        _ = ramp.reconcile(
-            priorityIDs: ["one", "two", "three", "four"],
-            streamingIDs: ["one"],
-            focusedID: nil,
-            now: now
-        )
-
-        ramp.recordLiveStopped(
-            feedID: "two",
-            at: now,
-            isCapacitySignal: false,
-            retryDelay: 10
-        )
-        let duringCooldown = ramp.reconcile(
-            priorityIDs: ["one", "two", "three", "four"],
-            streamingIDs: ["one"],
-            focusedID: nil,
-            now: now.addingTimeInterval(5)
-        )
-
-        XCTAssertEqual(duringCooldown, ["one", "three", "four"])
-        XCTAssertFalse(duringCooldown.contains("two"))
-    }
-    func testStartupLiveRampStopsAdmittingAfterCapacitySignal() {
-        var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.5, fastSessionThreshold: 3)
-        _ = ramp.reconcile(
-            priorityIDs: ["one", "two", "three"],
-            streamingIDs: ["one"],
-            focusedID: nil,
-            now: now
-        )
-
-        ramp.recordLiveStopped(
-            feedID: "two",
-            at: now,
-            isCapacitySignal: true,
-            retryDelay: 10
-        )
-        let selection = ramp.reconcile(
-            priorityIDs: ["one", "two", "three"],
-            streamingIDs: ["one"],
-            focusedID: nil,
-            now: now.addingTimeInterval(20)
-        )
-
-        XCTAssertEqual(ramp.mode, .stopped)
-        XCTAssertEqual(selection, ["one"])
-        XCTAssertTrue(ramp.pendingIDs.isEmpty)
-    }
-    func testStartupLiveRampFocusedCameraPreemptsLowestPriorityPendingProbe() {
-        var ramp = StartupLiveRampState(initialSelectedIDs: ["one"])
-        ramp.recordLiveStarted(feedID: "one", sessionElapsed: 0.5, fastSessionThreshold: 3)
-        _ = ramp.reconcile(
-            priorityIDs: ["one", "two", "three", "four"],
-            streamingIDs: ["one"],
-            focusedID: nil,
-            now: now
-        )
-
-        let focusedSelection = ramp.reconcile(
-            priorityIDs: ["one", "two", "three", "four"],
-            streamingIDs: ["one"],
-            focusedID: "four",
-            now: now
-        )
-
-        XCTAssertEqual(focusedSelection, ["one", "two", "four"])
-        XCTAssertEqual(ramp.pendingIDs, ["two", "four"])
-    }
     func testRestrictedStartupSnapshotFailureMovesWiredCameraToRecoveryImmediately() {
         var state = StartupCameraState()
 
@@ -522,23 +326,19 @@ final class CameraStartupTests: ObserveTestCase {
 
         XCTAssertEqual(state.resolution, .pending)
     }
-    func testStartupCameraStateKeepsBatteryPendingUntilTrustedStill() {
+    func testStartupCameraStateTreatsBatteryLiveAsTrustedImmediately() {
         var state = StartupCameraState()
 
         state.apply(.liveRequested(at: now), isBatteryCamera: true)
         state.apply(.liveStarted, isBatteryCamera: true)
 
-        XCTAssertEqual(state.resolution, .pending)
-
-        state.apply(.trustedImageObserved, isBatteryCamera: true)
-
         XCTAssertEqual(state.resolution, .trusted)
     }
-    func testHomeNetworkPlainLiveResolvesBatteryStartupWithoutCapturedStill() {
+    func testBatteryLiveResolvesStartupWithoutCapturedStill() {
         var state = StartupCameraState()
 
         state.apply(.liveRequested(at: now), isBatteryCamera: true)
-        state.apply(.plainLiveStarted, isBatteryCamera: true)
+        state.apply(.liveStarted, isBatteryCamera: true)
 
         XCTAssertEqual(state.livePath, .succeeded)
         XCTAssertEqual(state.resolution, .trusted)
@@ -578,25 +378,6 @@ final class CameraStartupTests: ObserveTestCase {
 
         XCTAssertEqual(state, StartupCameraState())
     }
-    func testPostCoverageRampPlannerUsesOnlyItsAdmittedLiveIDs() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(id: "front", priorityIndex: 0),
-                makeFeed(id: "back", priorityIndex: 1),
-                makeFeed(id: "garage", priorityIndex: 2, isStreaming: true)
-            ],
-            sessionMode: .optimistic,
-            liveCapacity: 3,
-            startupLivePolicy: .capacityRamp(
-                liveIDs: ["front", "garage"],
-                maxPendingStarts: 1
-            ),
-            now: now
-        )
-
-        XCTAssertEqual(liveIDs(in: plan), ["front", "garage"])
-        XCTAssertEqual(plan.decisionsByID["back"]?.presentationMode, .snapshot)
-    }
     func testHomeNetworkUsesPlainLiveForDueBatteryCamera() {
         let plan = planner.makePlan(
             feeds: [
@@ -608,7 +389,6 @@ final class CameraStartupTests: ObserveTestCase {
                     isBatteryWakeCamera: true
                 )
             ],
-            sessionMode: .optimistic,
             liveCapacity: 2,
             startupLivePolicy: .homeNetwork(liveIDs: ["wired", "battery"]),
             now: now
@@ -617,28 +397,6 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertEqual(liveIDs(in: plan), ["battery", "wired"])
         XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .live)
         XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .idle)
-    }
-    func testNormalCapacityRampStillCapturesDueBatteryCamera() {
-        let plan = planner.makePlan(
-            feeds: [
-                makeFeed(
-                    id: "battery",
-                    priorityIndex: 0,
-                    lastSnapshotAge: 90,
-                    isBatteryWakeCamera: true
-                )
-            ],
-            sessionMode: .optimistic,
-            liveCapacity: 1,
-            startupLivePolicy: .capacityRamp(
-                liveIDs: ["battery"],
-                maxPendingStarts: 1
-            ),
-            now: now
-        )
-
-        XCTAssertEqual(plan.decisionsByID["battery"]?.presentationMode, .live)
-        XCTAssertEqual(plan.decisionsByID["battery"]?.recoveryPhase, .batteryCapture)
     }
     func testStartupLiveTimeoutPolicySeparatesWiredAndBatteryWork() {
         XCTAssertEqual(
@@ -663,37 +421,20 @@ final class CameraStartupTests: ObserveTestCase {
             30
         )
     }
-    func testRestrictedStartupOverlayCountsEachCameraOnceWithRecoveryTakingPriority() {
+    func testRestrictedStartupOverlayCountsVisibleCameras() {
         let presentation = RestrictedStartupOverlayPolicy.presentation(
             isRestrictedStartup: true,
             hasHome: true,
             cameras: [
-                RestrictedStartupCameraActivity(
-                    hasCurrentPicture: false,
-                    hasActiveWork: true,
-                    isRecovering: false
-                ),
-                RestrictedStartupCameraActivity(
-                    hasCurrentPicture: false,
-                    hasActiveWork: false,
-                    isRecovering: false
-                ),
-                RestrictedStartupCameraActivity(
-                    hasCurrentPicture: false,
-                    hasActiveWork: true,
-                    isRecovering: true
-                )
+                RestrictedStartupCameraActivity(hasCurrentPicture: false),
+                RestrictedStartupCameraActivity(hasCurrentPicture: false),
+                RestrictedStartupCameraActivity(hasCurrentPicture: false)
             ]
         )
 
         XCTAssertEqual(
             presentation,
-            RestrictedStartupOverlayPresentation(
-                cameraCount: 3,
-                checkingCount: 1,
-                waitingCount: 1,
-                retryingCount: 1
-            )
+            RestrictedStartupOverlayPresentation(cameraCount: 3)
         )
     }
     func testRestrictedStartupOverlayHidesAsSoonAsAnyCameraHasCurrentPicture() {
@@ -701,27 +442,15 @@ final class CameraStartupTests: ObserveTestCase {
             isRestrictedStartup: true,
             hasHome: true,
             cameras: [
-                RestrictedStartupCameraActivity(
-                    hasCurrentPicture: false,
-                    hasActiveWork: true,
-                    isRecovering: false
-                ),
-                RestrictedStartupCameraActivity(
-                    hasCurrentPicture: true,
-                    hasActiveWork: false,
-                    isRecovering: false
-                )
+                RestrictedStartupCameraActivity(hasCurrentPicture: false),
+                RestrictedStartupCameraActivity(hasCurrentPicture: true)
             ]
         )
 
         XCTAssertNil(presentation)
     }
     func testRestrictedStartupOverlayRequiresRestrictedStartupHomeAndCameras() {
-        let waitingCamera = RestrictedStartupCameraActivity(
-            hasCurrentPicture: false,
-            hasActiveWork: false,
-            isRecovering: false
-        )
+        let waitingCamera = RestrictedStartupCameraActivity(hasCurrentPicture: false)
 
         XCTAssertNil(
             RestrictedStartupOverlayPolicy.presentation(
@@ -745,38 +474,21 @@ final class CameraStartupTests: ObserveTestCase {
             )
         )
     }
-    func testRestrictedStartupOverlayRemainsVisibleWhenEveryCameraIsRetrying() {
+    func testRestrictedStartupOverlayRemainsVisibleWhileNoCameraHasAPicture() {
         let presentation = RestrictedStartupOverlayPolicy.presentation(
             isRestrictedStartup: true,
             hasHome: true,
             cameras: [
-                RestrictedStartupCameraActivity(
-                    hasCurrentPicture: false,
-                    hasActiveWork: false,
-                    isRecovering: true
-                ),
-                RestrictedStartupCameraActivity(
-                    hasCurrentPicture: false,
-                    hasActiveWork: true,
-                    isRecovering: true
-                )
+                RestrictedStartupCameraActivity(hasCurrentPicture: false),
+                RestrictedStartupCameraActivity(hasCurrentPicture: false)
             ]
         )
 
         XCTAssertEqual(presentation?.cameraCount, 2)
-        XCTAssertEqual(presentation?.retryingCount, 2)
-        XCTAssertEqual(presentation?.checkingCount, 0)
-        XCTAssertEqual(presentation?.waitingCount, 0)
     }
-    func testRestrictedStartupOverlayCopyOmitsEmptyActivityGroups() {
-        let presentation = RestrictedStartupOverlayPresentation(
-            cameraCount: 3,
-            checkingCount: 1,
-            waitingCount: 1,
-            retryingCount: 1
-        )
+    func testRestrictedStartupOverlayCopyShowsOnlyContactingCameraCount() {
+        let presentation = RestrictedStartupOverlayPresentation(cameraCount: 3)
 
-        XCTAssertEqual(presentation.cameraCountText, "3 Cameras Found")
-        XCTAssertEqual(presentation.activityText, "Trying 1 · Waiting 1 · Retrying 1")
+        XCTAssertEqual(presentation.cameraCountText, "Contacting 3 Cameras")
     }
 }

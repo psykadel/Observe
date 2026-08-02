@@ -5,7 +5,7 @@ import XCTest
 @testable import Observe
 
 final class CameraLiveAdmissionTests: ObserveTestCase {
-    func testBatteryInRetryBackoffDoesNotConsumeNormalLiveFillSlot() {
+    func testPermanentBatteryLiveSlotIgnoresCaptureRetryBackoff() {
         let plan = planner.makePlan(
             feeds: [
                 makeFeed(id: "wired-live", priorityIndex: 0, isStreaming: true),
@@ -17,50 +17,61 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
                 ),
                 makeFeed(id: "wired-recent", priorityIndex: 2, lastSnapshotAge: 4)
             ],
-            sessionMode: .constrained,
             liveCapacity: 2,
             now: now
         )
 
-        XCTAssertEqual(liveIDs(in: plan), ["wired-live", "wired-recent"])
-        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.presentationMode, .snapshot)
-        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.recoveryPhase, .batteryWaiting)
-    }
-    func testSnapshotAdmissionCapsActiveAndOutstandingStartupWorkSeparately() {
-        let states: [SnapshotWorkState] = [
-            .pending(
-                SnapshotPendingRequest(
-                    id: 1,
-                    priority: .urgent,
-                    issuedAt: now.addingTimeInterval(-5),
-                    timeoutReportedAt: now.addingTimeInterval(-1)
-                )
-            ),
-            .pending(
-                SnapshotPendingRequest(
-                    id: 2,
-                    priority: .urgent,
-                    issuedAt: now,
-                    timeoutReportedAt: nil
-                )
-            )
-        ]
-
-        let capacity = SnapshotAdmissionPolicy.capacity(
-            states: states,
-            activeLimit: 2,
-            outstandingLimit: 4
-        )
-
-        XCTAssertEqual(capacity.activeCount, 1)
-        XCTAssertEqual(capacity.outstandingCount, 2)
-        XCTAssertEqual(capacity.availableActiveSlots, 1)
-        XCTAssertEqual(capacity.availableOutstandingSlots, 2)
+        XCTAssertEqual(liveIDs(in: plan), ["backing-off-battery", "wired-live"])
+        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.presentationMode, .live)
+        XCTAssertEqual(plan.decisionsByID["backing-off-battery"]?.recoveryPhase, .idle)
     }
     func testSnapshotQueueAdmissionRejectsBatteryAndNonePriorityWork() {
         XCTAssertFalse(SnapshotQueueAdmissionPolicy.shouldQueue(isBatteryCamera: true, priority: .urgent))
         XCTAssertFalse(SnapshotQueueAdmissionPolicy.shouldQueue(isBatteryCamera: false, priority: .none))
         XCTAssertTrue(SnapshotQueueAdmissionPolicy.shouldQueue(isBatteryCamera: false, priority: .refresh))
+    }
+    func testEligibleBackgroundAndFocusedLiveStartsAreAdmittedTogether() {
+        var controller = LiveAdmissionController(mode: .adaptive(maxPendingStarts: 2), sustainableCapacity: 2)
+
+        let decision = controller.reconcile(
+            intents: [
+                LiveIntent(
+                    id: "background",
+                    role: .steadyState,
+                    priorityIndex: 0
+                ),
+                LiveIntent(
+                    id: "focused",
+                    role: .focused,
+                    priorityIndex: 1
+                )
+            ],
+            transports: [:],
+            now: now
+        )
+
+        XCTAssertEqual(decision.startIDs, ["focused", "background"])
+    }
+
+    func testUnknownRestrictedCapacityExpandsOneSlotPerLiveSuccess() {
+        XCTAssertEqual(
+            RestrictedLiveCapacity.planningBudget(
+                knownCapacity: 0,
+                currentLiveCount: 0,
+                visibleFeedCount: 5,
+                isDiscovering: true
+            ),
+            1
+        )
+        XCTAssertEqual(
+            RestrictedLiveCapacity.planningBudget(
+                knownCapacity: 1,
+                currentLiveCount: 1,
+                visibleFeedCount: 5,
+                isDiscovering: true
+            ),
+            2
+        )
     }
     func testLivePlanTransitionDrainsOutgoingTransportBeforeStartingReplacements() {
         let transition = LivePlanTransitionPolicy.makeTransition(
@@ -296,7 +307,6 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
         let first = controller.reconcile(
             intents: intents,
             transports: ["front": .idle, "back": .idle],
-            preserveActiveDuringCoverage: false,
             now: now
         )
         XCTAssertEqual(first.startIDs, ["front"])
@@ -305,255 +315,20 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
         let second = controller.reconcile(
             intents: intents,
             transports: ["front": .streaming, "back": .idle],
-            preserveActiveDuringCoverage: false,
             now: now.addingTimeInterval(2)
         )
         XCTAssertEqual(second.startIDs, ["back"])
     }
-    func testAdmissionPreservesWorkingStreamWhileRecoveryUsesFreeSlot() {
-        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
-        let decision = controller.reconcile(
-            intents: [
-                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 1),
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
-                LiveIntent(id: "garage", role: .steadyState, priorityIndex: 2)
-            ],
-            transports: [
-                "front": .idle,
-                "back": .idle,
-                "garage": .streaming
-            ],
-            preserveActiveDuringCoverage: true,
-            now: now
-        )
-
-        XCTAssertEqual(decision.targetIDs, ["back", "garage"])
-        XCTAssertTrue(decision.stopIDs.isEmpty)
-        XCTAssertEqual(decision.startIDs, ["back"])
-    }
-    func testSoftContentionCreatesTemporaryCeilingFromSurvivingStreams() {
-        var controller = LiveAdmissionController(mode: .adaptive(maxPendingStarts: 1), sustainableCapacity: 5)
-        let result = controller.recordSoftContention(
-            feedID: "back",
-            survivingStreamCount: 2,
-            at: now
-        )
-
-        XCTAssertEqual(controller.mode, .constrained)
-        XCTAssertEqual(controller.sustainableCapacity, 5)
-        XCTAssertEqual(result.sessionCeiling, 2)
-        XCTAssertEqual(result.attempt, 1)
-        XCTAssertFalse(result.shouldYieldCamera)
-
-        let blocked = controller.reconcile(
-            intents: [
-                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 1),
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0, isDesired: false),
-                LiveIntent(id: "battery", role: .steadyState, priorityIndex: 4, isDesired: false)
-            ],
-            transports: ["back": .idle, "front": .streaming, "battery": .streaming],
-            preserveActiveDuringCoverage: true,
-            now: now.addingTimeInterval(0.5)
-        )
-        XCTAssertTrue(blocked.startIDs.isEmpty)
-        XCTAssertEqual(blocked.targetIDs, ["front", "battery"])
-        XCTAssertTrue(blocked.stopIDs.isEmpty)
-
-        let retry = controller.reconcile(
-            intents: [
-                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 1),
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0, isDesired: false),
-                LiveIntent(id: "battery", role: .steadyState, priorityIndex: 4, isDesired: false)
-            ],
-            transports: ["back": .idle, "front": .streaming, "battery": .streaming],
-            preserveActiveDuringCoverage: true,
-            now: now.addingTimeInterval(1)
-        )
-        XCTAssertEqual(retry.targetIDs, ["back", "front"])
-        XCTAssertEqual(retry.stopIDs, ["battery"])
-        XCTAssertTrue(retry.startIDs.isEmpty)
-    }
-    func testRepeatedSoftContentionYieldsCameraWithoutShrinkingInitialCeiling() {
-        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 5)
-        _ = controller.recordSoftContention(
-            feedID: "back",
-            survivingStreamCount: 2,
-            at: now
-        )
-        let repeated = controller.recordSoftContention(
-            feedID: "back",
-            survivingStreamCount: 1,
-            at: now.addingTimeInterval(2)
-        )
-
-        XCTAssertEqual(repeated.sessionCeiling, 2)
-        XCTAssertEqual(repeated.attempt, 2)
-        XCTAssertTrue(repeated.shouldYieldCamera)
-    }
-    func testSoftContentionCeilingAllowsOneExplicitCapacityProbeAfterPlannerCooldown() {
-        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 5)
-        _ = controller.recordSoftContention(
-            feedID: "initial-probe",
-            survivingStreamCount: 2,
-            at: now
-        )
-
-        let decision = controller.reconcile(
-            intents: [
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
-                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
-                LiveIntent(id: "mailbox", role: .capacityProbe, priorityIndex: 2)
-            ],
-            transports: [
-                "front": .streaming,
-                "back": .streaming,
-                "mailbox": .idle
-            ],
-            preserveActiveDuringCoverage: false,
-            plannerCapacity: 3,
-            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
-        )
-
-        XCTAssertEqual(decision.targetIDs, ["front", "back", "mailbox"])
-        XCTAssertEqual(decision.startIDs, ["mailbox"])
-        XCTAssertTrue(decision.stopIDs.isEmpty)
-        XCTAssertEqual(controller.lastPlannerCapacity, 3)
-        XCTAssertEqual(controller.lastEffectiveCapacity, 3)
-        XCTAssertEqual(controller.lastCapacityLimitReason, "softContentionProbe")
-        XCTAssertEqual(controller.activeCapacityProbeFeedID, "mailbox")
-
-        controller.recordSuccess(feedID: "mailbox")
-        let nextProbe = controller.reconcile(
-            intents: [
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
-                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
-                LiveIntent(id: "mailbox", role: .steadyState, priorityIndex: 2),
-                LiveIntent(id: "garage", role: .capacityProbe, priorityIndex: 3)
-            ],
-            transports: [
-                "front": .streaming,
-                "back": .streaming,
-                "mailbox": .streaming,
-                "garage": .idle
-            ],
-            preserveActiveDuringCoverage: false,
-            plannerCapacity: 4,
-            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay + 1)
-        )
-
-        XCTAssertEqual(nextProbe.startIDs, ["garage"])
-    }
-    func testCapacityProbeSkipsFeedWithOutstandingSnapshotAndUsesEligibleCandidate() {
-        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
-        _ = controller.recordSoftContention(
-            feedID: "initial-probe",
-            survivingStreamCount: 2,
-            at: now
-        )
-
-        let decision = controller.reconcile(
-            intents: [
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
-                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
-                LiveIntent(
-                    id: "mailbox",
-                    role: .capacityProbe,
-                    priorityIndex: 2,
-                    hasOutstandingSnapshot: true
-                ),
-                LiveIntent(id: "garage", role: .capacityProbe, priorityIndex: 3)
-            ],
-            transports: [
-                "front": .streaming,
-                "back": .streaming,
-                "mailbox": .idle,
-                "garage": .idle
-            ],
-            preserveActiveDuringCoverage: false,
-            plannerCapacity: 3,
-            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
-        )
-
-        XCTAssertEqual(decision.targetIDs, ["front", "back", "garage"])
-        XCTAssertEqual(decision.startIDs, ["garage"])
-        XCTAssertEqual(controller.deferredCapacityProbeIDs, ["mailbox"])
-        XCTAssertEqual(controller.activeCapacityProbeFeedID, "garage")
-    }
-    func testCapacityProbeWithOutstandingSnapshotPreservesActiveTransport() {
-        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 2)
-        _ = controller.recordSoftContention(
-            feedID: "initial-probe",
-            survivingStreamCount: 2,
-            at: now
-        )
-
-        let decision = controller.reconcile(
-            intents: [
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
-                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
-                LiveIntent(
-                    id: "mailbox",
-                    role: .capacityProbe,
-                    priorityIndex: 2,
-                    hasOutstandingSnapshot: true
-                )
-            ],
-            transports: [
-                "front": .streaming,
-                "back": .streaming,
-                "mailbox": .streaming
-            ],
-            preserveActiveDuringCoverage: false,
-            plannerCapacity: 3,
-            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
-        )
-
-        XCTAssertEqual(decision.targetIDs, ["front", "back", "mailbox"])
-        XCTAssertTrue(decision.stopIDs.isEmpty)
-        XCTAssertTrue(controller.deferredCapacityProbeIDs.isEmpty)
-    }
-    func testSoftContentionCeilingDoesNotAdmitOrdinaryWorkAboveCeiling() {
-        var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 5)
-        _ = controller.recordSoftContention(
-            feedID: "initial-probe",
-            survivingStreamCount: 2,
-            at: now
-        )
-
-        let decision = controller.reconcile(
-            intents: [
-                LiveIntent(id: "front", role: .steadyState, priorityIndex: 0),
-                LiveIntent(id: "back", role: .steadyState, priorityIndex: 1),
-                LiveIntent(id: "mailbox", role: .steadyState, priorityIndex: 2)
-            ],
-            transports: [
-                "front": .streaming,
-                "back": .streaming,
-                "mailbox": .idle
-            ],
-            preserveActiveDuringCoverage: false,
-            plannerCapacity: 3,
-            now: now.addingTimeInterval(CameraSchedulingDefaults.liveCapacityExpansionRetryDelay)
-        )
-
-        XCTAssertEqual(decision.targetIDs, ["front", "back"])
-        XCTAssertTrue(decision.startIDs.isEmpty)
-    }
     func testRetryBackoffDoesNotEvictWorkingCoverageStream() {
         var controller = LiveAdmissionController(mode: .constrained, sustainableCapacity: 1)
-        _ = controller.recordSoftContention(
-            feedID: "back",
-            survivingStreamCount: 1,
-            at: now
-        )
+        controller.recordRetryableFailure(feedID: "back", at: now)
 
         let decision = controller.reconcile(
             intents: [
-                LiveIntent(id: "back", role: .firstImageRecovery, priorityIndex: 0),
+                LiveIntent(id: "back", role: .steadyState, priorityIndex: 0),
                 LiveIntent(id: "front", role: .steadyState, priorityIndex: 1, isDesired: false)
             ],
             transports: ["back": .idle, "front": .streaming],
-            preserveActiveDuringCoverage: true,
             now: now.addingTimeInterval(0.5)
         )
 
@@ -583,7 +358,6 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
                 makeFeed(id: "third", priorityIndex: 2, lastSnapshotAge: 5),
                 makeFeed(id: "battery-last", priorityIndex: 3, lastSnapshotAge: 5, isBatteryWakeCamera: true)
             ],
-            sessionMode: .constrained,
             liveCapacity: 2,
             now: now
         )
@@ -626,53 +400,20 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             2
         )
     }
-    func testRestrictedCapacityProbesOneExtraSlotAfterAllFeedsAreTrusted() {
+    func testKnownRestrictedCapacityNeverExpandsSpeculatively() {
         XCTAssertEqual(
             RestrictedLiveCapacity.planningBudget(
                 knownCapacity: 1,
-                visibleFeedCount: 4,
-                allVisibleFeedsTrusted: true,
-                canProbeCapacity: true
-            ),
-            2
-        )
-        XCTAssertEqual(
-            RestrictedLiveCapacity.planningBudget(
-                knownCapacity: 1,
-                visibleFeedCount: 4,
-                allVisibleFeedsTrusted: false,
-                canProbeCapacity: true
+                visibleFeedCount: 4
             ),
             1
         )
         XCTAssertEqual(
             RestrictedLiveCapacity.planningBudget(
                 knownCapacity: 2,
-                visibleFeedCount: 4,
-                allVisibleFeedsTrusted: true,
-                canProbeCapacity: false
+                visibleFeedCount: 4
             ),
             2
-        )
-    }
-    func testRestrictedCapacityDoesNotProbeExtraSlotBeforeAllFeedsAreTrusted() {
-        XCTAssertEqual(
-            RestrictedLiveCapacity.planningBudget(
-                knownCapacity: 1,
-                visibleFeedCount: 4,
-                allVisibleFeedsTrusted: false,
-                canProbeCapacity: true
-            ),
-            1
-        )
-        XCTAssertEqual(
-            RestrictedLiveCapacity.planningBudget(
-                knownCapacity: 1,
-                visibleFeedCount: 4,
-                allVisibleFeedsTrusted: false,
-                canProbeCapacity: false
-            ),
-            1
         )
     }
     func testRestrictedCapacityStillAllowsExplicitZeroWhenNoFeedsAreVisible() {

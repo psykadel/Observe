@@ -16,7 +16,6 @@ struct CameraStartupTelemetryMilestones: Equatable {
     var startupCoverageEndedAt: TimeInterval?
     var startupCoverageResult: String?
     var recoveringFeedIDs: [String] = []
-    var peakActiveSnapshotRequests = 0
     var peakOutstandingSnapshotRequests = 0
     var metadata = CameraStartupMetadataTelemetryMilestones()
     var feedsByID: [String: CameraStartupTelemetryFeedMilestones] = [:]
@@ -97,10 +96,6 @@ struct CameraStartupTelemetryMilestones: Equatable {
         updateFeed(feedID) { $0.lastLiveStopCallbackLatency = callbackLatency }
     }
 
-    mutating func recordSnapshotTimeout(feedID: String, at elapsed: TimeInterval) {
-        updateFeed(feedID) { $0.recordSnapshotTimeout() }
-    }
-
     mutating func recordBatteryWakeLeaseStarted(feedID: String, at elapsed: TimeInterval) {
         updateFeed(feedID) { $0.recordBatteryWakeLeaseStarted(at: elapsed) }
     }
@@ -117,8 +112,7 @@ struct CameraStartupTelemetryMilestones: Equatable {
         updateFeed(feedID) { $0.recordBatteryWakeTimeout() }
     }
 
-    mutating func recordSnapshotConcurrency(active: Int, outstanding: Int) {
-        peakActiveSnapshotRequests = max(peakActiveSnapshotRequests, active)
+    mutating func recordSnapshotConcurrency(outstanding: Int) {
         peakOutstandingSnapshotRequests = max(peakOutstandingSnapshotRequests, outstanding)
     }
 
@@ -217,7 +211,6 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
     var snapshotInitialFailureCount = 0
     var snapshotRecoveryFailureCount = 0
     var snapshotRoutineFailureCount = 0
-    var snapshotTimeoutCount = 0
     var lastSnapshotCallbackLatency: TimeInterval?
     var lastLiveStartCallbackLatency: TimeInterval?
     var lastLiveStopCallbackLatency: TimeInterval?
@@ -296,10 +289,6 @@ struct CameraStartupTelemetryFeedMilestones: Equatable {
         )
     }
 
-    mutating func recordSnapshotTimeout() {
-        snapshotTimeoutCount += 1
-    }
-
     mutating func recordBatteryWakeLeaseStarted(at elapsed: TimeInterval) {
         batteryWakeLeaseStartedCount += 1
         if firstBatteryWakeLeaseStartedAt == nil {
@@ -348,7 +337,6 @@ struct CameraTelemetryFeed: Equatable {
     let snapshotWorkState: String
     let snapshotRequestID: String?
     let snapshotInFlightAge: TimeInterval?
-    let snapshotOverdueAge: TimeInterval?
     let nextEligibleSnapshotIn: TimeInterval?
     let lastSnapshotRequestAge: TimeInterval?
     let startupCoverageResolution: String
@@ -399,20 +387,13 @@ struct CameraTelemetryReport: Equatable {
     let liveCapacity: Int
     let liveAdmissionMode: String
     let liveAdmissionSustainableCapacity: Int
-    let liveAdmissionSoftContentionCeiling: Int?
     let liveAdmissionPlannerCapacity: Int?
     let liveAdmissionEffectiveCapacity: Int?
     let liveAdmissionCapacityLimitReason: String
-    let liveAdmissionActiveCapacityProbeFeedID: String?
-    let liveAdmissionDeferredCapacityProbeIDs: [String]
     let liveAdmissionTargetIDs: [String]
     let liveAdmissionReservedIDs: [String]
     let liveAdmissionQueuedIDs: [String]
     let visibleFeedCount: Int
-    let internalMaxConcurrentSnapshotRequests: Int
-    let effectiveMaxConcurrentSnapshotRequests: Int
-    let snapshotRequestTimeout: TimeInterval
-    let untrustedSnapshotRefreshInterval: TimeInterval
     let trustedSnapshotRefreshInterval: TimeInterval
     let batteryCaptureWarmup: TimeInterval
     let batteryWakeTriggerThreshold: TimeInterval
@@ -420,26 +401,17 @@ struct CameraTelemetryReport: Equatable {
     let batteryWakeLiveStartTimeout: TimeInterval
     let wiredStartupLiveStartTimeout: TimeInterval
     let startupCoverageActive: Bool
-    let restrictedStartupPhase: String
-    let ordinaryLiveGateState: String
     let sessionNetworkClass: String
     let currentNetworkClass: String
     let connectionMode: String
     let connectionModeReason: String
-    let startupLiveRampMode: String
-    let startupLiveRampSelectedIDs: [String]
-    let startupLiveRampPendingIDs: [String]
-    let startupLiveRampMaxPendingCount: Int
-    let startupLiveRampFastSessionThreshold: TimeInterval
-    let activeSnapshotRequests: Int
+    let restrictedLiveCapacityDiscoveryActive: Bool
     let outstandingSnapshotRequests: Int
     let startupMetadataMode: String
     let startupMetadataGateState: String
     let activeMetadataOperations: Int
     let queuedMetadataOperations: Int
     let activeMetadataOperation: String?
-    let liveCapacityExpansionRetryIn: TimeInterval?
-    let liveCapacityExpansionCooldownEligible: Bool
     let liveCapacityIncludesUnconfirmedMemory: Bool
     let startupMilestones: CameraStartupTelemetryMilestones
     let feeds: [CameraTelemetryFeed]
@@ -460,20 +432,13 @@ struct CameraTelemetryReport: Equatable {
         lines.append("liveCapacity=\(liveCapacity)")
         lines.append("liveAdmissionMode=\(liveAdmissionMode)")
         lines.append("liveAdmissionSustainableCapacity=\(liveAdmissionSustainableCapacity)")
-        lines.append("liveAdmissionSoftContentionCeiling=\(liveAdmissionSoftContentionCeiling.map(String.init) ?? "nil")")
         lines.append("liveAdmissionPlannerCapacity=\(liveAdmissionPlannerCapacity.map(String.init) ?? "nil")")
         lines.append("liveAdmissionEffectiveCapacity=\(liveAdmissionEffectiveCapacity.map(String.init) ?? "nil")")
         lines.append("liveAdmissionCapacityLimitReason=\(liveAdmissionCapacityLimitReason)")
-        lines.append("liveAdmissionActiveCapacityProbeFeedID=\(liveAdmissionActiveCapacityProbeFeedID ?? "nil")")
-        lines.append("liveAdmissionDeferredCapacityProbeIDs=\(liveAdmissionDeferredCapacityProbeIDs.isEmpty ? "none" : liveAdmissionDeferredCapacityProbeIDs.joined(separator: ","))")
         lines.append("liveAdmissionTargetIDs=\(liveAdmissionTargetIDs.isEmpty ? "none" : liveAdmissionTargetIDs.joined(separator: ","))")
         lines.append("liveAdmissionReservedIDs=\(liveAdmissionReservedIDs.isEmpty ? "none" : liveAdmissionReservedIDs.joined(separator: ","))")
         lines.append("liveAdmissionQueuedIDs=\(liveAdmissionQueuedIDs.isEmpty ? "none" : liveAdmissionQueuedIDs.joined(separator: ","))")
         lines.append("visibleFeedCount=\(visibleFeedCount)")
-        lines.append("internalMaxConcurrentSnapshotRequests=\(internalMaxConcurrentSnapshotRequests)")
-        lines.append("effectiveMaxConcurrentSnapshotRequests=\(effectiveMaxConcurrentSnapshotRequests)")
-        lines.append("snapshotRequestTimeout=\(formatSeconds(snapshotRequestTimeout))")
-        lines.append("untrustedSnapshotRefreshInterval=\(formatSeconds(untrustedSnapshotRefreshInterval))")
         lines.append("trustedSnapshotRefreshInterval=\(formatSeconds(trustedSnapshotRefreshInterval))")
         lines.append("batteryCaptureWarmup=\(formatSeconds(batteryCaptureWarmup))")
         lines.append("batteryWakeTriggerThreshold=\(formatSeconds(batteryWakeTriggerThreshold))")
@@ -481,26 +446,17 @@ struct CameraTelemetryReport: Equatable {
         lines.append("batteryWakeLiveStartTimeout=\(formatSeconds(batteryWakeLiveStartTimeout))")
         lines.append("wiredStartupLiveStartTimeout=\(formatSeconds(wiredStartupLiveStartTimeout))")
         lines.append("startupCoverageActive=\(startupCoverageActive)")
-        lines.append("restrictedStartupPhase=\(restrictedStartupPhase)")
-        lines.append("ordinaryLiveGateState=\(ordinaryLiveGateState)")
         lines.append("sessionNetworkClass=\(sessionNetworkClass)")
         lines.append("currentNetworkClass=\(currentNetworkClass)")
         lines.append("connectionMode=\(connectionMode)")
         lines.append("connectionModeReason=\(connectionModeReason)")
-        lines.append("startupLiveRampMode=\(startupLiveRampMode)")
-        lines.append("startupLiveRampSelectedIDs=\(startupLiveRampSelectedIDs.isEmpty ? "none" : startupLiveRampSelectedIDs.joined(separator: ","))")
-        lines.append("startupLiveRampPendingIDs=\(startupLiveRampPendingIDs.isEmpty ? "none" : startupLiveRampPendingIDs.joined(separator: ","))")
-        lines.append("startupLiveRampMaxPendingCount=\(startupLiveRampMaxPendingCount)")
-        lines.append("startupLiveRampFastSessionThreshold=\(formatSeconds(startupLiveRampFastSessionThreshold))")
-        lines.append("activeSnapshotRequests=\(activeSnapshotRequests)")
+        lines.append("restrictedLiveCapacityDiscoveryActive=\(restrictedLiveCapacityDiscoveryActive)")
         lines.append("outstandingSnapshotRequests=\(outstandingSnapshotRequests)")
         lines.append("startupMetadataMode=\(startupMetadataMode)")
         lines.append("startupMetadataGateState=\(startupMetadataGateState)")
         lines.append("activeMetadataOperations=\(activeMetadataOperations)")
         lines.append("queuedMetadataOperations=\(queuedMetadataOperations)")
         lines.append("activeMetadataOperation=\(activeMetadataOperation ?? "nil")")
-        lines.append("liveCapacityExpansionRetryIn=\(optionalSeconds(liveCapacityExpansionRetryIn))")
-        lines.append("liveCapacityExpansionCooldownEligible=\(liveCapacityExpansionCooldownEligible)")
         lines.append("liveCapacityIncludesUnconfirmedMemory=\(liveCapacityIncludesUnconfirmedMemory)")
         lines.append("")
         lines.append("Startup Milestones")
@@ -513,7 +469,6 @@ struct CameraTelemetryReport: Equatable {
         lines.append("startupCoverageEndedAt=\(optionalSeconds(startupMilestones.startupCoverageEndedAt))")
         lines.append("startupCoverageResult=\(startupMilestones.startupCoverageResult ?? "nil")")
         lines.append("firstPassRecoveryFeedIDs=\(startupMilestones.recoveringFeedIDs.isEmpty ? "none" : startupMilestones.recoveringFeedIDs.joined(separator: ","))")
-        lines.append("peakActiveSnapshotRequests=\(startupMilestones.peakActiveSnapshotRequests)")
         lines.append("peakOutstandingSnapshotRequests=\(startupMilestones.peakOutstandingSnapshotRequests)")
         lines.append("metadataQueuedCount=\(startupMilestones.metadata.queuedCount)")
         lines.append("metadataIssuedCount=\(startupMilestones.metadata.issuedCount)")
@@ -571,7 +526,6 @@ struct CameraTelemetryReport: Equatable {
             "snapshotInitialFailureCount=\(milestones.snapshotInitialFailureCount)",
             "snapshotRecoveryFailureCount=\(milestones.snapshotRecoveryFailureCount)",
             "snapshotRoutineFailureCount=\(milestones.snapshotRoutineFailureCount)",
-            "snapshotTimeoutCount=\(milestones.snapshotTimeoutCount)",
             "lastSnapshotCallbackLatency=\(optionalSeconds(milestones.lastSnapshotCallbackLatency))",
             "lastLiveStartCallbackLatency=\(optionalSeconds(milestones.lastLiveStartCallbackLatency))",
             "lastLiveStopCallbackLatency=\(optionalSeconds(milestones.lastLiveStopCallbackLatency))",
@@ -607,7 +561,6 @@ struct CameraTelemetryReport: Equatable {
             "snapshotWorkState=\(feed.snapshotWorkState)",
             "snapshotRequestID=\(feed.snapshotRequestID ?? "nil")",
             "snapshotInFlightAge=\(optionalSeconds(feed.snapshotInFlightAge))",
-            "snapshotOverdueAge=\(optionalSeconds(feed.snapshotOverdueAge))",
             "nextEligibleSnapshotIn=\(optionalSeconds(feed.nextEligibleSnapshotIn))",
             "lastSnapshotRequestAge=\(optionalSeconds(feed.lastSnapshotRequestAge))",
             "startupCoverage=\(feed.startupCoverageResolution)",
@@ -665,7 +618,7 @@ func snapshotWorkStateLabel(_ state: SnapshotWorkState?) -> String {
         return "idle"
     case .queued:
         return "queued"
-    case .pending(let request):
-        return request.timeoutReportedAt == nil ? "active" : "overdue"
+    case .pending:
+        return "requested"
     }
 }

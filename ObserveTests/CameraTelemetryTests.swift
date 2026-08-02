@@ -55,23 +55,23 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertEqual(milestones.lastCompletedAt, 2.4)
         XCTAssertEqual(milestones.maxCallbackLatency, 1.4)
     }
-    func testBatteryLiveTelemetryIsFreshBeforeTrustedStillCapture() {
+    func testBatteryLiveTelemetryIsTrustedBeforeSavedStillCapture() {
         var milestones = CameraStartupTelemetryFeedMilestones(feedID: "battery")
 
         milestones.recordLiveStarted(
             callbackLatency: 1.2,
-            resolvesTrustedImage: false,
+            resolvesTrustedImage: true,
             at: 4
         )
 
         XCTAssertEqual(milestones.firstFreshImageAt, 4)
-        XCTAssertNil(milestones.firstTrustedImageAt)
-        XCTAssertNil(milestones.firstTrustedImageSource)
+        XCTAssertEqual(milestones.firstTrustedImageAt, 4)
+        XCTAssertEqual(milestones.firstTrustedImageSource, "live")
 
         milestones.recordBatteryTrustedStill(at: 7)
 
-        XCTAssertEqual(milestones.firstTrustedImageAt, 7)
-        XCTAssertEqual(milestones.firstTrustedImageSource, "batteryStill")
+        XCTAssertEqual(milestones.firstTrustedImageAt, 4)
+        XCTAssertEqual(milestones.firstTrustedImageSource, "live")
     }
     func testSnapshotResultTelemetryClarifiesStaleSchedulerSuccessUpdatedImage() {
         XCTAssertEqual(
@@ -111,20 +111,13 @@ final class CameraTelemetryTests: ObserveTestCase {
             liveCapacity: 1,
             liveAdmissionMode: "constrained",
             liveAdmissionSustainableCapacity: 1,
-            liveAdmissionSoftContentionCeiling: 1,
             liveAdmissionPlannerCapacity: 2,
             liveAdmissionEffectiveCapacity: 2,
-            liveAdmissionCapacityLimitReason: "softContentionProbe",
-            liveAdmissionActiveCapacityProbeFeedID: "side",
-            liveAdmissionDeferredCapacityProbeIDs: ["mailbox"],
+            liveAdmissionCapacityLimitReason: "planner",
             liveAdmissionTargetIDs: ["front"],
             liveAdmissionReservedIDs: ["front"],
             liveAdmissionQueuedIDs: ["side"],
             visibleFeedCount: 2,
-            internalMaxConcurrentSnapshotRequests: 3,
-            effectiveMaxConcurrentSnapshotRequests: 2,
-            snapshotRequestTimeout: 2.75,
-            untrustedSnapshotRefreshInterval: 2,
             trustedSnapshotRefreshInterval: 5,
             batteryCaptureWarmup: 5,
             batteryWakeTriggerThreshold: 30,
@@ -132,26 +125,17 @@ final class CameraTelemetryTests: ObserveTestCase {
             batteryWakeLiveStartTimeout: 30,
             wiredStartupLiveStartTimeout: 8,
             startupCoverageActive: true,
-            restrictedStartupPhase: "snapshotRecovery",
-            ordinaryLiveGateState: "waitingForAllTrusted",
             sessionNetworkClass: "cellular",
             currentNetworkClass: "cellular",
             connectionMode: "restricted",
             connectionModeReason: "notOnWiFi",
-            startupLiveRampMode: "fast",
-            startupLiveRampSelectedIDs: ["front", "side"],
-            startupLiveRampPendingIDs: ["side"],
-            startupLiveRampMaxPendingCount: 2,
-            startupLiveRampFastSessionThreshold: 3,
-            activeSnapshotRequests: 2,
+            restrictedLiveCapacityDiscoveryActive: true,
             outstandingSnapshotRequests: 3,
             startupMetadataMode: "mediaPrioritySerial",
             startupMetadataGateState: "open",
             activeMetadataOperations: 1,
             queuedMetadataOperations: 3,
             activeMetadataOperation: "front:availabilityRead",
-            liveCapacityExpansionRetryIn: 5,
-            liveCapacityExpansionCooldownEligible: false,
             liveCapacityIncludesUnconfirmedMemory: false,
             startupMilestones: CameraStartupTelemetryMilestones(
                 enteredConstrainedModeAt: 1,
@@ -163,7 +147,6 @@ final class CameraTelemetryTests: ObserveTestCase {
                 startupCoverageEndedAt: 15,
                 startupCoverageResult: "completedWithRecovery",
                 recoveringFeedIDs: ["side"],
-                peakActiveSnapshotRequests: 3,
                 peakOutstandingSnapshotRequests: 4,
                 metadata: CameraStartupMetadataTelemetryMilestones(
                     queuedCount: 8,
@@ -196,7 +179,6 @@ final class CameraTelemetryTests: ObserveTestCase {
                         snapshotInitialFailureCount: 1,
                         snapshotRecoveryFailureCount: 0,
                         snapshotRoutineFailureCount: 0,
-                        snapshotTimeoutCount: 1,
                         lastSnapshotCallbackLatency: 2.5,
                         lastLiveStartCallbackLatency: 0.9,
                         lastLiveStopCallbackLatency: 0.012,
@@ -231,10 +213,9 @@ final class CameraTelemetryTests: ObserveTestCase {
                     presentationMode: "snapshot",
                     displayedStillAge: nil,
                     lastSnapshotSuccessAge: nil,
-                    snapshotWorkState: "active",
+                    snapshotWorkState: "requested",
                     snapshotRequestID: "4",
                     snapshotInFlightAge: 1,
-                    snapshotOverdueAge: nil,
                     nextEligibleSnapshotIn: 1,
                     lastSnapshotRequestAge: 1,
                     startupCoverageResolution: "pending",
@@ -263,17 +244,10 @@ final class CameraTelemetryTests: ObserveTestCase {
         let text = report.text
         XCTAssertTrue(text.contains("Observe Telemetry"))
         XCTAssertTrue(text.contains("sessionElapsed=20.0s"))
-        XCTAssertTrue(text.contains("internalMaxConcurrentSnapshotRequests=3"))
-        XCTAssertTrue(text.contains("effectiveMaxConcurrentSnapshotRequests=2"))
-        XCTAssertTrue(text.contains("liveAdmissionSoftContentionCeiling=1"))
         XCTAssertTrue(text.contains("liveAdmissionPlannerCapacity=2"))
         XCTAssertTrue(text.contains("liveAdmissionEffectiveCapacity=2"))
-        XCTAssertTrue(text.contains("liveAdmissionCapacityLimitReason=softContentionProbe"))
-        XCTAssertTrue(text.contains("liveAdmissionActiveCapacityProbeFeedID=side"))
-        XCTAssertTrue(text.contains("liveAdmissionDeferredCapacityProbeIDs=mailbox"))
-        XCTAssertTrue(text.contains("startupLiveRampMode=fast"))
-        XCTAssertTrue(text.contains("restrictedStartupPhase=snapshotRecovery"))
-        XCTAssertTrue(text.contains("ordinaryLiveGateState=waitingForAllTrusted"))
+        XCTAssertTrue(text.contains("liveAdmissionCapacityLimitReason=planner"))
+        XCTAssertTrue(text.contains("restrictedLiveCapacityDiscoveryActive=true"))
         XCTAssertTrue(text.contains("startupMetadataMode=mediaPrioritySerial"))
         XCTAssertTrue(text.contains("startupMetadataGateState=open"))
         XCTAssertTrue(text.contains("activeMetadataOperations=1"))
@@ -284,19 +258,11 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("connectionMode=restricted"))
         XCTAssertTrue(text.contains("connectionModeReason=notOnWiFi"))
         XCTAssertFalse(text.contains("Backmeyer Home"))
-        XCTAssertTrue(text.contains("startupLiveRampSelectedIDs=front,side"))
-        XCTAssertTrue(text.contains("startupLiveRampPendingIDs=side"))
-        XCTAssertTrue(text.contains("startupLiveRampMaxPendingCount=2"))
-        XCTAssertTrue(text.contains("startupLiveRampFastSessionThreshold=3.0s"))
-        XCTAssertFalse(text.contains("startupLiveRampFastThreshold="))
         XCTAssertTrue(text.contains("outstandingSnapshotRequests=3"))
-        XCTAssertTrue(text.contains("untrustedSnapshotRefreshInterval=2.0s"))
         XCTAssertTrue(text.contains("batteryWakeTriggerThreshold=30.0s"))
         XCTAssertTrue(text.contains("wiredStartupLiveStartTimeout=8.0s"))
         XCTAssertTrue(text.contains("nextBatteryCaptureDueIn=25.0s"))
         XCTAssertTrue(text.contains("batteryCaptureSchedule=notApplicable"))
-        XCTAssertTrue(text.contains("liveCapacityExpansionRetryIn=5.0s"))
-        XCTAssertTrue(text.contains("liveCapacityExpansionCooldownEligible=false"))
         XCTAssertTrue(text.contains("allVisibleFeedsTrustedAt=12.0s"))
         XCTAssertTrue(text.contains("allVisibleFeedsLiveAt=8.0s"))
         XCTAssertTrue(text.contains("startupCoverageResult=completedWithRecovery"))
@@ -319,17 +285,16 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("lastLiveStartCallbackLatency=0.9s"))
         XCTAssertTrue(text.contains("lastLiveStopCallbackLatency=0.0s"))
         XCTAssertTrue(text.contains("snapshotInitialFailureCount=1"))
-        XCTAssertTrue(text.contains("snapshotTimeoutCount=1"))
         XCTAssertTrue(text.contains("front | Front | room=Porch"))
         XCTAssertTrue(text.contains("snapshotInFlightAge=1.0s"))
-        XCTAssertTrue(text.contains("snapshotWorkState=active"))
+        XCTAssertTrue(text.contains("snapshotWorkState=requested"))
         XCTAssertTrue(text.contains("startupSnapshotPath=inFlight"))
         XCTAssertTrue(text.contains("startupLivePath=notAttempted"))
         XCTAssertTrue(text.contains("liveTransportPhase=stopping"))
         XCTAssertTrue(text.contains("liveStopRequestedAge=0.5s"))
         XCTAssertTrue(text.contains("liveStopReason=startupTimeout"))
         XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
-        XCTAssertEqual(stableFingerprint(text), 8_461_495_959_973_679_894)
+        XCTAssertEqual(stableFingerprint(text), 7_549_613_269_488_127_810)
     }
 
     private func stableFingerprint(_ text: String) -> UInt64 {

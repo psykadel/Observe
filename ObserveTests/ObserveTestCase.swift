@@ -20,37 +20,11 @@ class ObserveTestCase: XCTestCase {
         isBatteryWakeCamera: Bool = false,
         batteryWakeTriggerThreshold: TimeInterval = CameraSchedulingDefaults.batteryWakeTriggerThreshold,
         batteryWakeLeaseStartedAt: Date? = nil,
-        batteryWakeRetryAfter: Date? = nil,
-        startupSnapshotAttempted: Bool = false,
-        startupLiveFallbackStartedAt: Date? = nil,
-        startupCoverageResolution: StartupCoverageResolution = .pending,
-        startupState: StartupCameraState? = nil
+        batteryWakeRetryAfter: Date? = nil
     ) -> FeedPlanningSnapshot {
         let resolvedStaleThreshold = isBatteryWakeCamera
             ? CameraSchedulingDefaults.batteryStaleThreshold
             : staleThreshold
-        var resolvedStartupState = startupState ?? StartupCameraState()
-        if startupSnapshotAttempted {
-            resolvedStartupState.apply(.snapshotRequested(at: now), isBatteryCamera: isBatteryWakeCamera)
-        }
-        if let startupLiveFallbackStartedAt {
-            resolvedStartupState.apply(
-                .liveRequested(at: startupLiveFallbackStartedAt),
-                isBatteryCamera: isBatteryWakeCamera
-            )
-        }
-        switch startupCoverageResolution {
-        case .pending:
-            break
-        case .trusted:
-            resolvedStartupState.apply(.trustedImageObserved, isBatteryCamera: isBatteryWakeCamera)
-        case .recovering:
-            resolvedStartupState.apply(
-                .snapshotFailed(entersRecovery: !isBatteryWakeCamera),
-                isBatteryCamera: isBatteryWakeCamera
-            )
-            resolvedStartupState.apply(.liveFailed, isBatteryCamera: isBatteryWakeCamera)
-        }
 
         return FeedPlanningSnapshot(
             id: id,
@@ -64,8 +38,7 @@ class ObserveTestCase: XCTestCase {
             isBatteryWakeCamera: isBatteryWakeCamera,
             batteryWakeTriggerThreshold: batteryWakeTriggerThreshold,
             batteryWakeLeaseStartedAt: batteryWakeLeaseStartedAt,
-            batteryWakeRetryAfter: batteryWakeRetryAfter,
-            startupState: resolvedStartupState
+            batteryWakeRetryAfter: batteryWakeRetryAfter
         )
     }
 
