@@ -157,6 +157,19 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertTrue(decision.queuedStartIDs.isEmpty)
     }
 
+    func testRestrictedOptimisticLiveFillUsesLiveOrderImmediately() {
+        XCTAssertTrue(
+            LiveAdmissionOrderingPolicy.usesLiveOrder(
+                connectionMode: .restricted
+            )
+        )
+        XCTAssertFalse(
+            LiveAdmissionOrderingPolicy.usesLiveOrder(
+                connectionMode: .homeNetwork
+            )
+        )
+    }
+
     func testRestrictedMetadataWaitsForInitialMediaAdmissionThenRunsOneWide() {
         let mode = StartupMetadataWorkMode.resolve(connectionMode: .restricted)
 

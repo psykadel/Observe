@@ -184,6 +184,12 @@ enum StartupLivePolicy: Equatable {
     }
 }
 
+enum LiveAdmissionOrderingPolicy {
+    static func usesLiveOrder(connectionMode: CameraConnectionMode) -> Bool {
+        connectionMode == .restricted
+    }
+}
+
 enum StartupCoverageResolution: Equatable {
     case pending
     case trusted

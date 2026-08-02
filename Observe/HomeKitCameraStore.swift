@@ -1110,8 +1110,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         liveAdmissionController.update(mode: admissionMode, sustainableCapacity: liveCapacity)
 
         let visibleFeeds = wallFeeds
-        let usesLivePriority = connectionModeResolution.mode == .restricted
-            && (sessionMode == .constrained || startupLivePolicy == .restrictedSnapshotOnly)
+        let usesLivePriority = LiveAdmissionOrderingPolicy.usesLiveOrder(
+            connectionMode: connectionModeResolution.mode
+        )
         let admissionOrderedFeeds = usesLivePriority
             ? livePriorityOrderedFeeds.filter { isVisibleOnWall($0) }
             : visibleFeeds
