@@ -486,6 +486,8 @@ struct RestrictedStartupOverlay: View {
     let presentation: RestrictedStartupOverlayPresentation
     let homeHubState: HMHomeHubState
 
+    private let leadingColumnWidth: CGFloat = 26
+
     private var hubPresentation: (icon: String, color: Color, text: String) {
         switch homeHubState {
         case .connected:
@@ -523,6 +525,7 @@ struct RestrictedStartupOverlay: View {
                     ProgressView()
                         .controlSize(.regular)
                         .tint(.white.opacity(0.68))
+                        .frame(width: leadingColumnWidth)
 
                     Text(presentation.cameraCountText)
                         .font(.headline.weight(.semibold))
@@ -556,7 +559,7 @@ struct RestrictedStartupOverlay: View {
             Image(systemName: icon)
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(color)
-                .frame(width: 26)
+                .frame(width: leadingColumnWidth)
 
             Text(text)
                 .font(.headline.weight(.semibold))
