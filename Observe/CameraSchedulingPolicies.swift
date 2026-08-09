@@ -140,6 +140,15 @@ enum BatteryTrustedStillCapturePolicy {
 }
 
 enum RestrictedLiveCapacity {
+    static func shouldEndDiscovery(
+        after disposition: CameraLiveFailureDisposition
+    ) -> Bool {
+        if case .softContention = disposition {
+            return true
+        }
+        return false
+    }
+
     static func enteringAfterConstrainedSignal(
         currentLiveCount: Int,
         visibleFeedCount: Int,

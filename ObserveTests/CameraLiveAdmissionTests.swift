@@ -73,6 +73,17 @@ final class CameraLiveAdmissionTests: ObserveTestCase {
             2
         )
     }
+    func testRestrictedSoftContentionEndsCapacityDiscovery() throws {
+        let busy = try XCTUnwrap(CameraTransportError(
+            NSError(domain: HMErrorDomain, code: HMError.Code.accessoryIsBusy.rawValue)
+        ))
+
+        XCTAssertTrue(
+            RestrictedLiveCapacity.shouldEndDiscovery(
+                after: .softContention(busy)
+            )
+        )
+    }
     func testRepeatedLiveFailuresRetryAfterOneSecond() {
         let liveBudget = RestrictedLiveCapacity.planningBudget(
             knownCapacity: 2,

@@ -1909,6 +1909,10 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 "live stopped \(feedID) disposition=\(liveFailureDispositionLabel(disposition)) callbackLatency=\(optionalSeconds(callbackLatency)) error=\(transportErrorLabel(disposition.error))",
                 at: stoppedAt
             )
+            if connectionModeResolution.mode == .restricted,
+               RestrictedLiveCapacity.shouldEndDiscovery(after: disposition) {
+                isDiscoveringRestrictedLiveCapacity = false
+            }
 
             switch disposition {
             case .requestedStop:
