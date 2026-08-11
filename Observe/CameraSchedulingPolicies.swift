@@ -57,6 +57,64 @@ enum SnapshotQueuePolicy {
     }
 }
 
+struct SnapshotAdmissionCandidate: Equatable {
+    let id: String
+    let priority: SnapshotPriority
+    let cameraPriorityIndex: Int
+    let lastRequestIssuedAt: Date?
+}
+
+enum SnapshotRequestConcurrencyPolicy {
+    static func limit(
+        connectionMode: CameraConnectionMode,
+        configuredRestrictedLimit: Int
+    ) -> Int? {
+        guard connectionMode == .restricted else { return nil }
+        return sanitizedRestrictedLimit(configuredRestrictedLimit)
+    }
+
+    static func sanitizedRestrictedLimit(_ limit: Int) -> Int {
+        min(5, max(1, limit))
+    }
+}
+
+enum RestrictedSnapshotAdmissionPolicy {
+    static func prioritizedCandidates(
+        _ candidates: [SnapshotAdmissionCandidate]
+    ) -> [SnapshotAdmissionCandidate] {
+        candidates.sorted { lhs, rhs in
+            if lhs.priority != rhs.priority {
+                return lhs.priority > rhs.priority
+            }
+
+            switch (lhs.lastRequestIssuedAt, rhs.lastRequestIssuedAt) {
+            case (nil, nil):
+                break
+            case (nil, _):
+                return true
+            case (_, nil):
+                return false
+            case (let lhsDate?, let rhsDate?):
+                if lhsDate != rhsDate {
+                    return lhsDate < rhsDate
+                }
+            }
+
+            return lhs.cameraPriorityIndex < rhs.cameraPriorityIndex
+        }
+    }
+
+    static func orderedCandidates(
+        _ candidates: [SnapshotAdmissionCandidate],
+        outstandingCount: Int,
+        configuredLimit: Int
+    ) -> [SnapshotAdmissionCandidate] {
+        let limit = SnapshotRequestConcurrencyPolicy.sanitizedRestrictedLimit(configuredLimit)
+        let availableSlots = max(0, limit - max(0, outstandingCount))
+        return Array(prioritizedCandidates(candidates).prefix(availableSlots))
+    }
+}
+
 enum StartupSnapshotRecoveryPolicy {
     static func retryEligibleDate(
         startupCoverageActive: Bool,

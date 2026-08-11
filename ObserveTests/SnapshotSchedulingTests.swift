@@ -86,6 +86,108 @@ final class SnapshotSchedulingTests: ObserveTestCase {
         XCTAssertTrue(state.enqueue(priority: .urgent, eligibleAt: now))
         XCTAssertEqual(state, .queued(priority: .urgent, eligibleAt: now))
     }
+    func testRestrictedSnapshotAdmissionLimitsAndPrioritizesUrgentLeastRecentlyIssuedWork() {
+        let candidates = [
+            SnapshotAdmissionCandidate(
+                id: "refresh-never",
+                priority: .refresh,
+                cameraPriorityIndex: 0,
+                lastRequestIssuedAt: nil
+            ),
+            SnapshotAdmissionCandidate(
+                id: "urgent-newest",
+                priority: .urgent,
+                cameraPriorityIndex: 1,
+                lastRequestIssuedAt: now.addingTimeInterval(-1)
+            ),
+            SnapshotAdmissionCandidate(
+                id: "urgent-oldest",
+                priority: .urgent,
+                cameraPriorityIndex: 2,
+                lastRequestIssuedAt: now.addingTimeInterval(-10)
+            ),
+            SnapshotAdmissionCandidate(
+                id: "urgent-never",
+                priority: .urgent,
+                cameraPriorityIndex: 3,
+                lastRequestIssuedAt: nil
+            )
+        ]
+
+        XCTAssertEqual(
+            RestrictedSnapshotAdmissionPolicy.orderedCandidates(
+                candidates,
+                outstandingCount: 1,
+                configuredLimit: 3
+            ).map(\.id),
+            ["urgent-never", "urgent-oldest"]
+        )
+    }
+    func testRestrictedSnapshotAdmissionUsesCameraOrderForTiesAndClampsLimit() {
+        let tiedDate = now.addingTimeInterval(-5)
+        let candidates = [
+            SnapshotAdmissionCandidate(
+                id: "second",
+                priority: .refresh,
+                cameraPriorityIndex: 1,
+                lastRequestIssuedAt: tiedDate
+            ),
+            SnapshotAdmissionCandidate(
+                id: "first",
+                priority: .refresh,
+                cameraPriorityIndex: 0,
+                lastRequestIssuedAt: tiedDate
+            )
+        ]
+
+        XCTAssertEqual(
+            RestrictedSnapshotAdmissionPolicy.orderedCandidates(
+                candidates,
+                outstandingCount: 0,
+                configuredLimit: 0
+            ).map(\.id),
+            ["first"]
+        )
+        XCTAssertEqual(
+            RestrictedSnapshotAdmissionPolicy.orderedCandidates(
+                candidates,
+                outstandingCount: 4,
+                configuredLimit: 6
+            ).map(\.id),
+            ["first"]
+        )
+    }
+    func testRestrictedSnapshotAdmissionReturnsNoWorkWhenLimitIsFull() {
+        let candidate = SnapshotAdmissionCandidate(
+            id: "front",
+            priority: .urgent,
+            cameraPriorityIndex: 0,
+            lastRequestIssuedAt: nil
+        )
+
+        XCTAssertTrue(
+            RestrictedSnapshotAdmissionPolicy.orderedCandidates(
+                [candidate],
+                outstandingCount: 3,
+                configuredLimit: 3
+            ).isEmpty
+        )
+    }
+    func testSnapshotConcurrencyLimitOnlyAppliesInRestrictedMode() {
+        XCTAssertEqual(
+            SnapshotRequestConcurrencyPolicy.limit(
+                connectionMode: .restricted,
+                configuredRestrictedLimit: 3
+            ),
+            3
+        )
+        XCTAssertNil(
+            SnapshotRequestConcurrencyPolicy.limit(
+                connectionMode: .homeNetwork,
+                configuredRestrictedLimit: 3
+            )
+        )
+    }
     func testLiveTargetAlsoQueuesSnapshotWorkWhileItsPictureIsMissing() {
         let plan = planner.makePlan(
             feeds: [

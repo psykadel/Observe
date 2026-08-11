@@ -392,7 +392,9 @@ struct CameraTelemetryReport: Equatable {
     let connectionMode: String
     let connectionModeReason: String
     let restrictedLiveCapacityDiscoveryActive: Bool
+    let restrictedSnapshotRequestLimit: Int
     let outstandingSnapshotRequests: Int
+    let snapshotQueuedIDs: [String]
     let startupMetadataMode: String
     let startupMetadataGateState: String
     let activeMetadataOperations: Int
@@ -434,7 +436,9 @@ struct CameraTelemetryReport: Equatable {
         lines.append("connectionMode=\(connectionMode)")
         lines.append("connectionModeReason=\(connectionModeReason)")
         lines.append("restrictedLiveCapacityDiscoveryActive=\(restrictedLiveCapacityDiscoveryActive)")
+        lines.append("restrictedSnapshotRequestLimit=\(restrictedSnapshotRequestLimit)")
         lines.append("outstandingSnapshotRequests=\(outstandingSnapshotRequests)")
+        lines.append("snapshotQueuedIDs=\(snapshotQueuedIDs.isEmpty ? "none" : snapshotQueuedIDs.joined(separator: ","))")
         lines.append("startupMetadataMode=\(startupMetadataMode)")
         lines.append("startupMetadataGateState=\(startupMetadataGateState)")
         lines.append("activeMetadataOperations=\(activeMetadataOperations)")

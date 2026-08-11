@@ -78,6 +78,19 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section("Snapshot Requests") {
+                    Text("Limits how many camera snapshots Observe requests at once on a limited connection.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    Picker("Snapshot Requests", selection: restrictedSnapshotRequestLimitBinding) {
+                        ForEach(1...5, id: \.self) { limit in
+                            Text("\(limit)").tag(limit)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
                 Section("Stale") {
                     Text(
                         "If a camera is showing an image older than this, Observe puts a red box around it so you can quickly tell it is not recent."
@@ -414,6 +427,13 @@ struct SettingsView: View {
         Binding(
             get: { preferences.staleVisualHighlightSeconds },
             set: { preferences.setStaleVisualHighlightSeconds($0) }
+        )
+    }
+
+    private var restrictedSnapshotRequestLimitBinding: Binding<Int> {
+        Binding(
+            get: { preferences.restrictedSnapshotRequestLimit },
+            set: { preferences.setRestrictedSnapshotRequestLimit($0) }
         )
     }
 

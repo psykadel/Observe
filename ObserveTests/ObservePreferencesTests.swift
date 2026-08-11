@@ -652,7 +652,7 @@ final class ObservePreferencesTests: ObserveTestCase {
     }
 
     @MainActor
-    func testPreferencesIgnoreLegacySnapshotLimitAndRoundTripBatterySettings() {
+    func testRestrictedSnapshotRequestLimitDefaultsToThreeAndIgnoresLegacyValue() {
         let suiteName = "ObserveTests.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             XCTFail("Expected test user defaults suite")
@@ -663,16 +663,54 @@ final class ObservePreferencesTests: ObserveTestCase {
         defaults.set(6, forKey: "observe.maxConcurrentSnapshotRequests")
 
         let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertEqual(preferences.restrictedSnapshotRequestLimit, 3)
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+    @MainActor
+    func testRestrictedSnapshotRequestLimitClampsAndPersistsValuesFromOneThroughFive() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+        let preferences = ObservePreferences(userDefaults: defaults)
+
+        preferences.setRestrictedSnapshotRequestLimit(0)
+        XCTAssertEqual(preferences.restrictedSnapshotRequestLimit, 1)
+
+        for limit in 1...5 {
+            preferences.setRestrictedSnapshotRequestLimit(limit)
+            XCTAssertEqual(preferences.restrictedSnapshotRequestLimit, limit)
+            XCTAssertEqual(
+                ObservePreferences(userDefaults: defaults).restrictedSnapshotRequestLimit,
+                limit
+            )
+        }
+
+        preferences.setRestrictedSnapshotRequestLimit(6)
+        XCTAssertEqual(preferences.restrictedSnapshotRequestLimit, 5)
+        XCTAssertEqual(ObservePreferences(userDefaults: defaults).restrictedSnapshotRequestLimit, 5)
+
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+    @MainActor
+    func testBatterySettingsRoundTrip() {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected test user defaults suite")
+            return
+        }
+
+        defaults.removePersistentDomain(forName: suiteName)
+        let preferences = ObservePreferences(userDefaults: defaults)
         XCTAssertFalse(preferences.isBatteryWakeCamera(id: "battery"))
         XCTAssertTrue(preferences.isBatteryCameraVisibilityEnabled)
         XCTAssertTrue(preferences.showsBatteryCameraVisibilityToggle)
         XCTAssertFalse(preferences.showsBatteryPercentages)
         XCTAssertEqual(preferences.batteryCaptureWarmupSeconds, 5)
-        XCTAssertFalse(
-            Mirror(reflecting: preferences).children.contains {
-                $0.label == "maxConcurrentSnapshotRequests"
-            }
-        )
 
         preferences.setBatteryWakeEnabled(true, for: "battery")
         preferences.setBatteryCameraVisibilityEnabled(false)
@@ -694,7 +732,7 @@ final class ObservePreferencesTests: ObserveTestCase {
 
         defaults.removePersistentDomain(forName: suiteName)
     }
-    func testNumberSettingsExcludeInternalSnapshotConcurrency() {
+    func testNumberSettingsOnlyIncludeDurationEditors() {
         XCTAssertEqual(
             NumberSettingKind.allCases,
             [.staleThreshold, .batteryWakeTrigger, .batteryCaptureWarmup, .batteryStale]

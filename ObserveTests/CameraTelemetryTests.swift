@@ -127,7 +127,9 @@ final class CameraTelemetryTests: ObserveTestCase {
             connectionMode: "restricted",
             connectionModeReason: "notOnWiFi",
             restrictedLiveCapacityDiscoveryActive: true,
+            restrictedSnapshotRequestLimit: 3,
             outstandingSnapshotRequests: 3,
+            snapshotQueuedIDs: ["back", "garage"],
             startupMetadataMode: "mediaPrioritySerial",
             startupMetadataGateState: "open",
             activeMetadataOperations: 1,
@@ -252,7 +254,9 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("connectionMode=restricted"))
         XCTAssertTrue(text.contains("connectionModeReason=notOnWiFi"))
         XCTAssertFalse(text.contains("Backmeyer Home"))
+        XCTAssertTrue(text.contains("restrictedSnapshotRequestLimit=3"))
         XCTAssertTrue(text.contains("outstandingSnapshotRequests=3"))
+        XCTAssertTrue(text.contains("snapshotQueuedIDs=back,garage"))
         XCTAssertTrue(text.contains("batteryWakeTriggerThreshold=30.0s"))
         XCTAssertTrue(text.contains("nextBatteryCaptureDueIn=25.0s"))
         XCTAssertTrue(text.contains("batteryCaptureSchedule=notApplicable"))
@@ -286,7 +290,7 @@ final class CameraTelemetryTests: ObserveTestCase {
         XCTAssertTrue(text.contains("liveTransportPhase=stopping"))
         XCTAssertTrue(text.contains("liveStopRequestedAge=0.5s"))
         XCTAssertTrue(text.contains("#2 +2.000s snapshot issued front priority=urgent"))
-        XCTAssertEqual(stableFingerprint(text), 12_338_359_716_316_310_087)
+        XCTAssertEqual(stableFingerprint(text), 17_202_620_053_876_016_418)
     }
 
     private func stableFingerprint(_ text: String) -> UInt64 {

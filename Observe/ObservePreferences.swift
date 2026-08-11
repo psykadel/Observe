@@ -7,6 +7,7 @@ final class ObservePreferences: ObservableObject {
         static let homeNetworkSSID = "observe.homeNetworkSSID"
         static let density = "observe.wallDensity"
         static let cameraNameVisibility = "observe.cameraNameVisibility"
+        static let restrictedSnapshotRequestLimit = "observe.restrictedSnapshotRequestLimit"
         static let remotePriority = "observe.remotePriority"
         static let livePriority = "observe.livePriority"
         static let staleVisualHighlightSeconds = "observe.staleVisualHighlightSeconds"
@@ -41,6 +42,8 @@ final class ObservePreferences: ObservableObject {
     @Published var cameraNameVisibility: CameraNameVisibility {
         didSet { userDefaults.set(cameraNameVisibility.rawValue, forKey: Keys.cameraNameVisibility) }
     }
+
+    @Published private(set) var restrictedSnapshotRequestLimit: Int
 
     @Published var remotePriorityIDs: [String] {
         didSet { userDefaults.set(remotePriorityIDs, forKey: Keys.remotePriority) }
@@ -106,6 +109,13 @@ final class ObservePreferences: ObservableObject {
         }
         let storedCameraNameVisibility = userDefaults.string(forKey: Keys.cameraNameVisibility) ?? ""
         self.cameraNameVisibility = CameraNameVisibility(rawValue: storedCameraNameVisibility) ?? .show
+        let storedRestrictedSnapshotRequestLimit = userDefaults.object(
+            forKey: Keys.restrictedSnapshotRequestLimit
+        ) as? Int
+        self.restrictedSnapshotRequestLimit = min(
+            5,
+            max(1, storedRestrictedSnapshotRequestLimit ?? 3)
+        )
         self.remotePriorityIDs = userDefaults.stringArray(forKey: Keys.remotePriority) ?? []
         self.livePriorityIDs = userDefaults.stringArray(forKey: Keys.livePriority) ?? []
         self.batteryWakeCameraIDs = userDefaults.stringArray(forKey: Keys.batteryWakeCameraIDs) ?? []
@@ -260,6 +270,14 @@ final class ObservePreferences: ObservableObject {
 
         staleVisualHighlightSeconds = sanitized
         userDefaults.set(sanitized, forKey: Keys.staleVisualHighlightSeconds)
+    }
+
+    func setRestrictedSnapshotRequestLimit(_ limit: Int) {
+        let sanitized = min(5, max(1, limit))
+        guard restrictedSnapshotRequestLimit != sanitized else { return }
+
+        restrictedSnapshotRequestLimit = sanitized
+        userDefaults.set(sanitized, forKey: Keys.restrictedSnapshotRequestLimit)
     }
 
     func setHomeNetworkSSID(_ ssid: String) {

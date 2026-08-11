@@ -264,6 +264,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
 
     func telemetryReportText(at now: Date = Date()) -> String {
         let snapshotStates = feedScheduleStates.values.map(\.snapshotWorkState)
+        let queuedSnapshotIDs = snapshotQueuedIDsForTelemetry()
         return CameraTelemetryReport(
             generatedAt: now,
             sessionStartedAt: telemetrySessionStartedAt,
@@ -293,7 +294,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             connectionMode: connectionModeResolution.mode.rawValue,
             connectionModeReason: connectionModeResolution.reason.rawValue,
             restrictedLiveCapacityDiscoveryActive: isDiscoveringRestrictedLiveCapacity,
+            restrictedSnapshotRequestLimit: preferences.restrictedSnapshotRequestLimit,
             outstandingSnapshotRequests: snapshotStates.filter(\.isOutstanding).count,
+            snapshotQueuedIDs: queuedSnapshotIDs,
             startupMetadataMode: startupMetadataMode.rawValue,
             startupMetadataGateState: startupMetadataGateState,
             activeMetadataOperations: activeStartupMetadataOperation == nil ? 0 : 1,
@@ -304,6 +307,25 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             feeds: telemetryFeeds(at: now),
             events: telemetryEvents
         ).text
+    }
+
+    private func snapshotQueuedIDsForTelemetry() -> [String] {
+        let cameraPriorityByID = Dictionary(
+            uniqueKeysWithValues: wallFeeds.enumerated().map { ($0.element.id, $0.offset) }
+        )
+        let candidates = wallFeeds.compactMap { feed -> SnapshotAdmissionCandidate? in
+            guard let state = feedScheduleStates[feed.id],
+                  case .queued(let priority, _) = state.snapshotWorkState else {
+                return nil
+            }
+            return SnapshotAdmissionCandidate(
+                id: feed.id,
+                priority: priority,
+                cameraPriorityIndex: cameraPriorityByID[feed.id] ?? Int.max,
+                lastRequestIssuedAt: state.lastSnapshotRequestIssuedAt
+            )
+        }
+        return RestrictedSnapshotAdmissionPolicy.prioritizedCandidates(candidates).map(\.id)
     }
 
     private func rebuildHomesAndFeeds() {
@@ -1377,6 +1399,9 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         guard isAppActive else { return }
         let now = Date()
         let feedLookup = Dictionary(uniqueKeysWithValues: wallFeeds.map { ($0.id, $0) })
+        let cameraPriorityByID = Dictionary(
+            uniqueKeysWithValues: wallFeeds.enumerated().map { ($0.element.id, $0.offset) }
+        )
         let snapshotFeeds = currentRecoveryPlan.orderedSnapshotIDs.compactMap { feedLookup[$0] }
         let dueFeeds = snapshotFeeds
             .filter { feed in
@@ -1385,12 +1410,48 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
                 return eligibleAt <= now
             }
 
-        for feed in dueFeeds {
+        guard let restrictedLimit = SnapshotRequestConcurrencyPolicy.limit(
+            connectionMode: connectionModeResolution.mode,
+            configuredRestrictedLimit: preferences.restrictedSnapshotRequestLimit
+        ) else {
+            for feed in dueFeeds {
+                if issueSnapshotRequest(for: feed, at: now) {
+                    let snapshotStates = feedScheduleStates.values.map(\.snapshotWorkState)
+                    telemetryStartupMilestones.recordSnapshotConcurrency(
+                        outstanding: snapshotStates.filter(\.isOutstanding).count
+                    )
+                }
+            }
+            return
+        }
+
+        var outstandingCount = feedScheduleStates.values
+            .map(\.snapshotWorkState)
+            .filter(\.isOutstanding)
+            .count
+        var remainingCandidates = dueFeeds.compactMap { feed -> SnapshotAdmissionCandidate? in
+            guard let state = feedScheduleStates[feed.id],
+                  case .queued(let priority, _) = state.snapshotWorkState else {
+                return nil
+            }
+            return SnapshotAdmissionCandidate(
+                id: feed.id,
+                priority: priority,
+                cameraPriorityIndex: cameraPriorityByID[feed.id] ?? Int.max,
+                lastRequestIssuedAt: state.lastSnapshotRequestIssuedAt
+            )
+        }
+
+        while let candidate = RestrictedSnapshotAdmissionPolicy.orderedCandidates(
+            remainingCandidates,
+            outstandingCount: outstandingCount,
+            configuredLimit: restrictedLimit
+        ).first {
+            remainingCandidates.removeAll { $0.id == candidate.id }
+            guard let feed = feedLookup[candidate.id] else { continue }
             if issueSnapshotRequest(for: feed, at: now) {
-                let snapshotStates = feedScheduleStates.values.map(\.snapshotWorkState)
-                telemetryStartupMilestones.recordSnapshotConcurrency(
-                    outstanding: snapshotStates.filter(\.isOutstanding).count
-                )
+                outstandingCount += 1
+                telemetryStartupMilestones.recordSnapshotConcurrency(outstanding: outstandingCount)
             }
         }
     }
