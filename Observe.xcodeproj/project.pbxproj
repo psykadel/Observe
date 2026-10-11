@@ -19,6 +19,7 @@
 		A1000015000000000000000A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000A /* SettingsView.swift */; };
 		A1000015000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000B /* Assets.xcassets */; };
 		A1000015000000000000000C /* CameraRecoveryPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000E /* CameraRecoveryPlanner.swift */; };
+		A1000015000000000000000E /* CameraLiveAdmissionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000011 /* CameraLiveAdmissionController.swift */; };
 		A1000015000000000000000F /* ObserveTestCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000012 /* ObserveTestCase.swift */; };
 		A10000150000000000000010 /* CameraRecoveryPlannerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000013 /* CameraRecoveryPlannerTests.swift */; };
 		A10000150000000000000011 /* SnapshotSchedulingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000014 /* SnapshotSchedulingTests.swift */; };
@@ -29,7 +30,6 @@
 		A10000150000000000000016 /* ObservePreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000019 /* ObservePreferencesTests.swift */; };
 		A10000150000000000000017 /* CameraAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001A /* CameraAvailabilityTests.swift */; };
 		A10000150000000000000018 /* CameraTelemetryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001B /* CameraTelemetryTests.swift */; };
-		A1000015000000000000000E /* CameraLiveAdmissionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000010000000000000011 /* CameraLiveAdmissionController.swift */; };
 		A10000150000000000000019 /* CameraStartupPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001C /* CameraStartupPolicies.swift */; };
 		A1000015000000000000001A /* CameraTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001D /* CameraTelemetry.swift */; };
 		A1000015000000000000001B /* CameraSchedulingPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000001E /* CameraSchedulingPolicies.swift */; };
@@ -67,6 +67,8 @@
 		A1000001000000000000000C /* Observe.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Observe.entitlements; sourceTree = "<group>"; };
 		A1000001000000000000000D /* Observe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Observe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1000001000000000000000E /* CameraRecoveryPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRecoveryPlanner.swift; sourceTree = "<group>"; };
+		A10000010000000000000010 /* ObserveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ObserveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000010000000000000011 /* CameraLiveAdmissionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraLiveAdmissionController.swift; sourceTree = "<group>"; };
 		A10000010000000000000012 /* ObserveTestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObserveTestCase.swift; sourceTree = "<group>"; };
 		A10000010000000000000013 /* CameraRecoveryPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRecoveryPlannerTests.swift; sourceTree = "<group>"; };
 		A10000010000000000000014 /* SnapshotSchedulingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotSchedulingTests.swift; sourceTree = "<group>"; };
@@ -77,8 +79,6 @@
 		A10000010000000000000019 /* ObservePreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObservePreferencesTests.swift; sourceTree = "<group>"; };
 		A1000001000000000000001A /* CameraAvailabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAvailabilityTests.swift; sourceTree = "<group>"; };
 		A1000001000000000000001B /* CameraTelemetryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTelemetryTests.swift; sourceTree = "<group>"; };
-		A10000010000000000000010 /* ObserveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ObserveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		A10000010000000000000011 /* CameraLiveAdmissionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraLiveAdmissionController.swift; sourceTree = "<group>"; };
 		A1000001000000000000001C /* CameraStartupPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraStartupPolicies.swift; sourceTree = "<group>"; };
 		A1000001000000000000001D /* CameraTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTelemetry.swift; sourceTree = "<group>"; };
 		A1000001000000000000001E /* CameraSchedulingPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSchedulingPolicies.swift; sourceTree = "<group>"; };
@@ -220,7 +220,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2640;
-				LastUpgradeCheck = 2660;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					A100000D0000000000000001 = {
 						CreatedOnToolsVersion = 26.4;
@@ -323,6 +323,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
@@ -369,6 +370,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
@@ -420,6 +422,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WRM32839J4;
 				ENABLE_TESTABILITY = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Observe;
@@ -456,6 +459,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = WRM32839J4;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Observe;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";

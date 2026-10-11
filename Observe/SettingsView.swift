@@ -238,10 +238,7 @@ struct SettingsView: View {
 
                 if !store.priorityOrderedFeeds.isEmpty {
                     Section("Camera Order") {
-                        ForEach(store.priorityOrderedFeeds) { feed in
-                            cameraOrderRow(feed)
-                        }
-                        .onMove(perform: store.movePriority)
+                        cameraOrderRows(store.priorityOrderedFeeds, onMove: store.movePriority)
                     }
                 }
 
@@ -253,10 +250,7 @@ struct SettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
-                        ForEach(store.livePriorityOrderedFeeds) { feed in
-                            cameraOrderRow(feed)
-                        }
-                        .onMove(perform: store.moveLivePriority)
+                        cameraOrderRows(store.livePriorityOrderedFeeds, onMove: store.moveLivePriority)
                     }
                 }
 
@@ -408,6 +402,21 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private func cameraOrderRows(
+        _ feeds: [CameraFeedCoordinator],
+        onMove: @escaping (IndexSet, Int) -> Void
+    ) -> some View {
+        if CameraWallPlatform.current == .mac {
+            CameraOrderRows(feeds: feeds, onMove: onMove)
+        } else {
+            ForEach(feeds) { feed in
+                cameraOrderRow(feed)
+            }
+            .onMove(perform: onMove)
+        }
+    }
+
     private func cameraOrderRow(_ feed: CameraFeedCoordinator) -> some View {
         HStack {
             Image(systemName: "line.3.horizontal")
@@ -515,5 +524,80 @@ struct SettingsView: View {
             try? await Task.sleep(for: .seconds(2))
             didCopyTelemetry = false
         }
+    }
+}
+
+/// Reordering stays inside this view instead of starting a Catalyst drag/drop session.
+private struct CameraOrderRows: View {
+    let feeds: [CameraFeedCoordinator]
+    let onMove: (IndexSet, Int) -> Void
+
+    @GestureState private var drag: (id: String, offset: CGFloat)?
+    private let rowHeight: CGFloat = 52
+
+    private var draggedID: String? { drag?.id }
+    private var dragOffset: CGFloat { drag?.offset ?? 0 }
+    private var sourceIndex: Int? { feeds.firstIndex { $0.id == draggedID } }
+
+    private var targetIndex: Int? {
+        guard let sourceIndex else { return nil }
+        return min(max(sourceIndex + Int((dragOffset / rowHeight).rounded()), 0), feeds.count - 1)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(feeds.enumerated()), id: \.element.id) { index, feed in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(feed.name)
+                        if let roomName = feed.roomName {
+                            Text(roomName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "line.3.horizontal")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 44, height: rowHeight)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 2)
+                                .updating($drag) { value, state, _ in
+                                    state = (feed.id, value.translation.height)
+                                }
+                                .onEnded { value in
+                                    let target = min(max(index + Int((value.translation.height / rowHeight).rounded()), 0), feeds.count - 1)
+                                    if target != index {
+                                        onMove(IndexSet(integer: index), target > index ? target + 1 : target)
+                                    }
+                                }
+                        )
+                        .accessibilityLabel("Reorder \(feed.name)")
+                }
+                .frame(height: rowHeight)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .overlay(alignment: .bottom) {
+                    if index < feeds.count - 1 { Divider() }
+                }
+                .offset(y: offset(for: index))
+                .zIndex(draggedID == feed.id ? 1 : 0)
+                .animation(draggedID == feed.id ? nil : .easeInOut(duration: 0.15), value: targetIndex)
+                .accessibilityAction(named: "Move up") {
+                    if index > 0 { onMove(IndexSet(integer: index), index - 1) }
+                }
+                .accessibilityAction(named: "Move down") {
+                    if index < feeds.count - 1 { onMove(IndexSet(integer: index), index + 2) }
+                }
+            }
+        }
+    }
+
+    private func offset(for index: Int) -> CGFloat {
+        guard let sourceIndex, let targetIndex else { return 0 }
+        if index == sourceIndex { return dragOffset }
+        if sourceIndex < index && index <= targetIndex { return -rowHeight }
+        if targetIndex <= index && index < sourceIndex { return rowHeight }
+        return 0
     }
 }
