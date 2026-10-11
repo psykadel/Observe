@@ -140,8 +140,13 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         rebuildHomesAndFeeds()
     }
 
-    func setHomeNetworkSSID(_ ssid: String) {
-        preferences.setHomeNetworkSSID(ssid)
+    func addHomeNetworkSSID(_ ssid: String) {
+        preferences.addHomeNetworkSSID(ssid)
+        updateConnectionMode(at: Date(), refreshPresentation: true)
+    }
+
+    func removeHomeNetworkSSID(_ ssid: String) {
+        preferences.removeHomeNetworkSSID(ssid)
         updateConnectionMode(at: Date(), refreshPresentation: true)
     }
 
@@ -363,7 +368,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
             connectionMode: CameraConnectionModePolicy.resolve(
                 networkClass: networkPathClassifier.currentClass,
                 currentSSID: currentWiFiSSID,
-                configuredHomeSSID: preferences.homeNetworkSSID
+                configuredHomeSSIDs: preferences.homeNetworkSSIDs
             ).mode
         )
         var discoveredFeeds: [CameraFeedCoordinator] = []
@@ -552,7 +557,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         connectionModeResolution = CameraConnectionModePolicy.resolve(
             networkClass: networkClass,
             currentSSID: currentWiFiSSID,
-            configuredHomeSSID: preferences.homeNetworkSSID
+            configuredHomeSSIDs: preferences.homeNetworkSSIDs
         )
         configureLiveCapacityForCurrentMode()
         startupMetadataMode = StartupMetadataWorkMode.resolve(
@@ -728,7 +733,7 @@ final class HomeKitCameraStore: NSObject, ObservableObject {
         let resolved = CameraConnectionModePolicy.resolve(
             networkClass: networkPathClassifier.currentClass,
             currentSSID: currentWiFiSSID,
-            configuredHomeSSID: preferences.homeNetworkSSID
+            configuredHomeSSIDs: preferences.homeNetworkSSIDs
         )
         sessionNetworkClass = networkPathClassifier.currentClass
         guard resolved != previous else { return }

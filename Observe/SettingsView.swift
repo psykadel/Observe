@@ -8,6 +8,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editingNumberSetting: NumberSettingKind?
     @State private var didCopyTelemetry = false
+    @State private var newHomeNetworkSSID = ""
 
     @ObservedObject var store: HomeKitCameraStore
     @ObservedObject var preferences: ObservePreferences
@@ -45,26 +46,47 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Home Network") {
+                Section("Home Networks") {
                     Text(
-                        "Set your home Wi-Fi network so Observe can start all selected cameras live immediately when you’re at home."
+                        "Add your home Wi-Fi networks so Observe can start all selected cameras live immediately when connected to any saved network."
                     )
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                    TextField("Network Name", text: homeNetworkSSIDBinding)
+                    ForEach(preferences.homeNetworkSSIDs, id: \.self) { ssid in
+                        HStack {
+                            Text(ssid)
+                            Spacer()
+                            Button("Remove", role: .destructive) {
+                                store.removeHomeNetworkSSID(ssid)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Remove \(ssid)")
+                        }
+                    }
+
+                    HStack {
+                        TextField("Network Name", text: $newHomeNetworkSSID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .onSubmit(addNewHomeNetwork)
+                        Button("Add", action: addNewHomeNetwork)
+                            .buttonStyle(.borderless)
+                            .disabled(!canAddNewHomeNetwork)
+                    }
 
                     if let currentWiFiSSID = store.currentWiFiSSID {
                         HStack {
                             Text(currentWiFiSSID)
                             Spacer()
                             Button {
-                                store.setHomeNetworkSSID(currentWiFiSSID)
+                                store.addHomeNetworkSSID(currentWiFiSSID)
                             } label: {
                                 Image(systemName: "plus")
                             }
                             .buttonStyle(.borderless)
-                            .accessibilityLabel("Use Current Wi-Fi Network")
+                            .accessibilityLabel("Add Current Wi-Fi Network")
+                            .disabled(currentWiFiSSID.isEmpty || preferences.homeNetworkSSIDs.contains(currentWiFiSSID))
                         }
                     }
                 }
@@ -328,11 +350,14 @@ struct SettingsView: View {
         )
     }
 
-    private var homeNetworkSSIDBinding: Binding<String> {
-        Binding(
-            get: { preferences.homeNetworkSSID },
-            set: { store.setHomeNetworkSSID($0) }
-        )
+    private var canAddNewHomeNetwork: Bool {
+        !newHomeNetworkSSID.isEmpty && !preferences.homeNetworkSSIDs.contains(newHomeNetworkSSID)
+    }
+
+    private func addNewHomeNetwork() {
+        guard canAddNewHomeNetwork else { return }
+        store.addHomeNetworkSSID(newHomeNetworkSSID)
+        newHomeNetworkSSID = ""
     }
 
     private var lockStatusEnabledBinding: Binding<Bool> {

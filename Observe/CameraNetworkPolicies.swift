@@ -41,16 +41,16 @@ enum CameraConnectionModePolicy {
     static func resolve(
         networkClass: CameraNetworkClass,
         currentSSID: String?,
-        configuredHomeSSID: String
+        configuredHomeSSIDs: [String]
     ) -> CameraConnectionModeResolution {
-        guard !configuredHomeSSID.isEmpty else {
+        guard !configuredHomeSSIDs.isEmpty else {
             return CameraConnectionModeResolution(
                 mode: .restricted,
                 reason: .homeNetworkNotConfigured
             )
         }
         if let currentSSID {
-            guard currentSSID == configuredHomeSSID else {
+            guard configuredHomeSSIDs.contains(currentSSID) else {
                 return CameraConnectionModeResolution(mode: .restricted, reason: .homeNetworkMismatch)
             }
             return CameraConnectionModeResolution(mode: .homeNetwork, reason: .homeNetworkMatched)

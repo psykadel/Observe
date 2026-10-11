@@ -6,25 +6,76 @@ import XCTest
 
 final class ObservePreferencesTests: ObserveTestCase {
     @MainActor
-    func testHomeNetworkSSIDDefaultsBlankAndPersistsExactly() {
+    func testHomeNetworksDefaultEmptyAndPersistExactDistinctNamesInOrder() throws {
         let suiteName = "ObserveTests.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            XCTFail("Expected test user defaults suite")
-            return
-        }
-        defaults.removePersistentDomain(forName: suiteName)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let preferences = ObservePreferences(userDefaults: defaults)
-        XCTAssertEqual(preferences.homeNetworkSSID, "")
+        XCTAssertEqual(preferences.homeNetworkSSIDs, [])
 
-        preferences.setHomeNetworkSSID("  Backmeyer Home  ")
+        let names = ["  Backmeyer Home  ", "Guest", "guest", " "]
+        for name in names {
+            preferences.addHomeNetworkSSID(name)
+        }
+        preferences.addHomeNetworkSSID("")
+        preferences.addHomeNetworkSSID("Guest")
 
-        XCTAssertEqual(preferences.homeNetworkSSID, "  Backmeyer Home  ")
+        XCTAssertEqual(preferences.homeNetworkSSIDs, names)
+        XCTAssertEqual(ObservePreferences(userDefaults: defaults).homeNetworkSSIDs, names)
+    }
+
+    @MainActor
+    func testHomeNetworksMigrateLegacyNameExactlyAndOnlyOnce() throws {
+        for legacyName in ["  Backmeyer Home  ", ""] {
+            let suiteName = "ObserveTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(legacyName, forKey: "observe.homeNetworkSSID")
+
+            let preferences = ObservePreferences(userDefaults: defaults)
+            let expected = legacyName.isEmpty ? [] : [legacyName]
+            XCTAssertEqual(preferences.homeNetworkSSIDs, expected)
+            XCTAssertEqual(defaults.stringArray(forKey: "observe.homeNetworkSSIDs"), expected)
+
+            defaults.set("Different Legacy Name", forKey: "observe.homeNetworkSSID")
+            XCTAssertEqual(ObservePreferences(userDefaults: defaults).homeNetworkSSIDs, expected)
+        }
+    }
+
+    @MainActor
+    func testStoredHomeNetworksTakePrecedenceAndExcludeEmptyNamesAndDuplicates() throws {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("Legacy", forKey: "observe.homeNetworkSSID")
+        defaults.set(["Guest", "", "Home", "Guest", "home"], forKey: "observe.homeNetworkSSIDs")
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        XCTAssertEqual(preferences.homeNetworkSSIDs, ["Guest", "Home", "home"])
         XCTAssertEqual(
-            ObservePreferences(userDefaults: defaults).homeNetworkSSID,
-            "  Backmeyer Home  "
+            ObservePreferences(userDefaults: defaults).homeNetworkSSIDs,
+            ["Guest", "Home", "home"]
         )
-        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @MainActor
+    func testRemovingHomeNetworksPreservesOthersAndEmptyListSurvivesReload() throws {
+        let suiteName = "ObserveTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("Home", forKey: "observe.homeNetworkSSID")
+
+        let preferences = ObservePreferences(userDefaults: defaults)
+        preferences.addHomeNetworkSSID("Guest")
+        preferences.removeHomeNetworkSSID("Home")
+        preferences.removeHomeNetworkSSID("Unknown")
+        XCTAssertEqual(preferences.homeNetworkSSIDs, ["Guest"])
+        XCTAssertEqual(ObservePreferences(userDefaults: defaults).homeNetworkSSIDs, ["Guest"])
+
+        preferences.removeHomeNetworkSSID("Guest")
+        XCTAssertEqual(preferences.homeNetworkSSIDs, [])
+        XCTAssertEqual(ObservePreferences(userDefaults: defaults).homeNetworkSSIDs, [])
     }
 
     @MainActor

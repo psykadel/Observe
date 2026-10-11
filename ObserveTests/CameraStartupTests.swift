@@ -51,35 +51,40 @@ final class CameraStartupTests: ObserveTestCase {
         XCTAssertEqual(
             CameraConnectionModePolicy.resolve(
                 networkClass: .other,
-                currentSSID: "Backmeyer Home",
-                configuredHomeSSID: "Backmeyer Home"
+                currentSSID: "Backmeyer Guest",
+                configuredHomeSSIDs: ["Backmeyer Home", "Backmeyer Guest"]
             ),
             CameraConnectionModeResolution(mode: .homeNetwork, reason: .homeNetworkMatched)
         )
     }
 
-    func testHomeNetworkModeRequiresAnExactNonemptySSIDMatch() {
+    func testHomeNetworkModeMatchesAnySavedSSIDExactly() {
+        let savedSSIDs = ["Backmeyer Home", "Backmeyer Guest", "  Home With Spaces  "]
+        for ssid in savedSSIDs {
+            XCTAssertEqual(
+                CameraConnectionModePolicy.resolve(
+                    networkClass: .wifi,
+                    currentSSID: ssid,
+                    configuredHomeSSIDs: savedSSIDs
+                ),
+                CameraConnectionModeResolution(mode: .homeNetwork, reason: .homeNetworkMatched)
+            )
+        }
+        for ssid in ["backmeyer home", "Home With Spaces", "Coffee Shop", ""] {
+            XCTAssertEqual(
+                CameraConnectionModePolicy.resolve(
+                    networkClass: .wifi,
+                    currentSSID: ssid,
+                    configuredHomeSSIDs: savedSSIDs
+                ),
+                CameraConnectionModeResolution(mode: .restricted, reason: .homeNetworkMismatch)
+            )
+        }
         XCTAssertEqual(
             CameraConnectionModePolicy.resolve(
                 networkClass: .wifi,
                 currentSSID: "Backmeyer Home",
-                configuredHomeSSID: "Backmeyer Home"
-            ),
-            CameraConnectionModeResolution(mode: .homeNetwork, reason: .homeNetworkMatched)
-        )
-        XCTAssertEqual(
-            CameraConnectionModePolicy.resolve(
-                networkClass: .wifi,
-                currentSSID: "backmeyer home",
-                configuredHomeSSID: "Backmeyer Home"
-            ),
-            CameraConnectionModeResolution(mode: .restricted, reason: .homeNetworkMismatch)
-        )
-        XCTAssertEqual(
-            CameraConnectionModePolicy.resolve(
-                networkClass: .wifi,
-                currentSSID: "Backmeyer Home",
-                configuredHomeSSID: ""
+                configuredHomeSSIDs: []
             ),
             CameraConnectionModeResolution(mode: .restricted, reason: .homeNetworkNotConfigured)
         )
@@ -90,7 +95,7 @@ final class CameraStartupTests: ObserveTestCase {
             CameraConnectionModePolicy.resolve(
                 networkClass: .cellular,
                 currentSSID: nil,
-                configuredHomeSSID: "Backmeyer Home"
+                configuredHomeSSIDs: ["Backmeyer Home", "Backmeyer Guest"]
             ),
             CameraConnectionModeResolution(mode: .restricted, reason: .notOnWiFi)
         )
@@ -98,7 +103,7 @@ final class CameraStartupTests: ObserveTestCase {
             CameraConnectionModePolicy.resolve(
                 networkClass: .wifi,
                 currentSSID: nil,
-                configuredHomeSSID: "Backmeyer Home"
+                configuredHomeSSIDs: ["Backmeyer Home", "Backmeyer Guest"]
             ),
             CameraConnectionModeResolution(mode: .restricted, reason: .ssidUnavailable)
         )
@@ -106,7 +111,7 @@ final class CameraStartupTests: ObserveTestCase {
             CameraConnectionModePolicy.resolve(
                 networkClass: .wifi,
                 currentSSID: "Coffee Shop",
-                configuredHomeSSID: "Backmeyer Home"
+                configuredHomeSSIDs: ["Backmeyer Home", "Backmeyer Guest"]
             ),
             CameraConnectionModeResolution(mode: .restricted, reason: .homeNetworkMismatch)
         )

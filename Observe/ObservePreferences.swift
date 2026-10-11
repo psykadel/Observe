@@ -5,6 +5,7 @@ final class ObservePreferences: ObservableObject {
     private enum Keys {
         static let selectedHomeID = "observe.selectedHomeID"
         static let homeNetworkSSID = "observe.homeNetworkSSID"
+        static let homeNetworkSSIDs = "observe.homeNetworkSSIDs"
         static let density = "observe.wallDensity"
         static let cameraNameVisibility = "observe.cameraNameVisibility"
         static let restrictedSnapshotRequestLimit = "observe.restrictedSnapshotRequestLimit"
@@ -33,7 +34,7 @@ final class ObservePreferences: ObservableObject {
         didSet { userDefaults.set(selectedHomeID, forKey: Keys.selectedHomeID) }
     }
 
-    @Published private(set) var homeNetworkSSID: String
+    @Published private(set) var homeNetworkSSIDs: [String]
 
     @Published var wallDensity: WallDensity {
         didSet { userDefaults.set(wallDensity.rawValue, forKey: Keys.density) }
@@ -95,7 +96,20 @@ final class ObservePreferences: ObservableObject {
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         self.selectedHomeID = userDefaults.string(forKey: Keys.selectedHomeID)
-        self.homeNetworkSSID = userDefaults.string(forKey: Keys.homeNetworkSSID) ?? ""
+        let storedHomeNetworkSSIDs: [String]
+        if userDefaults.object(forKey: Keys.homeNetworkSSIDs) != nil {
+            storedHomeNetworkSSIDs = userDefaults.stringArray(forKey: Keys.homeNetworkSSIDs) ?? []
+        } else if let legacySSID = userDefaults.string(forKey: Keys.homeNetworkSSID), !legacySSID.isEmpty {
+            storedHomeNetworkSSIDs = [legacySSID]
+        } else {
+            storedHomeNetworkSSIDs = []
+        }
+        var seenHomeNetworkSSIDs = Set<String>()
+        let homeNetworkSSIDs = storedHomeNetworkSSIDs.filter {
+            !$0.isEmpty && seenHomeNetworkSSIDs.insert($0).inserted
+        }
+        self.homeNetworkSSIDs = homeNetworkSSIDs
+        userDefaults.set(homeNetworkSSIDs, forKey: Keys.homeNetworkSSIDs)
         let storedDensity = userDefaults.string(forKey: Keys.density) ?? ""
         self.wallDensity = switch storedDensity {
         case "focus":
@@ -280,11 +294,18 @@ final class ObservePreferences: ObservableObject {
         userDefaults.set(sanitized, forKey: Keys.restrictedSnapshotRequestLimit)
     }
 
-    func setHomeNetworkSSID(_ ssid: String) {
-        guard homeNetworkSSID != ssid else { return }
+    func addHomeNetworkSSID(_ ssid: String) {
+        guard !ssid.isEmpty, !homeNetworkSSIDs.contains(ssid) else { return }
 
-        homeNetworkSSID = ssid
-        userDefaults.set(ssid, forKey: Keys.homeNetworkSSID)
+        homeNetworkSSIDs.append(ssid)
+        userDefaults.set(homeNetworkSSIDs, forKey: Keys.homeNetworkSSIDs)
+    }
+
+    func removeHomeNetworkSSID(_ ssid: String) {
+        guard homeNetworkSSIDs.contains(ssid) else { return }
+
+        homeNetworkSSIDs.removeAll { $0 == ssid }
+        userDefaults.set(homeNetworkSSIDs, forKey: Keys.homeNetworkSSIDs)
     }
 
     func rememberedRestrictedLiveCapacity(homeID: String?, visibleCameraIDs: [String]) -> Int? {
